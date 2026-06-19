@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "pumpkin-api-macros",
     "pumpkin-config",
+    "pumpkin-i18n",
     "pumpkin-util",
     "pumpkin-inventory",
     "pumpkin-macros/",
@@ -151,6 +152,7 @@ proc-macro2 = { version = "1.0", default-features = false, features = ["proc-mac
 pumpkin-codecs = { path = "pumpkin-codecs", default-features = false }
 pumpkin-config = { path = "pumpkin-config", default-features = false }
 pumpkin-data = { path = "pumpkin-data", default-features = false }
+pumpkin-i18n = { path = "pumpkin-i18n", default-features = false }
 pumpkin-inventory = { path = "pumpkin-inventory", default-features = false }
 pumpkin-macros = { path = "pumpkin-macros", default-features = false }
 pumpkin-nbt = { path = "pumpkin-nbt", default-features = false }

@@ -1,7 +1,6 @@
 use crate::text::color::{ARGBColor, hsv_to_rgb};
-use crate::translation::{
-    Locale, get_translation, get_translation_text, reorder_substitutions, translation_to_pretty,
-};
+use pumpkin_i18n::{Locale, get_translation};
+use crate::text::translation::{get_translation_text, reorder_substitutions, translation_to_pretty};
 use click::ClickEvent;
 use color::Color;
 use colored::Colorize;
@@ -20,6 +19,7 @@ pub mod click;
 pub mod color;
 pub mod hover;
 pub mod style;
+pub mod translation;
 
 /// Represents a Minecraft chat component.
 ///
