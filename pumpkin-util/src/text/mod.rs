@@ -1,11 +1,13 @@
 use crate::text::color::{ARGBColor, hsv_to_rgb};
-use pumpkin_i18n::{Locale, get_translation};
-use crate::text::translation::{get_translation_text, reorder_substitutions, translation_to_pretty};
+use crate::text::translation::{
+    get_translation_text, reorder_substitutions, translation_to_pretty,
+};
 use click::ClickEvent;
 use color::Color;
 use colored::Colorize;
 use core::str;
 use hover::HoverEvent;
+use pumpkin_i18n::{Locale, get_translation};
 use pumpkin_nbt::serializer::{NbtWriteHelperJava, Serializer};
 use serde::de::{Error, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
