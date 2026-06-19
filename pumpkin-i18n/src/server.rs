@@ -45,7 +45,7 @@ fn detect_platform_locale() -> Locale {
     // LOCALE_NAME_MAX_LENGTH is 85 on Windows
     const BUF_SIZE: usize = 85;
 
-    extern "system" {
+    unsafe extern "system" {
         fn GetUserDefaultLocaleName(lpLocaleName: *mut u16, cchLocaleName: i32) -> i32;
     }
 
