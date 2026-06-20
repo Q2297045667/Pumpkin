@@ -64,6 +64,18 @@ pub fn remove_player_locale(uuid: &str) {
 // Client locale resolution
 // ---------------------------------------------------------------------------
 
+/// Parse a locale identifier string without unnecessary allocations.
+///
+/// Normalises hyphens to underscores only when needed and uses
+/// ASCII‑only lowercasing. Returns [`Locale::EnUs`] on failure.
+fn parse_locale_value(raw: &str) -> Locale {
+    if raw.contains('-') {
+        let normalized = raw.replace('-', "_");
+        return Locale::from_str(&normalized).unwrap_or(Locale::EnUs);
+    }
+    Locale::from_str(raw).unwrap_or(Locale::EnUs)
+}
+
 /// Resolves the client locale for a player based on the configuration value
 /// and the locale reported by the player's client.
 ///
@@ -76,12 +88,12 @@ pub fn remove_player_locale(uuid: &str) {
 /// Otherwise overrides with the configured locale.
 #[must_use]
 pub fn resolve_client_locale(player_locale: &str, config_value: &str) -> Locale {
-    if config_value != "auto" {
-        let normalized = config_value.replace('-', "_");
-        return Locale::from_str(&normalized).unwrap_or(Locale::EnUs);
-    }
-    let normalized = player_locale.replace('-', "_");
-    Locale::from_str(&normalized).unwrap_or(Locale::EnUs)
+    let source = if config_value == "auto" {
+        player_locale
+    } else {
+        config_value
+    };
+    parse_locale_value(source)
 }
 
 /// Resolve locale for a Java Edition player.
@@ -144,5 +156,5 @@ pub fn format_join_locale(player_name: &str, locale: Locale) -> String {
 /// A string like `"en_us"`, `"zh_cn"`, etc.
 #[must_use]
 pub fn locale_to_log_string(locale: Locale) -> String {
-    format!("{locale:?}").to_lowercase()
+    format!("{locale:?}").to_ascii_lowercase()
 }

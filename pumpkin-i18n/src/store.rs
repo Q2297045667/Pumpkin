@@ -175,7 +175,7 @@ pub static TRANSLATIONS: LazyLock<Mutex<[HashMap<String, String>; Locale::COUNT]
 /// * `locale`: The locale the translation belongs to.
 pub fn add_translation<P: Into<String>>(namespace: P, key: P, translation: P, locale: Locale) {
     let mut translations = TRANSLATIONS.lock().unwrap();
-    let namespaced_key = format!("{}:{}", namespace.into(), key.into()).to_lowercase();
+    let namespaced_key = format!("{}:{}", namespace.into(), key.into()).to_ascii_lowercase();
     translations[locale as usize].insert(namespaced_key, translation.into());
 }
 
@@ -196,7 +196,7 @@ pub fn add_translation_file<P: Into<String>>(namespace: P, file_path: P, locale:
     let mut translations = TRANSLATIONS.lock().unwrap();
     let namespace = namespace.into();
     for (key, translation) in translations_map {
-        let namespaced_key = format!("{namespace}:{key}").to_lowercase();
+        let namespaced_key = format!("{namespace}:{key}").to_ascii_lowercase();
         translations[locale as usize].insert(namespaced_key, translation);
     }
 }
@@ -216,7 +216,7 @@ pub fn add_translation_file<P: Into<String>>(namespace: P, file_path: P, locale:
 /// The localized translation, the English fallback, or the raw key.
 pub fn get_translation(key: &str, locale: Locale) -> String {
     let translations = TRANSLATIONS.lock().unwrap();
-    let key_lower = key.to_lowercase();
+    let key_lower = key.to_ascii_lowercase();
 
     // Tier 1 – requested locale (silent)
     if let Some(value) = translations[locale as usize].get(&key_lower) {
