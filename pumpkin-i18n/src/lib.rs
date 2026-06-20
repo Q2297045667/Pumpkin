@@ -9,7 +9,10 @@ pub mod server;
 pub mod store;
 pub mod token;
 
-pub use client::{format_join_locale, locale_to_log_string, resolve_client_locale};
+pub use client::{
+    format_join_locale, locale_to_log_string, player_locale, remove_player_locale,
+    resolve_bedrock_locale, resolve_client_locale, resolve_java_locale, set_player_locale,
+};
 pub use engine::{ResolvedTranslation, TranslationEngine, format_tokens};
 pub use locale::Locale;
 pub use server::{detect_system_locale, resolve_server_locale};
