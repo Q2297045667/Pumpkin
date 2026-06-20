@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
-use ahash::RandomState;
+use std::hash::BuildHasherDefault;
+
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use fst::{Map, MapBuilder};
+use xxhash_rust::xxh64::Xxh64;
 
 use crate::token::{self, Token, TokenStream};
 
@@ -126,13 +128,13 @@ impl FstLocaleStore {
 /// # Design
 /// * One [`FstLocaleStore`] per locale, stored behind an [`ArcSwap`] so
 ///   locale data can be reloaded atomically without blocking readers.
-/// * A [`DashMap`] (sharded lock‑free map) with [`ahash`] hashing caches
+/// * A [`DashMap`] (sharded lock‑free map) with XXH64 hashing caches
 ///   resolved translations keyed by `"locale:namespace:key"`.
 pub struct TranslationEngine {
     /// Per‑locale FST stores, atomically swappable.
     stores: ArcSwap<Box<[FstLocaleStore]>>,
     /// Cache for resolved translations. Key format: `"<locale_idx>:<key>"`.
-    cache: DashMap<String, Option<Arc<ResolvedTranslation>>, RandomState>,
+    cache: DashMap<String, Option<Arc<ResolvedTranslation>>, BuildHasherDefault<Xxh64>>,
 }
 
 impl TranslationEngine {
@@ -148,7 +150,7 @@ impl TranslationEngine {
 
         Self {
             stores: ArcSwap::from_pointee(stores),
-            cache: DashMap::with_hasher(RandomState::new()),
+            cache: DashMap::with_hasher(BuildHasherDefault::default()),
         }
     }
 
