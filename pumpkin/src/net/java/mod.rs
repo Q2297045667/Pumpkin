@@ -791,10 +791,16 @@ impl JavaClient {
 
         match packet.id {
             id if id == SClientInformationConfig::to_id(version) => {
-                self.handle_client_information_config(SClientInformationConfig::read(
-                    payload, &version,
-                )?)
-                .await;
+                let packet = SClientInformationConfig::read(payload, &version)?;
+                // Cache locale as early as possible during the configuration phase
+                if let Some(profile) = &*self.gameprofile.lock().await {
+                    pumpkin_i18n::set_player_locale(
+                        &profile.id.to_string(),
+                        &packet.locale,
+                        &server.advanced_config.locale.client_java_edition,
+                    );
+                }
+                self.handle_client_information_config(packet).await;
             }
             id if id == SPluginMessage::to_id(version) => {
                 self.handle_plugin_message(SPluginMessage::read(payload, &version)?)
