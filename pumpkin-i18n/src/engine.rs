@@ -7,6 +7,7 @@ use std::hash::BuildHasherDefault;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use fst::{Map, MapBuilder};
+use tracing::{error, warn};
 use xxhash_rust::xxh64::Xxh64;
 
 use crate::token::{self, Token, TokenStream};
@@ -134,7 +135,7 @@ pub struct TranslationEngine {
     /// Per‑locale FST stores, atomically swappable.
     stores: ArcSwap<Box<[FstLocaleStore]>>,
     /// Cache for resolved translations. Key format: `"<locale_idx>:<key>"`.
-    cache: DashMap<String, Option<Arc<ResolvedTranslation>>, BuildHasherDefault<Xxh64>>,
+    cache: DashMap<String, Arc<ResolvedTranslation>, BuildHasherDefault<Xxh64>>,
 }
 
 impl TranslationEngine {
@@ -156,14 +157,19 @@ impl TranslationEngine {
 
     /// Resolve a translation key for the given locale.
     ///
+    /// # Fallback strategy (identical to [`crate::store::get_translation`])
+    /// 1. **Requested locale** — silent, no log.
+    /// 2. **`EnUs`** — logs [`warn!`] when the key was not found in step 1.
+    /// 3. **Raw key** — logs [`error!`] when neither locale contains the key.
+    ///
+    /// The result is cached behind [`DashMap`] so subsequent lookups are
+    /// lock‑free. The return value is never `None` — at minimum the raw key
+    /// is wrapped as [`ResolvedTranslation::Static`].
+    ///
     /// # Arguments
     /// * `locale_idx` — Index of the locale (use `locale as usize`).
     /// * `key` — The fully‑qualified translation key (`"namespace:entry"`).
-    ///
-    /// # Returns
-    /// `None` when the key is not found in the requested locale.
-    /// The result is cached so subsequent lookups are lock‑free.
-    pub fn resolve(&self, locale_idx: usize, key: &str) -> Option<Arc<ResolvedTranslation>> {
+    pub fn resolve(&self, locale_idx: usize, key: &str) -> Arc<ResolvedTranslation> {
         let cache_key = make_cache_key(locale_idx, key);
 
         // Fast path: cache hit (no lock contention).
@@ -171,17 +177,31 @@ impl TranslationEngine {
             return entry.value().clone();
         }
 
-        // Slow path: FST lookup under the current ArcSwap snapshot.
         let stores = self.stores.load();
-        let result = stores
-            .get(locale_idx)
+
+        // Tier 1 – requested locale (silent)
+        if let Some(entry) = stores.get(locale_idx).and_then(|store| store.lookup(key)) {
+            let resolved = Arc::new(entry.clone());
+            self.cache.insert(cache_key, resolved.clone());
+            return resolved;
+        }
+
+        // Tier 2 – EnUs fallback
+        if let Some(entry) = stores
+            .get(crate::locale::Locale::EnUs as usize)
             .and_then(|store| store.lookup(key))
-            .map(|r| Arc::new(r.clone()));
+        {
+            warn!("translation key not found – falling back to English");
+            let resolved = Arc::new(entry.clone());
+            self.cache.insert(cache_key, resolved.clone());
+            return resolved;
+        }
 
-        // Populate cache (None for missing keys so we don't re‑query FST).
-        self.cache.insert(cache_key, result.clone());
-
-        result
+        // Tier 3 – raw key
+        error!("translation key not found in any locale – returning raw key");
+        let resolved = Arc::new(ResolvedTranslation::Static(Arc::from(key)));
+        self.cache.insert(cache_key, resolved.clone());
+        resolved
     }
 
     /// Reload translation data atomically.

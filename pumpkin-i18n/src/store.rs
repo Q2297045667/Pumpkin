@@ -3,6 +3,8 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use tracing::{error, warn};
+
 use crate::locale::Locale;
 
 static VANILLA_EN_US_JSON: &str = include_str!("../../assets/en_us_java.json");
@@ -201,21 +203,33 @@ pub fn add_translation_file<P: Into<String>>(namespace: P, file_path: P, locale:
 
 /// Retrieves a translation for the given key and locale.
 ///
+/// # Fallback strategy
+/// 1. **Requested locale** — silent, no log.
+/// 2. **`EnUs`** — logs [`warn!`] when the key was not found in step 1.
+/// 3. **Raw key** — logs [`error!`] when neither locale contains the key.
+///
 /// # Arguments
 /// * `key`: The fully qualified `namespace:key`.
 /// * `locale`: The requested locale.
 ///
 /// # Returns
-/// The localized translation. Falls back to `en_us` or the key itself if not found.
+/// The localized translation, the English fallback, or the raw key.
 pub fn get_translation(key: &str, locale: Locale) -> String {
     let translations = TRANSLATIONS.lock().unwrap();
-    let key = key.to_lowercase();
-    translations[locale as usize].get(&key).map_or_else(
-        || {
-            translations[Locale::EnUs as usize]
-                .get(&key)
-                .map_or(key, Clone::clone)
-        },
-        Clone::clone,
-    )
+    let key_lower = key.to_lowercase();
+
+    // Tier 1 – requested locale (silent)
+    if let Some(value) = translations[locale as usize].get(&key_lower) {
+        return value.clone();
+    }
+
+    // Tier 2 – EnUs fallback
+    if let Some(value) = translations[Locale::EnUs as usize].get(&key_lower) {
+        warn!("translation key not found – falling back to English");
+        return value.clone();
+    }
+
+    // Tier 3 – raw key
+    error!("translation key not found in any locale – returning raw key");
+    key.to_owned()
 }

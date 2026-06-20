@@ -2359,6 +2359,7 @@ dependencies = [
  "dashmap",
  "fst",
  "serde_json",
+ "tracing",
  "xxhash-rust",
 ]
 
