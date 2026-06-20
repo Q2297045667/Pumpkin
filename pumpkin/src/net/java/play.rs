@@ -1,3 +1,4 @@
+use pumpkin_i18n;
 use pumpkin_protocol::bedrock::server::text::SText;
 use pumpkin_util::{Hand, PermissionLvl};
 use rsa::pkcs1v15::{Signature as RsaPkcs1v15Signature, VerifyingKey};
@@ -1523,6 +1524,7 @@ impl JavaClient {
         &self,
         player: &Arc<Player>,
         client_information: SClientInformationPlay,
+        server: &Arc<Server>,
     ) {
         if let (Ok(main_hand), Ok(chat_mode)) = (
             Hand::try_from(client_information.main_hand.0),
@@ -1563,6 +1565,13 @@ impl JavaClient {
                 let Some(new_view_distance) = NonZeroU8::new(new_view_distance_raw) else {
                     return;
                 };
+
+                // Cache locale before moving it into PlayerConfig
+                pumpkin_i18n::set_player_locale(
+                    &player.gameprofile.id.to_string(),
+                    &client_information.locale,
+                    &server.advanced_config.locale.client_java_edition,
+                );
 
                 let new_config = PlayerConfig {
                     locale: client_information.locale,

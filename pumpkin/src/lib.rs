@@ -11,6 +11,7 @@ use crate::net::{lan_broadcast::LANBroadcast, query, rcon::RCONServer};
 use crate::server::{Server, ticker::Ticker};
 use plugin::server::server_command::ServerCommandEvent;
 use pumpkin_config::{AdvancedConfiguration, BasicConfiguration};
+use pumpkin_i18n;
 use pumpkin_macros::send_cancellable;
 use pumpkin_util::text::TextComponent;
 use pumpkin_util::text::color::{Color, NamedColor};
@@ -457,7 +458,12 @@ impl PumpkinServer {
                                      java_client.close();
                                      java_client.await_tasks().await;
                                 },
-                                PacketHandlerResult::ReadyToPlay(profile,config) => {
+                                PacketHandlerResult::ReadyToPlay(profile, config) => {
+                                     pumpkin_i18n::set_player_locale(
+                                         &profile.id.to_string(),
+                                         &config.locale,
+                                         &server_clone.advanced_config.locale.client_java_edition,
+                                     );
                                      if let Some((player, world)) = server_clone
                                      .add_player(ClientPlatform::Java(java_client), profile, Some(config))
                                           .await
@@ -475,6 +481,7 @@ impl PumpkinServer {
                                     }
                                     player.remove().await;
                                     server_clone.remove_player(&player).await;
+                                    pumpkin_i18n::remove_player_locale(&player.gameprofile.id.to_string());
                                     if let Err(e) = server_clone.player_data_storage
                                         .handle_player_leave(&player)
                                         .await {
@@ -530,6 +537,11 @@ impl PumpkinServer {
                                                 client_clone.close().await;
                                             }
                                             PacketHandlerResult::ReadyToPlay(profile, config) => {
+                                                pumpkin_i18n::set_player_locale(
+                                                    &profile.id.to_string(),
+                                                    &config.locale,
+                                                    &server_clone.advanced_config.locale.client_bedrock_edition,
+                                                );
                                                 if let Some((player, _world)) = server_clone
                                                     .add_player(ClientPlatform::Bedrock(client_clone.clone()), profile, Some(config))
                                                     .await
@@ -541,6 +553,7 @@ impl PumpkinServer {
                                                     client_clone.close().await;
                                                     player.remove().await;
                                                     server_clone.remove_player(&player).await;
+                                                    pumpkin_i18n::remove_player_locale(&player.gameprofile.id.to_string());
                                                     if let Err(e) = server_clone.player_data_storage
                                                         .handle_player_leave(&player)
                                                         .await {

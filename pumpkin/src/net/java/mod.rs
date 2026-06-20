@@ -888,6 +888,7 @@ impl JavaClient {
                 self.handle_client_information(
                     player,
                     SClientInformationPlay::read(payload, &version)?,
+                    server,
                 )
                 .await;
             }

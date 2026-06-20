@@ -6,7 +6,6 @@ use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::f64::consts::TAU;
 use std::mem;
 use std::num::NonZeroU8;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -17,7 +16,7 @@ use crossbeam::channel::Receiver;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::tracked_data::TrackedData;
-use pumpkin_i18n::Locale;
+use pumpkin_i18n::player_locale;
 use pumpkin_inventory::player::ender_chest_inventory::EnderChestInventory;
 use pumpkin_protocol::bedrock::client::AbilityLayer;
 use pumpkin_protocol::bedrock::client::play_status::CPlayStatus;
@@ -3053,7 +3052,7 @@ impl Player {
                     .await;
             }
             ClientPlatform::Bedrock(client) => {
-                let locale = Locale::from_str(&self.config.load().locale).unwrap_or(Locale::EnUs);
+                let locale = player_locale(&self.gameprofile.id.to_string());
                 let packet = match &*text.0.content {
                     pumpkin_util::text::TextContent::Translate {
                         translate,
