@@ -322,6 +322,7 @@
     "world.generation.empty_height_range": "高度范围为空",
     "world.generation.expected_cell_cache": "期望 ChunkSpecificNoiseFunctionComponent::CellCache",
     "world.generation.expected_chunk_component": "期望 ChunkNoiseFunctionComponent::Chunk",
+    "world.generation.expected_density_interpolator": "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator",
     "world.generation.unsupported_dimension_noise": "噪声路由器不支持的维度: {:?}",
     "world.level.chunk_listener_dropped": "区块监听器在没有发送区块的情况下被丢弃",
     "world.level.create_entities_folder_failed": "创建 Entities 文件夹失败",

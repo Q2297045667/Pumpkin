@@ -322,6 +322,7 @@
     "world.generation.empty_height_range": "Empty height range",
     "world.generation.expected_cell_cache": "Expected ChunkSpecificNoiseFunctionComponent::CellCache",
     "world.generation.expected_chunk_component": "Expected ChunkNoiseFunctionComponent::Chunk",
+    "world.generation.expected_density_interpolator": "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator",
     "world.generation.unsupported_dimension_noise": "Unsupported dimension for noise router: {:?}",
     "world.level.chunk_listener_dropped": "Chunk listener dropped without sending chunk",
     "world.level.create_entities_folder_failed": "Failed to create Entities folder",
