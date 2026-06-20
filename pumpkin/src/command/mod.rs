@@ -1,6 +1,5 @@
 use std::fmt;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::entity::player::Player;
@@ -18,7 +17,7 @@ use pumpkin_data::{
     block_properties::{BlockProperties, CommandBlockLikeProperties, Facing},
     dimension::Dimension,
 };
-use pumpkin_i18n::Locale;
+use pumpkin_i18n::{Locale, player_locale};
 use pumpkin_util::math::vector2::Vector2;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_util::permission::{PermissionDefault, PermissionLvl};
@@ -220,9 +219,7 @@ impl CommandSender {
     pub fn get_locale(&self) -> Locale {
         match self {
             Self::CommandBlock(..) | Self::Console | Self::Rcon(..) | Self::Dummy => Locale::EnUs, // Default locale for console and RCON
-            Self::Player(player) => {
-                Locale::from_str(&player.config.load().locale).unwrap_or(Locale::EnUs)
-            }
+            Self::Player(player) => player_locale(&player.gameprofile.id.to_string()),
         }
     }
 
