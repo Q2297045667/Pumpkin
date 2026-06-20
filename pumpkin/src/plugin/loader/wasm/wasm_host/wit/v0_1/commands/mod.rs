@@ -516,8 +516,12 @@ impl pumpkin::plugin::command::HostCommandSender for PluginHostState {
     }
 
     async fn get_locale(&mut self, sender: Resource<CommandSender>) -> wasmtime::Result<Locale> {
+        let server = self
+            .server
+            .as_ref()
+            .ok_or_else(|| wasmtime::Error::msg("Server not initialized"))?;
         Ok(map_util_locale_to_wit(
-            self.get_sender_res(&sender)?.provider.get_locale(),
+            self.get_sender_res(&sender)?.provider.get_locale(server),
         ))
     }
 

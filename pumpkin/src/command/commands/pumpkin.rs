@@ -71,7 +71,7 @@ impl CommandExecutor for Executor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a crate::server::Server,
+        server: &'a crate::server::Server,
         _args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
@@ -81,7 +81,7 @@ impl CommandExecutor for Executor {
                 .map(|c| c.login.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            let locale = sender.get_locale();
+            let locale = sender.get_locale(server);
             let profile = if cfg!(debug_assertions) {
                 "debug"
             } else {

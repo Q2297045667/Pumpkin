@@ -216,9 +216,11 @@ impl CommandSender {
     }
 
     #[must_use]
-    pub fn get_locale(&self) -> Locale {
+    pub fn get_locale(&self, server: &Server) -> Locale {
         match self {
-            Self::CommandBlock(..) | Self::Console | Self::Rcon(..) | Self::Dummy => Locale::EnUs, // Default locale for console and RCON
+            Self::CommandBlock(..) | Self::Console | Self::Rcon(..) | Self::Dummy => {
+                server.command_locale
+            }
             Self::Player(player) => player_locale(&player.gameprofile.id.to_string()),
         }
     }

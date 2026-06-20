@@ -11,6 +11,7 @@ use crate::net::{lan_broadcast::LANBroadcast, query, rcon::RCONServer};
 use crate::server::{Server, ticker::Ticker};
 use plugin::server::server_command::ServerCommandEvent;
 use pumpkin_config::{AdvancedConfiguration, BasicConfiguration};
+use pumpkin_i18n::{Locale, resolve_server_locale};
 use pumpkin_macros::send_cancellable;
 use pumpkin_util::text::TextComponent;
 use pumpkin_util::text::color::{Color, NamedColor};
@@ -59,10 +60,22 @@ pub type LoggerOption = Option<(ReadlineLogWrapper, LevelFilter, LoggingConfig)>
 pub static LOGGER_IMPL: LazyLock<Arc<OnceLock<LoggerOption>>> =
     LazyLock::new(|| Arc::new(OnceLock::new()));
 
+/// Global logging locale, resolved from `server_logging` configuration.
+///
+/// Initialized during [`init_logger`] before the server starts so that
+/// early log messages can also respect the configured locale.
+pub static SERVER_LOGGING_LOCALE: OnceLock<Locale> = OnceLock::new();
+
 #[expect(clippy::print_stderr)]
 pub fn init_logger(advanced_config: &AdvancedConfiguration) {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt;
+
+    // Resolve and cache the server logging locale so it's available
+    // globally before the tracing subscriber is set up.
+    let _ = SERVER_LOGGING_LOCALE.set(resolve_server_locale(
+        &advanced_config.locale.server_logging,
+    ));
 
     let logger = advanced_config.logging.enabled.then(|| {
         let level = std::env::var("RUST_LOG")
