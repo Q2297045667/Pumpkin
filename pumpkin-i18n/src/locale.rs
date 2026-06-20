@@ -143,7 +143,7 @@ impl FromStr for Locale {
     #[expect(clippy::too_many_lines)]
     #[allow(clippy::match_same_arms)]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+        match s.to_ascii_lowercase().as_str() {
             "af_za" => Ok(Self::AfZa),       // Afrikaans (Suid-Afrika)
             "ar_sa" => Ok(Self::ArSa),       // Arabic
             "ast_es" => Ok(Self::AstEs),     // Asturian

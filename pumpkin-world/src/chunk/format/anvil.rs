@@ -3,7 +3,9 @@ use flate2::read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder};
 use itertools::Itertools;
 use lz4_java_wrc::Context;
 use pumpkin_config::chunk::AnvilChunkConfig;
+use pumpkin_i18n::locale::Locale;
 use pumpkin_util::math::vector2::Vector2;
+use pumpkin_util::text::translation::get_translation_text;
 use std::{
     io::{Read, SeekFrom, Write},
     marker::PhantomData,
@@ -251,10 +253,13 @@ impl AnvilChunkData {
 
         if length > bytes.len() {
             return Err(ChunkReadingError::ParsingError(
-                ChunkParsingError::ErrorDeserializingChunk(format!(
-                    "Chunk length is greater than available bytes ({} vs {})",
-                    length,
-                    bytes.len()
+                ChunkParsingError::ErrorDeserializingChunk(get_translation_text(
+                    "pumpkin:world.chunk.length_greater_than_available",
+                    Locale::EnUs,
+                    vec![
+                        pumpkin_util::text::TextComponent::text(length.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(bytes.len().to_string()).0,
+                    ],
                 )),
             ));
         }
@@ -353,7 +358,14 @@ impl<S: SingleChunkDataSerializer> AnvilChunkFile<S> {
     where
         I: IntoIterator<Item = usize>,
     {
-        trace!("Writing in place: {}", path.display());
+        trace!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk.writing_in_place",
+                Locale::EnUs,
+                vec![pumpkin_util::text::TextComponent::text(path.display().to_string()).0]
+            )
+        );
 
         let file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -394,9 +406,16 @@ impl<S: SingleChunkDataSerializer> AnvilChunkFile<S> {
             .map(|index| {
                 (
                     index,
-                    self.chunks_data[index]
-                        .as_ref()
-                        .expect("We are trying to write a chunk, but it does not exist!"),
+                    self.chunks_data[index].as_ref().unwrap_or_else(|| {
+                        panic!(
+                            "{}",
+                            get_translation_text(
+                                "pumpkin:world.chunk.write_nonexistent",
+                                Locale::EnUs,
+                                vec![],
+                            )
+                        )
+                    }),
                 )
             })
             .collect::<Vec<_>>();
@@ -415,14 +434,35 @@ impl<S: SingleChunkDataSerializer> AnvilChunkFile<S> {
         for (index, chunk) in chunks {
             debug_assert!(
                 current_sector <= chunk.file_sector_offset,
-                "Current sector is {} but we want to write to {}!",
-                current_sector,
-                chunk.file_sector_offset
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.current_sector_mismatch",
+                    Locale::EnUs,
+                    vec![
+                        pumpkin_util::text::TextComponent::text(current_sector.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(
+                            chunk.file_sector_offset.to_string(),
+                        )
+                        .0,
+                    ],
+                )
             );
 
             // Seek only if we need to
             if chunk.file_sector_offset != current_sector {
-                trace!("Seeking to sector {}", chunk.file_sector_offset);
+                trace!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.seeking_to_sector",
+                        Locale::EnUs,
+                        vec![
+                            pumpkin_util::text::TextComponent::text(
+                                chunk.file_sector_offset.to_string()
+                            )
+                            .0
+                        ]
+                    )
+                );
                 let _ = write
                     .seek(SeekFrom::Start(
                         chunk.file_sector_offset as u64 * SECTOR_BYTES as u64,
@@ -431,10 +471,19 @@ impl<S: SingleChunkDataSerializer> AnvilChunkFile<S> {
                 current_sector = chunk.file_sector_offset;
             }
             trace!(
-                "Writing chunk {} - {}:{}",
-                index,
-                current_sector,
-                chunk.serialized_data.sector_count()
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.writing_chunk_info",
+                    Locale::EnUs,
+                    vec![
+                        pumpkin_util::text::TextComponent::text(index.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(current_sector.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(
+                            chunk.serialized_data.sector_count().to_string(),
+                        )
+                        .0,
+                    ],
+                )
             );
 
             current_sector += chunk.serialized_data.sector_count();
@@ -448,7 +497,14 @@ impl<S: SingleChunkDataSerializer> AnvilChunkFile<S> {
     /// Write entire file, disregarding saved offsets
     async fn write_all(&self, path: &Path) -> Result<(), std::io::Error> {
         let temp_path = path.with_extension("tmp");
-        trace!("Writing tmp file to disk: {temp_path:?}");
+        trace!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk.writing_tmp_file",
+                Locale::EnUs,
+                vec![pumpkin_util::text::TextComponent::text(format!("{temp_path:?}")).0]
+            )
+        );
 
         let file = tokio::fs::File::create(&temp_path).await?;
         let mut write = BufWriter::new(file);
@@ -531,8 +587,12 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
         match &*write_action {
             WriteAction::Pass => {
                 debug!(
-                    "Skipping write for {}, as there were no dirty chunks",
-                    path.display()
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.skipping_write_no_dirty",
+                        Locale::EnUs,
+                        vec![pumpkin_util::text::TextComponent::text(path.display().to_string()).0]
+                    )
                 );
                 Ok(())
             }
@@ -582,11 +642,20 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
 
             if bytes_offset + bytes_count > raw_file_bytes.len() {
                 return Err(ChunkReadingError::ParsingError(
-                    ChunkParsingError::ErrorDeserializingChunk(format!(
-                        "Not enough bytes available for the chunk {} ({} vs {})",
-                        i,
-                        bytes_count,
-                        raw_file_bytes.len().saturating_sub(bytes_offset)
+                    ChunkParsingError::ErrorDeserializingChunk(get_translation_text(
+                        "pumpkin:world.chunk.not_enough_bytes_for_chunk",
+                        Locale::EnUs,
+                        vec![
+                            pumpkin_util::text::TextComponent::text(i.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(bytes_count.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(
+                                raw_file_bytes
+                                    .len()
+                                    .saturating_sub(bytes_offset)
+                                    .to_string(),
+                            )
+                            .0,
+                        ],
                     )),
                 ));
             }
@@ -631,7 +700,14 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
 
         match &*write_action {
             WriteAction::All => {
-                trace!("Write action is all: setting chunk in place");
+                trace!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.write_action_all_in_place",
+                        Locale::EnUs,
+                        vec![]
+                    )
+                );
                 // Doesn't matter, just add the data
                 self.chunks_data[index] = Some(AnvilChunkMetadata {
                     serialized_data: new_chunk_data,
@@ -643,10 +719,22 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
                 match self.chunks_data[index].as_ref() {
                     None => {
                         trace!(
-                            "Chunk {} does not exist, appending to EOF: {}:{}",
-                            index,
-                            self.end_sector,
-                            new_chunk_data.sector_count()
+                            "{}",
+                            get_translation_text(
+                                "pumpkin:world.chunk.chunk_not_exist_append_eof",
+                                Locale::EnUs,
+                                vec![
+                                    pumpkin_util::text::TextComponent::text(index.to_string()).0,
+                                    pumpkin_util::text::TextComponent::text(
+                                        self.end_sector.to_string(),
+                                    )
+                                    .0,
+                                    pumpkin_util::text::TextComponent::text(
+                                        new_chunk_data.sector_count().to_string(),
+                                    )
+                                    .0,
+                                ],
+                            )
                         );
                         // This chunk didn't exist before; append to EOF
                         let new_eof = self.end_sector + new_chunk_data.sector_count();
@@ -662,10 +750,23 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
                         if old_chunk.serialized_data.sector_count() == new_chunk_data.sector_count()
                         {
                             trace!(
-                                "Chunk {} exists, writing in place: {}:{}",
-                                index,
-                                old_chunk.file_sector_offset,
-                                new_chunk_data.sector_count()
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk.chunk_exists_write_in_place",
+                                    Locale::EnUs,
+                                    vec![
+                                        pumpkin_util::text::TextComponent::text(index.to_string())
+                                            .0,
+                                        pumpkin_util::text::TextComponent::text(
+                                            old_chunk.file_sector_offset.to_string(),
+                                        )
+                                        .0,
+                                        pumpkin_util::text::TextComponent::text(
+                                            new_chunk_data.sector_count().to_string(),
+                                        )
+                                        .0,
+                                    ],
+                                )
                             );
                             // We can just add it
                             self.chunks_data[index] = Some(AnvilChunkMetadata {
@@ -710,7 +811,12 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
 
                             if chunks_to_shift.last().is_none_or(|chunk| chunk.0 == index) {
                                 trace!(
-                                    "Unable to find a chunk to swap with; falling back to serialize all",
+                                    "{}",
+                                    get_translation_text(
+                                        "pumpkin:world.chunk.unable_find_chunk_to_swap",
+                                        Locale::EnUs,
+                                        vec![]
+                                    ),
                                 );
 
                                 // give up...
@@ -723,9 +829,16 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
                             } else {
                                 // swap last element of the chunks to shift (the first because we
                                 // reversed it) and shift the rest down
-                                let swap = chunks_to_shift
-                                    .pop()
-                                    .expect("We just checked that this exists");
+                                let swap = chunks_to_shift.pop().unwrap_or_else(|| {
+                                    panic!(
+                                        "{}",
+                                        get_translation_text(
+                                            "pumpkin:world.chunk.just_checked_exists",
+                                            Locale::EnUs,
+                                            vec![],
+                                        )
+                                    )
+                                });
 
                                 let indices_to_shift = chunks_to_shift
                                     .iter()
@@ -745,7 +858,16 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
 
                                 self.chunks_data[swapped_index]
                                     .as_mut()
-                                    .expect("We checked if this was none")
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "{}",
+                                            get_translation_text(
+                                                "pumpkin:world.chunk.checked_if_none",
+                                                Locale::EnUs,
+                                                vec![],
+                                            )
+                                        )
+                                    })
                                     .file_sector_offset = old_offset;
                                 write_action.maybe_update_chunk_index(swapped_index);
 
@@ -755,13 +877,44 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for AnvilChunkFile<S> {
                                 let offset = new_sectors as i64 - swapped_sectors as i64;
 
                                 trace!(
-                                    "Swapping {index} with {swapped_index}, shifting all chunks {swapped_index} and after by {offset}"
+                                    "{}",
+                                    get_translation_text(
+                                        "pumpkin:world.chunk.swapping_chunks",
+                                        Locale::EnUs,
+                                        vec![
+                                            pumpkin_util::text::TextComponent::text(
+                                                index.to_string()
+                                            )
+                                            .0,
+                                            pumpkin_util::text::TextComponent::text(
+                                                swapped_index.to_string()
+                                            )
+                                            .0,
+                                            pumpkin_util::text::TextComponent::text(
+                                                swapped_index.to_string()
+                                            )
+                                            .0,
+                                            pumpkin_util::text::TextComponent::text(
+                                                offset.to_string()
+                                            )
+                                            .0
+                                        ]
+                                    )
                                 );
 
                                 for shift_index in indices_to_shift {
                                     let chunk_data = self.chunks_data[shift_index]
                                         .as_mut()
-                                        .expect("We checked if this was none");
+                                        .unwrap_or_else(|| {
+                                            panic!(
+                                                "{}",
+                                                get_translation_text(
+                                                    "pumpkin:world.chunk.checked_if_none",
+                                                    Locale::EnUs,
+                                                    vec![],
+                                                ),
+                                            )
+                                        });
                                     let new_offset = chunk_data.file_sector_offset as i64 + offset;
                                     chunk_data.file_sector_offset = new_offset as u32;
                                     write_action.maybe_update_chunk_index(shift_index);
@@ -874,9 +1027,9 @@ mod tests {
             .into_iter()
             .map(|chunk| match chunk {
                 LoadedData::Loaded(chunk) => chunk,
-                LoadedData::Missing(_) => panic!("Missing chunk"),
+                LoadedData::Missing(_) => panic!("{}", get_translation_text("pumpkin:world.chunk.missing_chunk", Locale::EnUs, vec![])),
                 LoadedData::Error((position, error)) => {
-                    panic!("Error reading chunk at {position:?} | Error: {error:?}")
+                    panic!("{}", get_translation_text("pumpkin:world.chunk.error_reading_chunk", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(format!("{position:?}")).0, pumpkin_util::text::TextComponent::text(format!("{error:?}")).0]))
                 }
             })
             .collect::<Vec<_>>();
@@ -928,7 +1081,7 @@ mod tests {
             region_folder: temp_dir.path().join("region"),
             entities_folder: PathBuf::from("entities"),
         };
-        fs::create_dir(&level_folder.region_folder).expect("couldn't create region folder");
+        fs::create_dir(&level_folder.region_folder).unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.couldnt_create_region_folder", Locale::EnUs, vec![])));
         let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
         let block_registry = Arc::new(BlockRegistry);
 
@@ -953,7 +1106,7 @@ mod tests {
         chunk_saver
             .save_chunks(&level_folder, chunks.clone())
             .await
-            .expect("Failed to write chunk");
+            .unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.failed_write_chunk", Locale::EnUs, vec![])));
 
         // Create a new manager to ensure nothing is cached
         let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
@@ -973,7 +1126,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
 
@@ -986,7 +1139,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
                     break;
@@ -1011,7 +1164,7 @@ mod tests {
         chunk_saver
             .save_chunks(&level_folder, chunks.clone())
             .await
-            .expect("Failed to write chunk");
+            .unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.failed_write_chunk", Locale::EnUs, vec![])));
 
         // Create a new manager to ensure nothing is cached
         let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
@@ -1031,7 +1184,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
 
@@ -1044,7 +1197,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
 
@@ -1084,7 +1237,7 @@ mod tests {
         chunk_saver
             .save_chunks(&level_folder, chunks.clone())
             .await
-            .expect("Failed to write chunk");
+            .unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.failed_write_chunk", Locale::EnUs, vec![])));
 
         // Create a new manager to ensure nothing is cached
         let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
@@ -1104,7 +1257,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
 
@@ -1117,7 +1270,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
 
@@ -1145,7 +1298,7 @@ mod tests {
         chunk_saver
             .save_chunks(&level_folder, chunks.clone())
             .await
-            .expect("Failed to write chunk");
+            .unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.failed_write_chunk", Locale::EnUs, vec![])));
 
         // Create a new manager to ensure nothing is cached
         let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
@@ -1165,7 +1318,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
 
@@ -1178,7 +1331,7 @@ mod tests {
                         .enumerate()
                         .for_each(|(i, (o, r))| {
                             if o != r {
-                                panic!("Data miss-match expected {o}, got {r} ({i})");
+                                panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                             }
                         });
                     break;
@@ -1204,7 +1357,7 @@ mod tests {
             region_folder: temp_dir.path().join("region"),
             entities_folder: PathBuf::from("entities"),
         };
-        fs::create_dir(&level_folder.region_folder).expect("couldn't create region folder");
+        fs::create_dir(&level_folder.region_folder).unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.couldnt_create_region_folder", Locale::EnUs, vec![])));
         let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
         let block_registry = Arc::new(BlockRegistry);
 
@@ -1234,7 +1387,7 @@ mod tests {
             chunk_saver
                 .save_chunks(&level_folder, chunks.clone())
                 .await
-                .expect("Failed to write chunk");
+                .unwrap_or_else(|_| panic!("{}", get_translation_text("pumpkin:world.chunk.failed_write_chunk", Locale::EnUs, vec![])));
 
             // Create a new manager to ensure nothing is cached
             let chunk_saver = ChunkFileManager::<AnvilChunkFile<ChunkData>>::default();
@@ -1254,7 +1407,7 @@ mod tests {
                             .enumerate()
                             .for_each(|(i, (o, r))| {
                                 if o != r {
-                                    panic!("Data miss-match expected {o}, got {r} ({i})");
+                                    panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                                 }
                             });
 
@@ -1267,7 +1420,7 @@ mod tests {
                             .enumerate()
                             .for_each(|(i, (o, r))| {
                                 if o != r {
-                                    panic!("Data miss-match expected {o}, got {r} ({i})");
+                                    panic!("{}", get_translation_text("pumpkin:world.chunk.data_mismatch", Locale::EnUs, vec![pumpkin_util::text::TextComponent::text(o.to_string()).0, pumpkin_util::text::TextComponent::text(r.to_string()).0, pumpkin_util::text::TextComponent::text(i.to_string()).0]));
                                 }
                             });
                         break;
