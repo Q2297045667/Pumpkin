@@ -511,6 +511,13 @@ impl PumpkinServer {
                                 let be_clients = bedrock_clients.clone();
                                 let mut clients_guard = bedrock_clients.lock().await;
 
+                                if clients_guard
+                                    .get(&client_addr)
+                                    .is_some_and(|client| client.is_closed())
+                                {
+                                    clients_guard.remove(&client_addr);
+                                }
+
                                 let mut is_new = false;
                                 let client = clients_guard.entry(client_addr).or_insert_with(|| {
                                     is_new = true;
@@ -532,9 +539,10 @@ impl PumpkinServer {
                                     tasks.spawn(async move {
                                         let login_result = client_clone.handle_login_sequence(&server_clone).await;
 
-                                        match login_result {
+                                         match login_result {
                                             PacketHandlerResult::Stop => {
                                                 client_clone.close().await;
+                                                client_clone.await_tasks().await;
                                             }
                                             PacketHandlerResult::ReadyToPlay(profile, config) => {
                                                 pumpkin_i18n::set_player_locale(
@@ -551,6 +559,7 @@ impl PumpkinServer {
                                                     client_clone.progress_player_packets(&player, &server_clone).await;
 
                                                     client_clone.close().await;
+                                                    client_clone.await_tasks().await;
                                                     player.remove().await;
                                                     server_clone.remove_player(&player).await;
                                                     pumpkin_i18n::remove_player_locale(&player.gameprofile.id.to_string());
@@ -577,7 +586,8 @@ impl PumpkinServer {
                                     id,
                                     &mut Cursor::new(&udp_buf[1..len]),
                                     client_addr,
-                                    sock
+                                    sock,
+                                    bedrock_clients,
                                 ).await;
                             }
                         }
