@@ -36,13 +36,20 @@ impl CommandExecutor for NoArgsWorldSpawnExecutor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let Some(player) = sender.as_player() else {
+                let locale = sender.get_locale(server);
                 if sender.is_console() {
-                    return Err(CommandError::CommandFailed(TextComponent::text(
-                        "You must specify a Position!",
+                    return Err(CommandError::CommandFailed(TextComponent::custom(
+                        "pumpkin",
+                        "commands.setworldspawn.error.require_position",
+                        locale,
+                        vec![],
                     )));
                 }
-                return Err(CommandError::CommandFailed(TextComponent::text(
-                    "Failed to get Sender as Player!",
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.setworldspawn.error.sender_not_player",
+                    locale,
+                    vec![],
                 )));
             };
             let block_pos = player.position();
@@ -103,8 +110,12 @@ async fn setworldspawn(
     pitch: f32,
 ) -> Result<i32, CommandError> {
     let Some(world) = sender.world() else {
-        return Err(CommandError::CommandFailed(TextComponent::text(
-            "Failed to get world.",
+        let locale = sender.get_locale(server);
+        return Err(CommandError::CommandFailed(TextComponent::custom(
+            "pumpkin",
+            "commands.setworldspawn.error.world_not_found",
+            locale,
+            vec![],
         )));
     };
     if world.dimension != Dimension::OVERWORLD && world.dimension != Dimension::OVERWORLD_CAVES {

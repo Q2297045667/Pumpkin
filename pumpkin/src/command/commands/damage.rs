@@ -69,8 +69,11 @@ impl CommandExecutor for LocationExecutor {
 
             let Ok(Ok(amount)) = BoundedNumArgumentConsumer::<f32>::find_arg(args, ARG_AMOUNT)
             else {
-                return Err(CommandError::CommandFailed(TextComponent::text(
-                    "Invalid damage amount",
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.damage.invalid_amount",
+                    sender.get_locale(_server),
+                    vec![],
                 )));
             };
 
@@ -104,8 +107,11 @@ impl CommandExecutor for EntityExecutor {
 
             let Ok(Ok(amount)) = BoundedNumArgumentConsumer::<f32>::find_arg(args, ARG_AMOUNT)
             else {
-                return Err(CommandError::CommandFailed(TextComponent::text(
-                    "Invalid damage amount",
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.damage.invalid_amount",
+                    sender.get_locale(_server),
+                    vec![],
                 )));
             };
 

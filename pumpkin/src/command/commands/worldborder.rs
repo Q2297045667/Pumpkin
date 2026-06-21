@@ -54,7 +54,7 @@ impl CommandExecutor for GetExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let border = world.worldborder.lock().await;
 
             let diameter = border.new_diameter.round() as i32;
@@ -85,14 +85,18 @@ impl CommandExecutor for SetExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(distance) = distance_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             if (distance - border.new_diameter).abs() < f64::EPSILON {
@@ -133,20 +137,28 @@ impl CommandExecutor for SetTimeExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(distance) = distance_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
             let Ok(time) = time_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             match distance.total_cmp(&border.new_diameter) {
@@ -207,14 +219,18 @@ impl CommandExecutor for AddExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(distance_add) = distance_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             if distance_add == 0.0 {
@@ -255,20 +271,28 @@ impl CommandExecutor for AddTimeExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(distance_add) = distance_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
             let Ok(time) = time_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             let distance = distance_add + border.new_diameter;
@@ -329,7 +353,7 @@ impl CommandExecutor for CenterExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Vector2 { x, y } = Position2DArgumentConsumer.find_arg_default_name(args)?;
@@ -364,15 +388,19 @@ impl CommandExecutor for DamageAmountExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(damage_per_block) = damage_per_block_consumer().find_arg_default_name(args)?
             else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             if (damage_per_block - border.damage_per_block).abs() < f32::EPSILON {
@@ -411,14 +439,18 @@ impl CommandExecutor for DamageBufferExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(buffer) = damage_buffer_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             if (buffer - border.buffer).abs() < f32::EPSILON {
@@ -457,14 +489,18 @@ impl CommandExecutor for WarningDistanceExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(distance) = warning_distance_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             if distance == border.warning_blocks {
@@ -502,14 +538,18 @@ impl CommandExecutor for WarningTimeExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut border = world.worldborder.lock().await;
 
             let Ok(time) = time_consumer().find_arg_default_name(args)? else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "{} is out of bounds.",
-                    distance_consumer().default_name()
-                ))));
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.worldborder.out_of_bounds",
+                    sender.get_locale(server),
+                    vec![TextComponent::text(
+                        distance_consumer().default_name().to_string(),
+                    )],
+                )));
             };
 
             if time == border.warning_time {

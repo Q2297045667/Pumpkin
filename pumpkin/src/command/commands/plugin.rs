@@ -2,6 +2,7 @@ use std::path::Path;
 
 use pumpkin_util::{
     PermissionLvl,
+    text::translation::get_translation_text,
     text::{TextComponent, color::NamedColor, hover::HoverEvent},
 };
 
@@ -34,31 +35,46 @@ impl CommandExecutor for ListExecutor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let plugins = server.plugin_manager.active_plugins().await;
+            let locale = sender.get_locale(server);
 
-            let message_text = if plugins.is_empty() {
-                "There are no loaded plugins.".to_string()
+            let message = if plugins.is_empty() {
+                TextComponent::custom("pumpkin", "commands.plugin.no_plugins", locale, vec![])
             } else if plugins.len() == 1 {
-                "There is 1 plugin loaded:\n".to_string()
+                TextComponent::custom("pumpkin", "commands.plugin.one_plugin", locale, vec![])
             } else {
-                format!("There are {} plugins loaded:\n", plugins.len())
+                TextComponent::custom(
+                    "pumpkin",
+                    "commands.plugin.multiple_plugins",
+                    locale,
+                    vec![TextComponent::text(plugins.len().to_string())],
+                )
             };
-            let mut message = TextComponent::text(message_text);
+
+            let sep_str =
+                get_translation_text("pumpkin:commands.plugin.list.separator", locale, vec![]);
+            let mut message = message.clone();
 
             for (i, metadata) in plugins.iter().enumerate() {
-                let fmt = if i == plugins.len() - 1 {
-                    metadata.name.clone()
-                } else {
-                    format!("{}, ", metadata.name)
-                };
-                let hover_text = format!(
-                    "Version: {}\nAuthors: {}\nDescription: {}",
-                    metadata.version,
-                    metadata.authors.join(", "),
-                    metadata.description
+                let hover_text = TextComponent::custom(
+                    "pumpkin",
+                    "commands.plugin.hover_text",
+                    locale,
+                    vec![
+                        TextComponent::text(metadata.version.clone()),
+                        TextComponent::text(metadata.authors.join(", ")),
+                        TextComponent::text(metadata.description.clone()),
+                    ],
                 );
-                let component = TextComponent::text(fmt)
-                    .color_named(NamedColor::Green)
-                    .hover_event(HoverEvent::show_text(TextComponent::text(hover_text)));
+                let component = if i == plugins.len() - 1 {
+                    TextComponent::text(metadata.name.clone())
+                } else {
+                    TextComponent::text(format!(
+                        "{metadata_name}{sep_str}",
+                        metadata_name = metadata.name
+                    ))
+                }
+                .color_named(NamedColor::Green)
+                .hover_event(HoverEvent::show_text(hover_text));
 
                 message = message.add_child(component);
             }
@@ -83,33 +99,55 @@ impl CommandExecutor for LoadExecutor {
             let Some(Arg::Simple(plugin_name)) = args.get(PLUGIN_NAME) else {
                 return Err(InvalidConsumption(Some(PLUGIN_NAME.into())));
             };
+            let plugin_name_owned = plugin_name.to_owned();
+            let locale = sender.get_locale(server);
 
-            if server.plugin_manager.is_plugin_active(plugin_name).await {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "Plugin {plugin_name} is already loaded"
-                ))));
+            if server
+                .plugin_manager
+                .is_plugin_active(&plugin_name_owned)
+                .await
+            {
+                let tmpl =
+                    get_translation_text("pumpkin:commands.plugin.already_loaded", locale, vec![]);
+                return Err(CommandError::CommandFailed(TextComponent::text(
+                    tmpl.replacen("%s", &plugin_name_owned, 1),
+                )));
             }
 
             let result = server
                 .plugin_manager
-                .try_load_plugin(Path::new(plugin_name))
+                .try_load_plugin(Path::new(&plugin_name_owned))
                 .await;
 
             match result {
                 Ok(()) => {
+                    let name_str = format!("{plugin_name_owned}");
                     sender
                         .send_message(
-                            TextComponent::text(format!(
-                                "Plugin {plugin_name} loaded successfully"
-                            ))
+                            TextComponent::custom(
+                                "pumpkin",
+                                "commands.plugin.loaded_successfully",
+                                locale,
+                                vec![TextComponent::text(name_str)],
+                            )
                             .color_named(NamedColor::Green),
                         )
                         .await;
                     Ok(1)
                 }
-                Err(e) => Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "Failed to load plugin {plugin_name}: {e}"
-                )))),
+                Err(e) => {
+                    let tmpl = get_translation_text(
+                        "pumpkin:commands.plugin.failed_to_load",
+                        locale,
+                        vec![],
+                    );
+                    let msg = tmpl.replacen("%s", &plugin_name_owned, 1).replacen(
+                        "%s",
+                        &e.to_string(),
+                        1,
+                    );
+                    Err(CommandError::CommandFailed(TextComponent::text(msg)))
+                }
             }
         })
     }
@@ -128,31 +166,56 @@ impl CommandExecutor for UnloadExecutor {
             let Some(Arg::Simple(plugin_name)) = args.get(PLUGIN_NAME) else {
                 return Err(InvalidConsumption(Some(PLUGIN_NAME.into())));
             };
+            let plugin_name_owned = plugin_name.to_owned();
+            let locale = sender.get_locale(server);
 
-            if !server.plugin_manager.is_plugin_active(plugin_name).await {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "Plugin {plugin_name} is not loaded"
-                ))));
+            if !server
+                .plugin_manager
+                .is_plugin_active(&plugin_name_owned)
+                .await
+            {
+                let tmpl =
+                    get_translation_text("pumpkin:commands.plugin.not_loaded", locale, vec![]);
+                return Err(CommandError::CommandFailed(TextComponent::text(
+                    tmpl.replacen("%s", &plugin_name_owned, 1),
+                )));
             }
 
-            let result = server.plugin_manager.unload_plugin(plugin_name).await;
+            let result = server
+                .plugin_manager
+                .unload_plugin(&plugin_name_owned)
+                .await;
 
             match result {
                 Ok(()) => {
+                    let name_str = format!("{plugin_name_owned}");
                     sender
                         .send_message(
-                            TextComponent::text(format!(
-                                "Plugin {plugin_name} unloaded successfully",
-                            ))
+                            TextComponent::custom(
+                                "pumpkin",
+                                "commands.plugin.unloaded_successfully",
+                                locale,
+                                vec![TextComponent::text(name_str)],
+                            )
                             .color_named(NamedColor::Green),
                         )
                         .await;
 
                     Ok(1)
                 }
-                Err(e) => Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "Failed to unload plugin {plugin_name}: {e}"
-                )))),
+                Err(e) => {
+                    let tmpl = get_translation_text(
+                        "pumpkin:commands.plugin.failed_to_unload",
+                        locale,
+                        vec![],
+                    );
+                    let msg = tmpl.replacen("%s", &plugin_name_owned, 1).replacen(
+                        "%s",
+                        &e.to_string(),
+                        1,
+                    );
+                    Err(CommandError::CommandFailed(TextComponent::text(msg)))
+                }
             }
         })
     }
@@ -169,24 +232,40 @@ impl CommandExecutor for HotReloadExecutor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let enabled = self.0;
+            let locale = sender.get_locale(server);
 
             if enabled {
                 if let Err(e) = server.plugin_manager.start_watcher().await {
-                    return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                        "Failed to start plugin watcher: {e}"
-                    ))));
+                    let tmpl = get_translation_text(
+                        "pumpkin:commands.plugin.failed_to_start_watcher",
+                        locale,
+                        vec![],
+                    );
+                    return Err(CommandError::CommandFailed(TextComponent::text(
+                        tmpl.replacen("%s", &e.to_string(), 1),
+                    )));
                 }
 
                 sender
                     .send_message(
-                        TextComponent::text("Hot reloading has been enabled.")
-                            .color_named(NamedColor::Green),
+                        TextComponent::custom(
+                            "pumpkin",
+                            "commands.plugin.hotreload_enabled",
+                            locale,
+                            vec![],
+                        )
+                        .color_named(NamedColor::Green),
                     )
                     .await;
                 sender
                     .send_message(
-                        TextComponent::text("WARNING: Hot reloading can impact performance and should only be enabled during plugin development.")
-                            .color_named(NamedColor::Red),
+                        TextComponent::custom(
+                            "pumpkin",
+                            "commands.plugin.hotreload_warning",
+                            locale,
+                            vec![],
+                        )
+                        .color_named(NamedColor::Red),
                     )
                     .await;
             } else {
@@ -194,8 +273,13 @@ impl CommandExecutor for HotReloadExecutor {
 
                 sender
                     .send_message(
-                        TextComponent::text("Hot reloading has been disabled.")
-                            .color_named(NamedColor::Green),
+                        TextComponent::custom(
+                            "pumpkin",
+                            "commands.plugin.hotreload_disabled",
+                            locale,
+                            vec![],
+                        )
+                        .color_named(NamedColor::Green),
                     )
                     .await;
             }

@@ -45,7 +45,12 @@ impl CommandExecutor for Executor {
 
             for target in targets {
                 target.kick(DisconnectReason::Kicked, reason.clone()).await;
-                let mut msg = TextComponent::text("Kicked: ");
+                let mut msg = TextComponent::custom(
+                    "pumpkin",
+                    "commands.kick.kicked_message",
+                    sender.get_locale(_server),
+                    vec![],
+                );
                 msg = msg.add_child(target.get_display_name().await);
                 sender.send_message(msg.color_named(NamedColor::Blue)).await;
             }

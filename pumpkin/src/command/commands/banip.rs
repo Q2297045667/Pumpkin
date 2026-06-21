@@ -13,6 +13,7 @@ use crate::{
 use CommandError::InvalidConsumption;
 use pumpkin_data::translation;
 use pumpkin_util::text::TextComponent;
+use pumpkin_util::text::translation::get_translation_text;
 
 const NAMES: [&str; 1] = ["ban-ip"];
 const DESCRIPTION: &str = "bans a player-ip";
@@ -80,7 +81,13 @@ async fn ban_ip(
     target: &str,
     reason: Option<String>,
 ) -> Result<i32, CommandError> {
-    let reason = reason.unwrap_or_else(|| "Banned by an operator.".to_string());
+    let reason = reason.unwrap_or_else(|| {
+        get_translation_text(
+            "pumpkin:commands.banip.default_reason",
+            sender.get_locale(server),
+            vec![],
+        )
+    });
 
     let Some(target_ip) = parse_ip(target, server).await else {
         return Err(CommandError::CommandFailed(TextComponent::translate_cross(

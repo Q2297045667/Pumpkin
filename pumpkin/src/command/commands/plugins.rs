@@ -1,3 +1,4 @@
+use pumpkin_util::text::translation::get_translation_text;
 use pumpkin_util::text::{TextComponent, color::NamedColor, hover::HoverEvent};
 
 use crate::command::{
@@ -19,31 +20,46 @@ impl CommandExecutor for Executor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let plugins = server.plugin_manager.active_plugins().await;
+            let locale = sender.get_locale(server);
 
-            let message_text = if plugins.is_empty() {
-                "There are no loaded plugins.".to_string()
+            let message = if plugins.is_empty() {
+                TextComponent::custom("pumpkin", "commands.plugins.no_plugins", locale, vec![])
             } else if plugins.len() == 1 {
-                "There is 1 plugin loaded:\n".to_string()
+                TextComponent::custom("pumpkin", "commands.plugins.one_plugin", locale, vec![])
             } else {
-                format!("There are {} plugins loaded:\n", plugins.len())
+                TextComponent::custom(
+                    "pumpkin",
+                    "commands.plugins.multiple_plugins",
+                    locale,
+                    vec![TextComponent::text(plugins.len().to_string())],
+                )
             };
-            let mut message = TextComponent::text(message_text);
+
+            let sep_str =
+                get_translation_text("pumpkin:commands.plugins.list.separator", locale, vec![]);
+            let mut message = message.clone();
 
             for (i, metadata) in plugins.clone().into_iter().enumerate() {
-                let fmt = if i == plugins.len() - 1 {
-                    metadata.name.clone()
-                } else {
-                    format!("{}, ", metadata.name)
-                };
-                let hover_text = format!(
-                    "Version: {}\nAuthors: {}\nDescription: {}",
-                    metadata.version,
-                    metadata.authors.join(", "),
-                    metadata.description
+                let hover_text = TextComponent::custom(
+                    "pumpkin",
+                    "commands.plugins.hover_text",
+                    locale,
+                    vec![
+                        TextComponent::text(metadata.version.clone()),
+                        TextComponent::text(metadata.authors.join(", ")),
+                        TextComponent::text(metadata.description.clone()),
+                    ],
                 );
-                let component = TextComponent::text(fmt)
-                    .color_named(NamedColor::Green)
-                    .hover_event(HoverEvent::show_text(TextComponent::text(hover_text)));
+                let component = if i == plugins.len() - 1 {
+                    TextComponent::text(metadata.name.clone())
+                } else {
+                    TextComponent::text(format!(
+                        "{metadata_name}{sep_str}",
+                        metadata_name = metadata.name
+                    ))
+                }
+                .color_named(NamedColor::Green)
+                .hover_event(HoverEvent::show_text(hover_text));
                 message = message.add_child(component);
             }
 

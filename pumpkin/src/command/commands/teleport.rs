@@ -62,7 +62,7 @@ fn resolve_sender_world(
             .worlds
             .load()
             .first()
-            .expect("Server should have at least one world")
+            .expect("debug.expect.server_needs_one_world")
             .clone()
     })
 }

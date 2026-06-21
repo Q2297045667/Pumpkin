@@ -3,6 +3,7 @@ use pumpkin_data::data_component_impl::{MaxStackSizeImpl, get};
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_util::text::TextComponent;
 use pumpkin_util::text::hover::HoverEvent;
+use pumpkin_util::text::translation::get_translation_text;
 
 use crate::command::args::bounded_num::{BoundedNumArgumentConsumer, NotInBounds};
 use crate::command::args::players::PlayersArgumentConsumer;
@@ -38,6 +39,7 @@ impl CommandExecutor for Executor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let targets = PlayersArgumentConsumer.find_arg_default_name(args)?;
+            let locale = sender.get_locale(_server);
 
             let (item_name, item) = ItemArgumentConsumer::find_arg(args, ARG_ITEM)?;
 
@@ -45,27 +47,36 @@ impl CommandExecutor for Executor {
                 Err(_) => 1,
                 Ok(Ok(count)) => count,
                 Ok(Err(err)) => {
-                    let err_msg = match err {
-                        NotInBounds::LowerBound(_, min) => {
-                            format!("Can't give less than {min} of {item_name}")
-                        }
-                        NotInBounds::UpperBound(_, max) => {
-                            format!("Can't give more than {max} of {item_name}")
-                        }
+                    let (err_key, bound_val) = match err {
+                        NotInBounds::LowerBound(_, min) => ("commands.give.cant_give_less", min),
+                        NotInBounds::UpperBound(_, max) => ("commands.give.cant_give_more", max),
                     };
 
-                    return Err(CommandError::CommandFailed(TextComponent::text(err_msg)));
+                    return Err(CommandError::CommandFailed(TextComponent::custom(
+                        "pumpkin",
+                        err_key,
+                        locale,
+                        vec![
+                            TextComponent::text(bound_val.to_string()),
+                            TextComponent::text(item_name.to_string()),
+                        ],
+                    )));
                 }
             };
 
             for target in targets {
+                let missing_component_msg = get_translation_text(
+                    "pumpkin:debug.expect.item_missing_max_stack_size",
+                    locale,
+                    vec![],
+                );
                 let max_stack = i32::from(
                     item.components
                         .iter()
                         .find_map(|(id, component)| {
                             (id == &MaxStackSize).then(|| get::<MaxStackSizeImpl>(*component).size)
                         })
-                        .expect("Item should have MaxStackSize component"),
+                        .expect(&missing_component_msg),
                 );
                 let mut remaining = item_count;
 

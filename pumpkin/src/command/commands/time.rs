@@ -58,7 +58,7 @@ impl CommandExecutor for QueryExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let level_time = world.level_time.lock().await;
 
             let curr_time = match mode {
@@ -93,8 +93,11 @@ impl CommandExecutor for ChangeExecutor {
             } else if let Ok(ticks) = TimeArgumentConsumer::find_arg(args, ARG_TIME) {
                 ticks
             } else {
-                return Err(CommandError::CommandFailed(TextComponent::text(
-                    "Invalid time specified.",
+                return Err(CommandError::CommandFailed(TextComponent::custom(
+                    "pumpkin",
+                    "commands.time.invalid",
+                    sender.get_locale(server),
+                    vec![],
                 )));
             };
 
@@ -103,7 +106,7 @@ impl CommandExecutor for ChangeExecutor {
             let worlds = server.worlds.load();
             let world = worlds
                 .first()
-                .expect("There should always be at least one world");
+                .expect("debug.expect.there_should_always_be_one_world");
             let mut level_time = world.level_time.lock().await;
 
             match mode {

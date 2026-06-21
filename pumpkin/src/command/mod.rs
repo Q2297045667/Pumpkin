@@ -100,7 +100,7 @@ impl CommandSender {
                 let format = time::macros::format_description!("[hour]:[minute]:[second]");
                 let timestamp = now
                     .format(&format)
-                    .expect("Failed to format timestamp for command block output");
+                    .expect("debug.expect.failed_format_timestamp");
 
                 *last_output = format!("[{}] {}", timestamp, text.get_text());
             }
