@@ -107,11 +107,13 @@ impl CommandExecutor for LoadExecutor {
                 .is_plugin_active(&plugin_name_owned)
                 .await
             {
-                let tmpl =
-                    get_translation_text("pumpkin:commands.plugin.already_loaded", locale, vec![]);
-                return Err(CommandError::CommandFailed(TextComponent::text(
-                    tmpl.replacen("%s", &plugin_name_owned, 1),
-                )));
+                let msg = TextComponent::custom(
+                    "pumpkin",
+                    "commands.plugin.already_loaded",
+                    locale,
+                    vec![TextComponent::text(format!("{plugin_name_owned}"))],
+                );
+                return Err(CommandError::CommandFailed(msg));
             }
 
             let result = server
@@ -136,17 +138,16 @@ impl CommandExecutor for LoadExecutor {
                     Ok(1)
                 }
                 Err(e) => {
-                    let tmpl = get_translation_text(
-                        "pumpkin:commands.plugin.failed_to_load",
+                    let msg = TextComponent::custom(
+                        "pumpkin",
+                        "commands.plugin.failed_to_load",
                         locale,
-                        vec![],
+                        vec![
+                            TextComponent::text(format!("{plugin_name_owned}")),
+                            TextComponent::text(e.to_string()),
+                        ],
                     );
-                    let msg = tmpl.replacen("%s", &plugin_name_owned, 1).replacen(
-                        "%s",
-                        &e.to_string(),
-                        1,
-                    );
-                    Err(CommandError::CommandFailed(TextComponent::text(msg)))
+                    Err(CommandError::CommandFailed(msg))
                 }
             }
         })
@@ -174,11 +175,13 @@ impl CommandExecutor for UnloadExecutor {
                 .is_plugin_active(&plugin_name_owned)
                 .await
             {
-                let tmpl =
-                    get_translation_text("pumpkin:commands.plugin.not_loaded", locale, vec![]);
-                return Err(CommandError::CommandFailed(TextComponent::text(
-                    tmpl.replacen("%s", &plugin_name_owned, 1),
-                )));
+                let msg = TextComponent::custom(
+                    "pumpkin",
+                    "commands.plugin.not_loaded",
+                    locale,
+                    vec![TextComponent::text(format!("{plugin_name_owned}"))],
+                );
+                return Err(CommandError::CommandFailed(msg));
             }
 
             let result = server
@@ -204,17 +207,16 @@ impl CommandExecutor for UnloadExecutor {
                     Ok(1)
                 }
                 Err(e) => {
-                    let tmpl = get_translation_text(
-                        "pumpkin:commands.plugin.failed_to_unload",
+                    let msg = TextComponent::custom(
+                        "pumpkin",
+                        "commands.plugin.failed_to_unload",
                         locale,
-                        vec![],
+                        vec![
+                            TextComponent::text(format!("{plugin_name_owned}")),
+                            TextComponent::text(e.to_string()),
+                        ],
                     );
-                    let msg = tmpl.replacen("%s", &plugin_name_owned, 1).replacen(
-                        "%s",
-                        &e.to_string(),
-                        1,
-                    );
-                    Err(CommandError::CommandFailed(TextComponent::text(msg)))
+                    Err(CommandError::CommandFailed(msg))
                 }
             }
         })
@@ -236,13 +238,11 @@ impl CommandExecutor for HotReloadExecutor {
 
             if enabled {
                 if let Err(e) = server.plugin_manager.start_watcher().await {
-                    let tmpl = get_translation_text(
-                        "pumpkin:commands.plugin.failed_to_start_watcher",
+                    return Err(CommandError::CommandFailed(TextComponent::custom(
+                        "pumpkin",
+                        "commands.plugin.failed_to_start_watcher",
                         locale,
-                        vec![],
-                    );
-                    return Err(CommandError::CommandFailed(TextComponent::text(
-                        tmpl.replacen("%s", &e.to_string(), 1),
+                        vec![TextComponent::text(e.to_string())],
                     )));
                 }
 

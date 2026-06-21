@@ -102,10 +102,10 @@ impl ArgumentType for HelpArgumentType {
 impl HelpCommandExecutor {
     fn create_help_command_with_given_page_number(
         page_number: usize,
-        arrow: &'static str,
+        arrow: TextComponent,
     ) -> TextComponent {
         let cmd = format!("/help {page_number}");
-        TextComponent::text(arrow)
+        arrow
             .color(Color::Named(NamedColor::Aqua))
             .click_event(ClickEvent::RunCommand {
                 command: cmd.into(),
@@ -115,6 +115,7 @@ impl HelpCommandExecutor {
     fn page<'a>(context: &'a CommandContext, page_number: usize) -> CommandExecutorResult<'a> {
         Box::pin(async move {
             let server = context.server();
+            let locale = context.source.output.get_locale(server);
 
             let dispatcher = server.command_dispatcher.read().await;
             let commands = dispatcher
@@ -123,7 +124,10 @@ impl HelpCommandExecutor {
 
             let commands_available = commands.len();
             if commands_available == 0 {
-                return Err(NO_COMMANDS_ERROR_TYPE.create_without_context());
+                return Err(CommandSyntaxError::create_without_context(
+                    &NO_COMMANDS_ERROR_TYPE,
+                    TextComponent::custom("pumpkin", "commands.help.no_commands", locale, vec![]),
+                ));
             }
 
             let total_pages = commands_available.div_ceil(COMMANDS_PER_PAGE);
@@ -134,28 +138,52 @@ impl HelpCommandExecutor {
 
             let page_commands = commands.into_iter().skip(start).take(end - start);
 
+            let prev_page_component =
+                TextComponent::custom("pumpkin", "commands.help.previous_page", locale, vec![]);
+            let next_page_component =
+                TextComponent::custom("pumpkin", "commands.help.next_page", locale, vec![]);
+
             let arrow_left = if page > 1 {
-                Self::create_help_command_with_given_page_number(page - 1, "<<<")
+                Self::create_help_command_with_given_page_number(
+                    page - 1,
+                    prev_page_component.clone(),
+                )
             } else {
-                TextComponent::text("<<<").color(Color::Named(NamedColor::Gray))
+                prev_page_component.color(Color::Named(NamedColor::Gray))
             };
 
             let arrow_right = if page < total_pages {
-                Self::create_help_command_with_given_page_number(page + 1, ">>>")
+                Self::create_help_command_with_given_page_number(
+                    page + 1,
+                    next_page_component.clone(),
+                )
             } else {
-                TextComponent::text(">>>").color(Color::Named(NamedColor::Gray))
+                next_page_component.color(Color::Named(NamedColor::Gray))
             };
 
-            let header_text = format!(" Help - Page {page}/{total_pages} ");
+            let header_template =
+                pumpkin_i18n::get_translation("pumpkin:commands.help.page_header", locale);
+            let header_display = header_template
+                .replacen("%s", &page.to_string(), 1)
+                .replacen("%s", &total_pages.to_string(), 1);
+            let header_component = TextComponent::custom(
+                "pumpkin",
+                "commands.help.page_header",
+                locale,
+                vec![
+                    TextComponent::text(page.to_string()),
+                    TextComponent::text(total_pages.to_string()),
+                ],
+            );
 
-            let dashes = 52usize.saturating_sub(header_text.len() + 3) / 2;
+            let dashes = 52usize.saturating_sub(header_display.len() + 3) / 2;
 
             let mut message = TextComponent::empty()
                 .add_child(
                     TextComponent::text("-".repeat(dashes) + " ").color_named(NamedColor::Yellow),
                 )
                 .add_child(arrow_left.clone())
-                .add_child(TextComponent::text(header_text.clone()))
+                .add_child(header_component)
                 .add_child(arrow_right.clone())
                 .add_child(
                     TextComponent::text(" ".to_owned() + &"-".repeat(dashes) + "\n")
@@ -167,13 +195,27 @@ impl HelpCommandExecutor {
                 message = message.add_child(
                     TextComponent::text(command_declaration.clone())
                         .color_named(NamedColor::Gold)
-                        .add_child(TextComponent::text(" - ").color_named(NamedColor::Yellow))
+                        .add_child(
+                            TextComponent::custom(
+                                "pumpkin",
+                                "commands.help.separator",
+                                locale,
+                                vec![],
+                            )
+                            .color_named(NamedColor::Yellow),
+                        )
                         .add_child(
                             TextComponent::text(description.to_owned() + "\n")
                                 .color_named(NamedColor::White),
                         )
                         .add_child(
-                            TextComponent::text("    Usage: ").color_named(NamedColor::Yellow),
+                            TextComponent::custom(
+                                "pumpkin",
+                                "commands.help.usage_indent",
+                                locale,
+                                vec![],
+                            )
+                            .color_named(NamedColor::Yellow),
                         )
                         .add_child(
                             TextComponent::text(usage.into_string()).color_named(NamedColor::White),
@@ -185,13 +227,21 @@ impl HelpCommandExecutor {
                 );
             }
 
-            let footer_text = format!(" Page {page}/{total_pages} ");
+            let footer_component = TextComponent::custom(
+                "pumpkin",
+                "commands.help.page_footer",
+                locale,
+                vec![
+                    TextComponent::text(page.to_string()),
+                    TextComponent::text(total_pages.to_string()),
+                ],
+            );
             message = message
                 .add_child(
                     TextComponent::text("-".repeat(dashes) + " ").color_named(NamedColor::Yellow),
                 )
                 .add_child(arrow_left)
-                .add_child(TextComponent::text(footer_text.clone()))
+                .add_child(footer_component)
                 .add_child(arrow_right)
                 .add_child(
                     TextComponent::text(" ".to_owned() + &"-".repeat(dashes))
@@ -206,31 +256,44 @@ impl HelpCommandExecutor {
 
     fn command<'a>(context: &'a CommandContext, command: &'a str) -> CommandExecutorResult<'a> {
         Box::pin(async move {
-            let dispatcher = context.server().command_dispatcher.read().await;
+            let server = context.server();
+            let locale = context.source.output.get_locale(server);
+            let dispatcher = server.command_dispatcher.read().await;
 
             let Some((description, usage)) = dispatcher
                 .get_permitted_command_usage(&context.source, command)
                 .await
             else {
-                return Err(FAILED_ERROR_TYPE.create_without_context());
+                return Err(CommandSyntaxError::create_without_context(
+                    &FAILED_ERROR_TYPE,
+                    TextComponent::custom("pumpkin", "commands.help.failed", locale, vec![]),
+                ));
             };
 
             let command_with_slash = format!("/{command}");
-            let header_text = format!(" Help - /{command} ");
+            let header_template =
+                pumpkin_i18n::get_translation("pumpkin:commands.help.command_header", locale);
+            let header_display = header_template.replacen("%s", command, 1);
+            let header_component = TextComponent::custom(
+                "pumpkin",
+                "commands.help.command_header",
+                locale,
+                vec![TextComponent::text(command.to_string())],
+            );
 
-            let dashes = 52usize.saturating_sub(header_text.len()) / 2;
+            let dashes = 52usize.saturating_sub(header_display.len()) / 2;
 
             let mut message = TextComponent::empty()
                 .add_child(
                     TextComponent::text("-".repeat(dashes) + " ").color_named(NamedColor::Yellow),
                 )
-                .add_child(TextComponent::text(header_text.clone()))
+                .add_child(header_component)
                 .add_child(
                     TextComponent::text(" ".to_owned() + &"-".repeat(dashes) + "\n")
                         .color_named(NamedColor::Yellow),
                 )
                 .add_child(
-                    TextComponent::text("Command: ")
+                    TextComponent::custom("pumpkin", "commands.help.command_label", locale, vec![])
                         .color_named(NamedColor::Aqua)
                         .add_child(
                             TextComponent::text(command_with_slash.clone())
@@ -243,15 +306,20 @@ impl HelpCommandExecutor {
                         }),
                 )
                 .add_child(
-                    TextComponent::text("Description: ")
-                        .color_named(NamedColor::Aqua)
-                        .add_child(
-                            TextComponent::text(format!("{description}\n"))
-                                .color_named(NamedColor::White),
-                        ),
+                    TextComponent::custom(
+                        "pumpkin",
+                        "commands.help.description_label",
+                        locale,
+                        vec![],
+                    )
+                    .color_named(NamedColor::Aqua)
+                    .add_child(
+                        TextComponent::text(format!("{description}\n"))
+                            .color_named(NamedColor::White),
+                    ),
                 )
                 .add_child(
-                    TextComponent::text("Usage: ")
+                    TextComponent::custom("pumpkin", "commands.help.usage_label", locale, vec![])
                         .color_named(NamedColor::Aqua)
                         .add_child(
                             TextComponent::text(format!("{usage}\n"))
@@ -274,23 +342,41 @@ impl HelpCommandExecutor {
     fn plugin<'a>(context: &'a CommandContext, plugin_name: &'a str) -> CommandExecutorResult<'a> {
         Box::pin(async move {
             let server = context.server();
+            let locale = context.source.output.get_locale(server);
             let dispatcher = server.command_dispatcher.read().await;
             let commands = dispatcher
                 .get_all_permitted_commands_usage_by_plugin(&context.source, plugin_name)
                 .await;
 
             if commands.is_empty() {
-                return Err(PLUGIN_NOT_FOUND_ERROR_TYPE.create_without_context());
+                return Err(CommandSyntaxError::create_without_context(
+                    &PLUGIN_NOT_FOUND_ERROR_TYPE,
+                    TextComponent::custom(
+                        "pumpkin",
+                        "commands.help.plugin_not_found",
+                        locale,
+                        vec![],
+                    ),
+                ));
             }
 
-            let header_text = format!(" Help - Plugin: {plugin_name} ");
-            let dashes = 52usize.saturating_sub(header_text.len() + 3) / 2;
+            let header_template =
+                pumpkin_i18n::get_translation("pumpkin:commands.help.plugin_header", locale);
+            let header_display = header_template.replacen("%s", plugin_name, 1);
+            let header_component = TextComponent::custom(
+                "pumpkin",
+                "commands.help.plugin_header",
+                locale,
+                vec![TextComponent::text(plugin_name.to_string())],
+            );
+
+            let dashes = 52usize.saturating_sub(header_display.len() + 3) / 2;
 
             let mut message = TextComponent::empty()
                 .add_child(
                     TextComponent::text("-".repeat(dashes) + " ").color_named(NamedColor::Yellow),
                 )
-                .add_child(TextComponent::text(header_text.clone()))
+                .add_child(header_component)
                 .add_child(
                     TextComponent::text(" ".to_owned() + &"-".repeat(dashes) + "\n")
                         .color_named(NamedColor::Yellow),
@@ -302,13 +388,27 @@ impl HelpCommandExecutor {
                 message = message.add_child(
                     TextComponent::text(command_declaration.clone())
                         .color_named(NamedColor::Gold)
-                        .add_child(TextComponent::text(" - ").color_named(NamedColor::Yellow))
+                        .add_child(
+                            TextComponent::custom(
+                                "pumpkin",
+                                "commands.help.separator",
+                                locale,
+                                vec![],
+                            )
+                            .color_named(NamedColor::Yellow),
+                        )
                         .add_child(
                             TextComponent::text(description.to_owned() + "\n")
                                 .color_named(NamedColor::White),
                         )
                         .add_child(
-                            TextComponent::text("    Usage: ").color_named(NamedColor::Yellow),
+                            TextComponent::custom(
+                                "pumpkin",
+                                "commands.help.usage_indent",
+                                locale,
+                                vec![],
+                            )
+                            .color_named(NamedColor::Yellow),
                         )
                         .add_child(
                             TextComponent::text(usage.into_string()).color_named(NamedColor::White),
@@ -333,9 +433,12 @@ impl HelpCommandExecutor {
         input: &'a str,
     ) -> CommandExecutorResult<'a> {
         Box::pin(async move {
+            let server = context.server();
+            let locale = context.source.output.get_locale(server);
+
             // Prioritize commands ig
             {
-                let dispatcher = context.server().command_dispatcher.read().await;
+                let dispatcher = server.command_dispatcher.read().await;
                 if dispatcher
                     .get_permitted_command_usage(&context.source, input)
                     .await
@@ -346,7 +449,7 @@ impl HelpCommandExecutor {
             }
 
             {
-                let dispatcher = context.server().command_dispatcher.read().await;
+                let dispatcher = server.command_dispatcher.read().await;
                 let plugin_commands = dispatcher
                     .get_all_permitted_commands_usage_by_plugin(&context.source, input)
                     .await;
@@ -356,7 +459,10 @@ impl HelpCommandExecutor {
                 }
             }
 
-            Err(FAILED_ERROR_TYPE.create_without_context())
+            Err(CommandSyntaxError::create_without_context(
+                &FAILED_ERROR_TYPE,
+                TextComponent::custom("pumpkin", "commands.help.failed", locale, vec![]),
+            ))
         })
     }
 }

@@ -87,18 +87,26 @@ pub enum NotInBounds {
 impl From<NotInBounds> for CommandError {
     fn from(value: NotInBounds) -> Self {
         match value {
-            NotInBounds::LowerBound(val, min) => Self::CommandFailed(TextComponent::text(format!(
-                "{} must not be less than {}, found {}",
-                val.qualifier(),
-                min,
-                val
-            ))),
-            NotInBounds::UpperBound(val, max) => Self::CommandFailed(TextComponent::text(format!(
-                "{} must not be more than {}, found {}",
-                val.qualifier(),
-                max,
-                val
-            ))),
+            NotInBounds::LowerBound(val, min) => Self::CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.args.bounded_num.must_not_be_less",
+                pumpkin_i18n::Locale::EnUs,
+                vec![
+                    TextComponent::text(val.qualifier()),
+                    TextComponent::text(min.to_string()),
+                    TextComponent::text(val.to_string()),
+                ],
+            )),
+            NotInBounds::UpperBound(val, max) => Self::CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.args.bounded_num.must_not_be_more",
+                pumpkin_i18n::Locale::EnUs,
+                vec![
+                    TextComponent::text(val.qualifier()),
+                    TextComponent::text(max.to_string()),
+                    TextComponent::text(val.to_string()),
+                ],
+            )),
         }
     }
 }

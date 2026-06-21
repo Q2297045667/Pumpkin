@@ -19,6 +19,8 @@ use tracing::Subscriber;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 
+use pumpkin_i18n::Locale;
+
 use crate::command::CommandSender;
 use crate::command::string_reader::StringReader;
 use crate::command::tree::NodeType;
@@ -473,7 +475,7 @@ impl Completer for PumpkinCommandCompleter {
                 return Ok((usize::from(has_slash), candidates));
             }
 
-            let Some(tree) = dispatcher.get_tree(parts[0]).ok() else {
+            let Some(tree) = dispatcher.get_tree(parts[0], Locale::EnUs).ok() else {
                 return Ok((0, Vec::new()));
             };
 

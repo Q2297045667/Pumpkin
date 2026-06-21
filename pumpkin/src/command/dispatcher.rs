@@ -1,4 +1,5 @@
 use pumpkin_data::translation;
+use pumpkin_i18n::Locale;
 use pumpkin_protocol::java::client::play::CommandSuggestion;
 use pumpkin_util::text::TextComponent;
 use pumpkin_util::text::click::ClickEvent;
@@ -37,24 +38,37 @@ pub enum CommandError {
 
 impl CommandError {
     #[must_use]
-    pub fn into_messages(self, cmd: &str) -> Vec<TextComponent> {
+    pub fn into_messages(self, cmd: &str, locale: Locale) -> Vec<TextComponent> {
         match self {
             InvalidConsumption(s) => {
                 error!(
                     "Error while parsing command \"{cmd}\": {s:?} was consumed, but couldn't be parsed"
                 );
-                vec![TextComponent::text("Internal error (See logs for details)")]
+                vec![TextComponent::custom(
+                    "pumpkin",
+                    "commands.dispatcher.internal_error",
+                    locale,
+                    vec![],
+                )]
             }
             InvalidRequirement => {
                 error!(
                     "Error while parsing command \"{cmd}\": a requirement that was expected was not met."
                 );
-                vec![TextComponent::text("Internal error (See logs for details)")]
+                vec![TextComponent::custom(
+                    "pumpkin",
+                    "commands.dispatcher.internal_error",
+                    locale,
+                    vec![],
+                )]
             }
             PermissionDenied => {
                 warn!("Permission denied for command \"{cmd}\"");
-                vec![TextComponent::text(
-                    "I'm sorry, but you do not have permission to perform this command. Please contact the server administrator if you believe this is an error.",
+                vec![TextComponent::custom(
+                    "pumpkin",
+                    "commands.dispatcher.permission_denied",
+                    locale,
+                    vec![],
                 )]
             }
             CommandFailed(s) => vec![s],
@@ -246,7 +260,8 @@ impl CommandDispatcher {
         sender.set_success_count(u32::from(result.is_ok()));
 
         if let Err(e) = result {
-            for text in e.into_messages(cmd) {
+            let locale = sender.get_locale(server);
+            for text in e.into_messages(cmd, locale) {
                 sender
                     .send_message(
                         TextComponent::text("")
@@ -283,7 +298,8 @@ impl CommandDispatcher {
             })
             .collect();
 
-        let Ok(tree) = self.get_tree(key) else {
+        let locale = src.get_locale(server);
+        let Ok(tree) = self.get_tree(key, locale) else {
             return Vec::new();
         };
 
@@ -333,9 +349,17 @@ impl CommandDispatcher {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub(crate) fn split_parts(cmd: &str) -> Result<(&str, RawArgs<'_>), CommandError> {
+    pub(crate) fn split_parts(
+        cmd: &str,
+        locale: Locale,
+    ) -> Result<(&str, RawArgs<'_>), CommandError> {
         if cmd.is_empty() {
-            return Err(CommandFailed(TextComponent::text("Empty Command")));
+            return Err(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.empty_command",
+                locale,
+                vec![],
+            )));
         }
         let mut args = Vec::new();
         let mut current_arg_start = 0usize;
@@ -359,7 +383,12 @@ impl CommandDispatcher {
                 }
                 '}' if !in_single_quotes && !in_double_quotes => {
                     if in_braces == 0 {
-                        return Err(CommandFailed(TextComponent::text("Unmatched braces")));
+                        return Err(CommandFailed(TextComponent::custom(
+                            "pumpkin",
+                            "commands.dispatcher.unmatched_braces",
+                            locale,
+                            vec![],
+                        )));
                     }
                     in_braces -= 1;
                 }
@@ -368,7 +397,12 @@ impl CommandDispatcher {
                 }
                 ']' if !in_single_quotes && !in_double_quotes => {
                     if in_brackets == 0 {
-                        return Err(CommandFailed(TextComponent::text("Unmatched brackets")));
+                        return Err(CommandFailed(TextComponent::custom(
+                            "pumpkin",
+                            "commands.dispatcher.unmatched_brackets",
+                            locale,
+                            vec![],
+                        )));
                     }
                     in_brackets -= 1;
                 }
@@ -405,22 +439,36 @@ impl CommandDispatcher {
             });
         }
         if in_single_quotes || in_double_quotes {
-            return Err(CommandFailed(TextComponent::text(
-                "Unmatched quotes at the end",
+            return Err(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.unmatched_quotes",
+                locale,
+                vec![],
             )));
         }
         if in_braces != 0 {
-            return Err(CommandFailed(TextComponent::text(
-                "Unmatched braces at the end",
+            return Err(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.unmatched_braces_end",
+                locale,
+                vec![],
             )));
         }
         if in_brackets != 0 {
-            return Err(CommandFailed(TextComponent::text(
-                "Unmatched brackets at the end",
+            return Err(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.unmatched_brackets_end",
+                locale,
+                vec![],
             )));
         }
         if args.is_empty() {
-            return Err(CommandFailed(TextComponent::text("Empty Command")));
+            return Err(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.empty_command",
+                locale,
+                vec![],
+            )));
         }
         let key = args.remove(0).value;
         Ok((key, args.into_iter().rev().collect()))
@@ -433,15 +481,19 @@ impl CommandDispatcher {
         server: &'a Server,
         cmd: &'a str,
     ) -> Result<(), CommandError> {
-        let (key, raw_args) = Self::split_parts(cmd)?;
+        let locale = src.get_locale(server);
+        let (key, raw_args) = Self::split_parts(cmd, locale)?;
 
         if !self.commands.contains_key(key) {
             return Err(SyntaxError(unknown_command_syntax_error(cmd, 0)));
         }
 
         let Some(permission) = self.permissions.get(key) else {
-            return Err(CommandFailed(TextComponent::text(
-                "Permission for Command not found".to_string(),
+            return Err(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.permission_not_found",
+                locale,
+                vec![],
             )));
         };
 
@@ -449,7 +501,7 @@ impl CommandDispatcher {
             return Err(PermissionDenied);
         }
 
-        let tree = self.get_tree(key)?;
+        let tree = self.get_tree(key, locale)?;
 
         let mut path_failures = Vec::new();
 
@@ -467,11 +519,20 @@ impl CommandDispatcher {
         Err(SyntaxError(select_parse_error(cmd, &path_failures, true)))
     }
 
-    pub fn get_tree<'a>(&'a self, key: &str) -> Result<&'a CommandTree, CommandError> {
+    pub fn get_tree<'a>(
+        &'a self,
+        key: &str,
+        locale: Locale,
+    ) -> Result<&'a CommandTree, CommandError> {
         let command = self
             .commands
             .get(key)
-            .ok_or(CommandFailed(TextComponent::text("Command not found")))?;
+            .ok_or(CommandFailed(TextComponent::custom(
+                "pumpkin",
+                "commands.dispatcher.command_not_found",
+                locale,
+                vec![],
+            )))?;
 
         match command {
             Command::Tree(tree) => Ok(tree),
@@ -480,8 +541,11 @@ impl CommandDispatcher {
                     error!(
                         "Error while parsing command alias \"{key}\": pointing to \"{target}\" which is not a valid tree"
                     );
-                    return Err(CommandFailed(TextComponent::text(
-                        "Internal Error (See logs for details)",
+                    return Err(CommandFailed(TextComponent::custom(
+                        "pumpkin",
+                        "commands.dispatcher.internal_error",
+                        locale,
+                        vec![],
                     )));
                 };
                 Ok(tree)

@@ -1,4 +1,6 @@
 {
+  "commands.args.bounded_num.must_not_be_less": "%s must not be less than %s, found %s",
+  "commands.args.bounded_num.must_not_be_more": "%s must not be more than %s, found %s",
   "commands.ban.default_reason": "Banned by an operator.",
   "commands.ban.description": "封鎖玩家",
   "commands.banip.default_reason": "Banned by an operator.",

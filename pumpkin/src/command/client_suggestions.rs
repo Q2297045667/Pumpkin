@@ -31,8 +31,9 @@ pub async fn send_c_commands_packet(
     let mut first_level = Vec::new();
 
     let fallback_dispatcher = &dispatcher.fallback_dispatcher;
+    let locale = cmd_src.get_locale(server);
     for key in fallback_dispatcher.commands.keys() {
-        let Ok(tree) = fallback_dispatcher.get_tree(key) else {
+        let Ok(tree) = fallback_dispatcher.get_tree(key, locale) else {
             continue;
         };
 
@@ -271,8 +272,9 @@ pub async fn send_bedrock_commands_packet(
     let mut commands: Vec<Command> = Vec::new();
 
     let fallback_dispatcher = &dispatcher.fallback_dispatcher;
+    let locale = cmd_src.get_locale(server);
     for key in fallback_dispatcher.commands.keys() {
-        let Ok(tree) = fallback_dispatcher.get_tree(key) else {
+        let Ok(tree) = fallback_dispatcher.get_tree(key, locale) else {
             continue;
         };
 

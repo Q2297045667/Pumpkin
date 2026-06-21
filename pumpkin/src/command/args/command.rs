@@ -29,7 +29,7 @@ impl GetClientSideArgParser for CommandTreeArgumentConsumer {
 impl ArgumentConsumer for CommandTreeArgumentConsumer {
     fn consume<'a, 'b>(
         &'a self,
-        _sender: &'a CommandSender,
+        sender: &'a CommandSender,
         server: &'a Server,
         args: &'b mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
@@ -41,10 +41,11 @@ impl ArgumentConsumer for CommandTreeArgumentConsumer {
 
         Box::pin(async move {
             let dispatcher = server.command_dispatcher.read().await;
+            let locale = sender.get_locale(server);
 
             dispatcher
                 .fallback_dispatcher
-                .get_tree(s)
+                .get_tree(s, locale)
                 .ok()
                 .map(|tree| Arg::CommandTree(tree.clone()))
         })

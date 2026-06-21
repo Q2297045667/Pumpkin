@@ -1,3 +1,5 @@
+use pumpkin_i18n::Locale;
+
 use crate::command::argument_builder::{ArgumentBuilder, CommandArgumentBuilder};
 use crate::command::context::command_context::{
     CommandContext, CommandContextBuilder, ContextChain,
@@ -741,7 +743,10 @@ impl CommandDispatcher {
         {
             Some(output)
         } else {
-            let tree = self.fallback_dispatcher.get_tree(command).ok()?;
+            let tree = self
+                .fallback_dispatcher
+                .get_tree(command, Locale::EnUs)
+                .ok()?;
             if let Some(permission) = self.fallback_dispatcher.permissions.get(&tree.names[0])
                 && source.has_permission(permission).await
             {
