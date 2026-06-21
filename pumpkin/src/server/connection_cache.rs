@@ -3,6 +3,7 @@ use base64::{Engine as _, engine::general_purpose};
 use core::error;
 use pumpkin_config::BasicConfiguration;
 use pumpkin_data::packet::{CURRENT_MC_VERSION, LOWEST_SUPPORTED_MC_VERSION};
+use pumpkin_i18n::get_translation;
 use pumpkin_protocol::{
     Players, Sample, StatusResponse, Version,
     codec::var_int::VarInt,
@@ -11,6 +12,8 @@ use pumpkin_protocol::{
 use std::{fs, path::Path};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+use crate::server_locale;
 
 const DEFAULT_ICON: &[u8] = include_bytes!("../../../assets/default_icon.png");
 const MAX_SAMPLE_PLAYERS: usize = 12;
@@ -149,7 +152,10 @@ impl CachedStatus {
                         .extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
                     {
-                        warn!("Favicon is not a PNG-image, using default.");
+                        warn!(
+                            "{}",
+                            get_translation("pumpkin:server.log.favicon_not_png", server_locale(),),
+                        );
                         return Some(load_icon_from_bytes(DEFAULT_ICON));
                     }
                     debug!("Attempting to load server favicon from '{icon_path}'");
@@ -167,7 +173,13 @@ impl CachedStatus {
                                     }
                                 },
                             );
-                            warn!("Failed to load favicon from '{icon_path}': {error_message}");
+                            let msg = get_translation(
+                                "pumpkin:server.log.failed_load_favicon",
+                                server_locale(),
+                            )
+                            .replace("%s", icon_path)
+                            .replacen("%s", &error_message, 1);
+                            warn!("{}", msg);
 
                             Some(load_icon_from_bytes(DEFAULT_ICON))
                         }
@@ -175,7 +187,10 @@ impl CachedStatus {
                 },
             )
         } else {
-            info!("Favicon usage is disabled.");
+            info!(
+                "{}",
+                get_translation("pumpkin:server.log.favicon_disabled", server_locale(),),
+            );
             None
         };
 

@@ -14,8 +14,8 @@ use crate::server::tick_rate_manager::ServerTickRateManager;
 use crate::world::WorldPortal;
 use crate::world::custom_bossbar::CustomBossbars;
 use crate::{
-    command::node::dispatcher::CommandDispatcher, entity::player::Player, world::World,
-    world::map::MapManager,
+    command::node::dispatcher::CommandDispatcher, entity::player::Player, server_locale,
+    world::World, world::map::MapManager,
 };
 use arc_swap::ArcSwap;
 use connection_cache::{CachedBranding, CachedStatus};
@@ -23,8 +23,8 @@ use key_store::KeyStore;
 use pumpkin_config::{AdvancedConfiguration, BasicConfiguration};
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::entity::EntityType;
+use pumpkin_i18n::get_translation;
 use pumpkin_util::permission::{PermissionManager, PermissionRegistry};
-use pumpkin_util::text::color::NamedColor;
 use pumpkin_world::dimension::into_level;
 use pumpkin_world::world::WorldPortalExt;
 use tracing::{debug, error, info, warn};
@@ -165,11 +165,10 @@ impl Server {
         let command_locale = resolve_server_locale(&advanced_config.locale.server_command);
         let logging_locale = resolve_server_locale(&advanced_config.locale.server_logging);
 
-        info!(
-            "Server locale: command={}, logging={}",
-            locale_to_log_string(command_locale),
-            locale_to_log_string(logging_locale)
-        );
+        let locale_info = get_translation("pumpkin:server.log.locale_info", server_locale())
+            .replace("%s", &locale_to_log_string(command_locale))
+            .replacen("%s", &locale_to_log_string(logging_locale), 1);
+        info!("{}", locale_info);
 
         let permission_registry = Arc::new(RwLock::new(PermissionRegistry::new()));
         // First register the default commands. After that, plugins can put in their own.
@@ -186,7 +185,13 @@ impl Server {
                 WorldInfoError::InfoNotFound => (),
                 WorldInfoError::UnsupportedDataVersion(_version)
                 | WorldInfoError::UnsupportedLevelVersion(_version) => {
-                    error!("Failed to load world info!");
+                    error!(
+                        "{}",
+                        get_translation(
+                            "pumpkin:server.log.failed_load_world_info",
+                            server_locale(),
+                        ),
+                    );
                     error!("{error}");
                     panic!("Unsupported world version! See the logs for more info.");
                 }
@@ -202,10 +207,15 @@ impl Server {
             }
         }
         let level_info = level_info.unwrap_or_else(|err| {
-            warn!("Failed to get level_info, using default instead: {err}");
+            let locale = server_locale();
+            let msg = get_translation("pumpkin:server.log.failed_get_level_info", locale)
+                .replace("%s", &err.to_string());
+            warn!("{}", msg);
             let default_data = LevelData::default(basic_config.seed);
             if let Err(err) = AnvilLevelInfo.write_world_info(&default_data, &world_path) {
-                error!("Failed to save level.dat: {err}");
+                let save_msg = get_translation("pumpkin:server.log.failed_save_level_dat", locale)
+                    .replace("%s", &err.to_string());
+                error!("{}", save_msg);
             }
             default_data
         });
@@ -233,7 +243,12 @@ impl Server {
             async move {
                 if allow_chat {
                     fetch_mojang_public_keys(&auth_config).unwrap_or_else(|e| {
-                        error!("Failed to fetch Mojang keys: {e}");
+                        let msg = get_translation(
+                            "pumpkin:server.log.failed_fetch_mojang_keys",
+                            server_locale(),
+                        )
+                        .replace("%s", &e.to_string());
+                        error!("{}", msg);
                         Vec::new()
                     })
                 } else {
@@ -327,12 +342,17 @@ impl Server {
             let pool = gen_pool.clone();
 
             tokio::task::spawn_blocking(move || {
-                info!(
-                    "Loading {}",
-                    TextComponent::text(dim.minecraft_name.to_string())
-                        .color_named(NamedColor::DarkGreen)
-                        .to_pretty_console()
+                let loading_msg = pumpkin_i18n::get_translation(
+                    "pumpkin:server.log.loading_dimension",
+                    crate::server_locale(),
+                )
+                .replace(
+                    "%s",
+                    &pumpkin_util::text::TextComponent::text(dim.minecraft_name.to_string())
+                        .color_named(pumpkin_util::text::color::NamedColor::DarkGreen)
+                        .to_pretty_console(),
                 );
+                info!("{}", loading_msg);
                 let level = into_level(dim.clone(), &config, path, seed, Some(pool));
                 let world = Arc::new(World::load(level.clone(), l_info, dim, registry, weak));
                 let portal: Arc<dyn WorldPortalExt> = Arc::new(WorldPortal(world.clone()));
@@ -341,7 +361,10 @@ impl Server {
             })
         };
 
-        info!("Starting parallel world load...");
+        info!(
+            "{}",
+            get_translation("pumpkin:server.log.starting_world_load", server_locale(),),
+        );
         let mut world_futures = Vec::new();
         for dim in &server.dimensions {
             world_futures.push(world_loader(dim.clone()));
@@ -360,7 +383,10 @@ impl Server {
             server.mojang_public_keys.store(Arc::new(k));
         }
 
-        info!("All worlds loaded successfully.");
+        info!(
+            "{}",
+            get_translation("pumpkin:server.log.worlds_loaded", server_locale(),),
+        );
 
         if server.basic_config.online_mode {
             let server_clone = server.clone();
@@ -370,7 +396,12 @@ impl Server {
                     .get_or_init(|| async {
                         tokio::task::block_in_place(|| {
                             pumpkin_util::jwt::fetch_oidc_jwks().unwrap_or_else(|e| {
-                                error!("Failed to fetch Bedrock OIDC keys: {e}");
+                                let msg = pumpkin_i18n::get_translation(
+                                    "pumpkin:server.log.failed_fetch_bedrock_keys",
+                                    crate::server_locale(),
+                                )
+                                .replace("%s", &e.to_string());
+                                error!("{}", msg);
                                 (String::new(), pumpkin_util::jwt::Jwks { keys: Vec::new() })
                             })
                         })

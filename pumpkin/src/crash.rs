@@ -7,6 +7,7 @@ use std::{
     thread::{self, Thread},
 };
 
+use pumpkin_i18n::{Locale, get_translation};
 use pumpkin_util::text::{
     TextComponent,
     color::{Color, NamedColor},
@@ -16,6 +17,8 @@ use rustc_hash::FxHashMap;
 use sysinfo::{Cpu, System};
 use time::OffsetDateTime;
 use tracing::error;
+
+use crate::SERVER_LOGGING_LOCALE;
 
 pub const BYTES_PER_MEBIBYTE: u64 = 1024 * 1024;
 
@@ -105,10 +108,11 @@ impl CrashReport {
     #[allow(clippy::print_stderr)]
     pub fn print_to_console(&self) {
         const RED: Color = Color::Named(NamedColor::Red);
+        let locale = *SERVER_LOGGING_LOCALE.get().unwrap_or(&Locale::EnUs);
 
         error!(
             "{}",
-            TextComponent::text("Pumpkin has encountered a panic!")
+            TextComponent::text(get_translation("pumpkin:crash.encountered_panic", locale,))
                 .color(RED)
                 .bold()
                 .to_pretty_console()
@@ -117,7 +121,8 @@ impl CrashReport {
         error!("");
 
         // Printing panic info.
-        let thread_name = self.thread.name().unwrap_or("<unnamed>");
+        let unnamed = get_translation("pumpkin:crash.unnamed_thread", locale);
+        let thread_name = self.thread.name().unwrap_or(&unnamed);
         let thread_id = self.thread.id();
 
         let message = self.panic_location.as_ref().map_or_else(
@@ -140,7 +145,10 @@ impl CrashReport {
             BacktraceStatus::Unsupported => {
                 error!(
                     "{}",
-                    RED.console_color("Backtracing is not supported for this platform.")
+                    RED.console_color(&get_translation(
+                        "pumpkin:crash.backtracing_unsupported",
+                        locale,
+                    ))
                 );
             }
             // It cannot possibly be BacktraceStatus::Disabled
@@ -148,19 +156,31 @@ impl CrashReport {
             BacktraceStatus::Captured => {
                 error!(
                     "{}",
-                    RED.console_color("The full backtrace will be printed to the crash report.")
+                    RED.console_color(&get_translation(
+                        "pumpkin:crash.full_backtrace_will_print",
+                        locale,
+                    ))
                 );
 
                 if self.captured_backtrace.status() == BacktraceStatus::Captured {
                     eprintln!(
                         "{}\n{}",
-                        RED.console_color("Backtrace:"),
+                        RED.console_color(&get_translation(
+                            "pumpkin:crash.backtrace_label",
+                            locale,
+                        )),
                         self.captured_backtrace
                     );
                 }
             }
             _ => {
-                error!("{}", RED.console_color("Backtrace status is unknown, so no backtrace will be generated for the crash report."));
+                error!(
+                    "{}",
+                    RED.console_color(&get_translation(
+                        "pumpkin:server.log.backtrace_unknown",
+                        locale,
+                    ))
+                );
             }
         }
     }
@@ -321,12 +341,15 @@ impl CrashReport {
     ///
     /// Returns `true` if the file successfully saved.
     pub fn save_and_log(&self) -> bool {
+        let locale = *SERVER_LOGGING_LOCALE.get().unwrap_or(&Locale::EnUs);
         match self.save() {
             Ok(path) => {
                 tracing::info!(
                     "{} {}",
-                    Color::Named(NamedColor::Green)
-                        .console_color("Successfully saved the crash report to file:"),
+                    Color::Named(NamedColor::Green).console_color(&get_translation(
+                        "pumpkin:crash.saved_crash_report",
+                        locale,
+                    )),
                     path.display()
                 );
                 true
@@ -334,7 +357,10 @@ impl CrashReport {
             Err(error) => {
                 tracing::error!(
                     "{} {}",
-                    Color::Named(NamedColor::Red).console_color("Could not save the crash report:"),
+                    Color::Named(NamedColor::Red).console_color(&get_translation(
+                        "pumpkin:crash.could_not_save_crash_report",
+                        locale,
+                    )),
                     error
                 );
                 false

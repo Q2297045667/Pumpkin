@@ -28,7 +28,7 @@ fn fetch_all_contributors() -> Vec<Contributor> {
     let mut all_contributors = Vec::new();
     let mut next_url = Some(get_translation_text(
         "pumpkin:commands.pumpkin.contributors_api_url",
-        pumpkin_i18n::Locale::EnUs,
+        crate::server_locale(),
         vec![],
     ));
 
