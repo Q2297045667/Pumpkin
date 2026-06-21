@@ -75,18 +75,6 @@ fn detect_platform_locale() -> Locale {
     Locale::EnUs
 }
 
-/// Parse a locale identifier string without unnecessary allocations.
-///
-/// Normalises hyphens to underscores only when present in the input.
-/// Falls back to [`Locale::EnUs`] on failure.
-fn parse_locale_value(raw: &str) -> Locale {
-    if raw.contains('-') {
-        let normalized = raw.replace('-', "_");
-        return Locale::from_str(&normalized).unwrap_or(Locale::EnUs);
-    }
-    Locale::from_str(raw).unwrap_or(Locale::EnUs)
-}
-
 /// Resolves the server-side locale based on the configuration value.
 ///
 /// # Arguments
@@ -100,5 +88,5 @@ pub fn resolve_server_locale(config_value: &str) -> Locale {
     if config_value == "auto" {
         return detect_system_locale();
     }
-    parse_locale_value(config_value)
+    crate::parse_locale_value(config_value)
 }

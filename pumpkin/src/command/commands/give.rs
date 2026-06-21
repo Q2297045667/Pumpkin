@@ -34,12 +34,12 @@ impl CommandExecutor for Executor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a crate::server::Server,
+        server: &'a crate::server::Server,
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let targets = PlayersArgumentConsumer.find_arg_default_name(args)?;
-            let locale = sender.get_locale(_server);
+            let locale = sender.get_locale(server);
 
             let (item_name, item) = ItemArgumentConsumer::find_arg(args, ARG_ITEM)?;
 

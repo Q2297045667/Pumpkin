@@ -26,7 +26,7 @@ impl CommandExecutor for Executor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a crate::server::Server,
+        server: &'a crate::server::Server,
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
@@ -48,7 +48,7 @@ impl CommandExecutor for Executor {
                 let mut msg = TextComponent::custom(
                     "pumpkin",
                     "commands.kick.kicked_message",
-                    sender.get_locale(_server),
+                    sender.get_locale(server),
                     vec![],
                 );
                 msg = msg.add_child(target.get_display_name().await);

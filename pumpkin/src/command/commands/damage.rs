@@ -61,7 +61,7 @@ impl CommandExecutor for LocationExecutor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a crate::server::Server,
+        server: &'a crate::server::Server,
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
@@ -72,7 +72,7 @@ impl CommandExecutor for LocationExecutor {
                 return Err(CommandError::CommandFailed(TextComponent::custom(
                     "pumpkin",
                     "commands.damage.invalid_amount",
-                    sender.get_locale(_server),
+                    sender.get_locale(server),
                     vec![],
                 )));
             };
@@ -99,7 +99,7 @@ impl CommandExecutor for EntityExecutor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a crate::server::Server,
+        server: &'a crate::server::Server,
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
@@ -110,7 +110,7 @@ impl CommandExecutor for EntityExecutor {
                 return Err(CommandError::CommandFailed(TextComponent::custom(
                     "pumpkin",
                     "commands.damage.invalid_amount",
-                    sender.get_locale(_server),
+                    sender.get_locale(server),
                     vec![],
                 )));
             };

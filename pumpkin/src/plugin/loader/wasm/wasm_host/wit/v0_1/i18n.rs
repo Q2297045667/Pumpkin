@@ -23,14 +23,24 @@ impl Host for PluginHostState {
     }
 }
 
-/// Converts a WIT Locale to a pumpkin-util Locale.
+/// Converts a WIT Locale to a pumpkin-i18n Locale.
+///
+/// WIT `Debug` produces CamelCase like `"EnUs"`, `"ZhCn"`, while
+/// [`UtilLocale::from_str`] expects lowercase with underscores (`"en_us"`, `"zh_cn"`).
+/// We insert underscores before uppercase letters (skipping the first character),
+/// then lowercase the entire string.
 fn wit_to_util_locale(wit: WitLocale) -> UtilLocale {
-    // WIT variants like EnUs often debug to "EnUs".
-    // We convert to lowercase and handle potential format differences.
-    let s = format!("{wit:?}").to_lowercase();
-
-    // Most translation systems expect underscores (en_us) rather than nothing or dashes.
-    // If the WIT Debug format is "EnUs", lowercase is "enus".
-    // We might need a smarter mapping if your util expects specifically "en_us".
-    UtilLocale::from_str(&s).unwrap_or(UtilLocale::EnUs)
+    let raw = format!("{wit:?}");
+    let normalized: String = raw
+        .chars()
+        .enumerate()
+        .flat_map(|(i, c)| {
+            if i > 0 && c.is_uppercase() {
+                vec!['_', c.to_ascii_lowercase()]
+            } else {
+                vec![c.to_ascii_lowercase()]
+            }
+        })
+        .collect();
+    UtilLocale::from_str(&normalized).unwrap_or(UtilLocale::EnUs)
 }

@@ -104,14 +104,14 @@ impl CommandExecutor for LoadExecutor {
 
             if server
                 .plugin_manager
-                .is_plugin_active(&plugin_name_owned)
+                .is_plugin_active(plugin_name_owned)
                 .await
             {
                 let msg = TextComponent::custom(
                     "pumpkin",
                     "commands.plugin.already_loaded",
                     locale,
-                    vec![TextComponent::text(format!("{plugin_name_owned}"))],
+                    vec![TextComponent::text(plugin_name_owned.to_string())],
                 );
                 return Err(CommandError::CommandFailed(msg));
             }
@@ -123,7 +123,7 @@ impl CommandExecutor for LoadExecutor {
 
             match result {
                 Ok(()) => {
-                    let name_str = format!("{plugin_name_owned}");
+                    let name_str = plugin_name_owned.to_string();
                     sender
                         .send_message(
                             TextComponent::custom(
@@ -143,7 +143,7 @@ impl CommandExecutor for LoadExecutor {
                         "commands.plugin.failed_to_load",
                         locale,
                         vec![
-                            TextComponent::text(format!("{plugin_name_owned}")),
+                            TextComponent::text(plugin_name_owned.to_string()),
                             TextComponent::text(e.to_string()),
                         ],
                     );
@@ -172,26 +172,23 @@ impl CommandExecutor for UnloadExecutor {
 
             if !server
                 .plugin_manager
-                .is_plugin_active(&plugin_name_owned)
+                .is_plugin_active(plugin_name_owned)
                 .await
             {
                 let msg = TextComponent::custom(
                     "pumpkin",
                     "commands.plugin.not_loaded",
                     locale,
-                    vec![TextComponent::text(format!("{plugin_name_owned}"))],
+                    vec![TextComponent::text(plugin_name_owned.to_string())],
                 );
                 return Err(CommandError::CommandFailed(msg));
             }
 
-            let result = server
-                .plugin_manager
-                .unload_plugin(&plugin_name_owned)
-                .await;
+            let result = server.plugin_manager.unload_plugin(plugin_name_owned).await;
 
             match result {
                 Ok(()) => {
-                    let name_str = format!("{plugin_name_owned}");
+                    let name_str = plugin_name_owned.to_string();
                     sender
                         .send_message(
                             TextComponent::custom(
@@ -212,7 +209,7 @@ impl CommandExecutor for UnloadExecutor {
                         "commands.plugin.failed_to_unload",
                         locale,
                         vec![
-                            TextComponent::text(format!("{plugin_name_owned}")),
+                            TextComponent::text(plugin_name_owned.to_string()),
                             TextComponent::text(e.to_string()),
                         ],
                     );

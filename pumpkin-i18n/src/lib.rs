@@ -19,6 +19,20 @@ pub use server::{detect_system_locale, resolve_server_locale};
 pub use store::{TRANSLATIONS, add_translation, add_translation_file, get_translation};
 pub use token::{Token, precompile};
 
+use std::str::FromStr;
+
+/// Parse a locale identifier string without unnecessary allocations.
+///
+/// Normalises hyphens to underscores only when needed and uses
+/// ASCII-only lowercasing. Returns [`Locale::EnUs`] on failure.
+pub(crate) fn parse_locale_value(raw: &str) -> Locale {
+    if raw.contains('-') {
+        let normalized = raw.replace('-', "_");
+        return Locale::from_str(&normalized).unwrap_or(Locale::EnUs);
+    }
+    Locale::from_str(raw).unwrap_or(Locale::EnUs)
+}
+
 /// A character range representing a substitution placeholder within a translation string.
 ///
 /// The range is inclusive and corresponds to the full placeholder span
