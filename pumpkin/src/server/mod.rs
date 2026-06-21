@@ -30,7 +30,7 @@ use pumpkin_world::world::WorldPortalExt;
 use tracing::{debug, error, info, warn};
 
 use crate::command::CommandSender;
-use pumpkin_i18n::{Locale, resolve_server_locale};
+use pumpkin_i18n::{Locale, locale_to_log_string, resolve_server_locale};
 use pumpkin_macros::send_cancellable;
 use pumpkin_protocol::java::client::login::CEncryptionRequest;
 use pumpkin_protocol::java::client::play::{CChangeDifficulty, CTabList};
@@ -164,6 +164,12 @@ impl Server {
         // but we resolve it again here so the Server struct carries the canonical value.
         let command_locale = resolve_server_locale(&advanced_config.locale.server_command);
         let logging_locale = resolve_server_locale(&advanced_config.locale.server_logging);
+
+        info!(
+            "Server locale: command={}, logging={}",
+            locale_to_log_string(command_locale),
+            locale_to_log_string(logging_locale)
+        );
 
         let permission_registry = Arc::new(RwLock::new(PermissionRegistry::new()));
         // First register the default commands. After that, plugins can put in their own.

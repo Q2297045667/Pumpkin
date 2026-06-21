@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::chunk::Biome;
 use pumpkin_data::item::{BedrockItem, BedrockItemVersion};
+use pumpkin_i18n::{format_join_locale, player_locale};
 use pumpkin_protocol::bedrock::client::item_registry::{CItemRegistry, ItemDefinition};
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
 use pumpkin_protocol::bedrock::client::{CInventoryContent, EntityProperties};
@@ -2299,6 +2300,13 @@ impl World {
             self.broadcast_system_message(&event.join_message, false)
                 .await;
             info!("{}", event.join_message.to_pretty_console());
+            info!(
+                "{}",
+                format_join_locale(
+                    &player.gameprofile.name,
+                    player_locale(&player.gameprofile.id.to_string())
+                )
+            );
         }
     }
 
@@ -2924,6 +2932,13 @@ impl World {
                 .await;
             // TODO: Switch to structured logging, e.g. info!(player = %name, "connected")
             info!("{}", event.join_message.to_pretty_console());
+            info!(
+                "{}",
+                format_join_locale(
+                    &player.gameprofile.name,
+                    player_locale(&player.gameprofile.id.to_string())
+                )
+            );
         }
     }
 
