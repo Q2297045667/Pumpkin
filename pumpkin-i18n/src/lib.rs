@@ -10,8 +10,8 @@ pub mod store;
 pub mod token;
 
 pub use client::{
-    format_join_locale, locale_to_log_string, player_locale, remove_player_locale,
-    resolve_bedrock_locale, resolve_client_locale, resolve_java_locale, set_player_locale,
+    locale_to_log_string, player_locale, remove_player_locale, resolve_bedrock_locale,
+    resolve_client_locale, resolve_java_locale, set_player_locale,
 };
 pub use engine::{ResolvedTranslation, TranslationEngine, format_tokens};
 pub use locale::Locale;

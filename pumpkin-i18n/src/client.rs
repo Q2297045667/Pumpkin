@@ -121,22 +121,6 @@ pub fn resolve_bedrock_locale(player_locale: &str, config_value: &str) -> Locale
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-/// Formats a player join message that includes their detected locale.
-///
-/// # Arguments
-/// * `player_name` — The player's display name.
-/// * `locale` — The player's resolved locale.
-///
-/// # Returns
-/// A log-friendly message like `"PlayerName joined the game language:zh_cn"`.
-#[must_use]
-pub fn format_join_locale(player_name: &str, locale: Locale) -> String {
-    format!(
-        "{player_name} joined the game language:{}",
-        locale_to_log_string(locale)
-    )
-}
-
 /// Returns the locale string in lowercase underscore format for logging.
 ///
 /// # Arguments

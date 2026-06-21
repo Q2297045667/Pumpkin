@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::chunk::Biome;
 use pumpkin_data::item::{BedrockItem, BedrockItemVersion};
-use pumpkin_i18n::{format_join_locale, player_locale};
+use pumpkin_i18n::{locale_to_log_string, player_locale};
 use pumpkin_protocol::bedrock::client::item_registry::{CItemRegistry, ItemDefinition};
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
 use pumpkin_protocol::bedrock::client::{CInventoryContent, EntityProperties};
@@ -2286,12 +2286,18 @@ impl World {
         }
 
         // 3. Trigger Join Event and Broadcast Join Message
+        let player_locale_string =
+            locale_to_log_string(player_locale(&player.gameprofile.id.to_string()));
         let msg_comp = TextComponent::translate_cross(
             translation::java::MULTIPLAYER_PLAYER_JOINED,
             translation::bedrock::MULTIPLAYER_PLAYER_JOINED,
             [TextComponent::text(player.gameprofile.name.clone())],
         )
-        .color_named(NamedColor::Yellow);
+        .color_named(NamedColor::Yellow)
+        .add_child(
+            TextComponent::text(format!(" language:{player_locale_string}"))
+                .color_named(NamedColor::Gray),
+        );
 
         let event = PlayerJoinEvent::new(player.clone(), msg_comp);
         let event = server.plugin_manager.fire(event).await;
@@ -2300,13 +2306,6 @@ impl World {
             self.broadcast_system_message(&event.join_message, false)
                 .await;
             info!("{}", event.join_message.to_pretty_console());
-            info!(
-                "{}",
-                format_join_locale(
-                    &player.gameprofile.name,
-                    player_locale(&player.gameprofile.id.to_string())
-                )
-            );
         }
     }
 
@@ -2917,12 +2916,18 @@ impl World {
                 .await;
         }
 
+        let player_locale_string =
+            locale_to_log_string(player_locale(&player.gameprofile.id.to_string()));
         let msg_comp = TextComponent::translate_cross(
             translation::java::MULTIPLAYER_PLAYER_JOINED,
             translation::bedrock::MULTIPLAYER_PLAYER_JOINED,
             [TextComponent::text(player.gameprofile.name.clone())],
         )
-        .color_named(NamedColor::Yellow);
+        .color_named(NamedColor::Yellow)
+        .add_child(
+            TextComponent::text(format!(" language:{player_locale_string}"))
+                .color_named(NamedColor::Gray),
+        );
         let event = PlayerJoinEvent::new(player.clone(), msg_comp);
 
         let event = server.plugin_manager.fire(event).await;
@@ -2932,13 +2937,6 @@ impl World {
                 .await;
             // TODO: Switch to structured logging, e.g. info!(player = %name, "connected")
             info!("{}", event.join_message.to_pretty_console());
-            info!(
-                "{}",
-                format_join_locale(
-                    &player.gameprofile.name,
-                    player_locale(&player.gameprofile.id.to_string())
-                )
-            );
         }
     }
 
