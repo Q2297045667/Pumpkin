@@ -7,7 +7,7 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
-    let translations_dir = Path::new(&manifest_dir).join("../assets/translations");
+    let translations_dir = Path::new(&manifest_dir).join("../assets/translations/pumpkin");
 
     // Collect all .json translation files
     let mut files: Vec<String> = Vec::new();
@@ -43,7 +43,7 @@ fn main() {
         "        let vanilla: std::collections::HashMap<String, String> = serde_json::from_str(\n",
     );
     code.push_str(
-        "            include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../assets/en_us_java.json\"))\n",
+        "            include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../assets/translations/vanilla/en_us_java.json\"))\n",
     );
     code.push_str("        ).expect(\"Could not parse en_us_java.json\");\n");
     code.push_str("        for (key, value) in vanilla {\n");
@@ -65,7 +65,7 @@ fn main() {
         );
         let _ = writeln!(
             code,
-            "            include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../assets/translations/{file}\"))"
+            "            include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../assets/translations/pumpkin/{file}\"))"
         );
         let _ = writeln!(code, "        ).expect(\"Could not parse {file}\");");
         code.push_str("        for (key, value) in pumpkin {\n");
@@ -83,8 +83,8 @@ fn main() {
     fs::write(&dest_path, code).unwrap();
 
     // Rebuild tracking
-    println!("cargo::rerun-if-changed=../assets/translations/");
-    println!("cargo::rerun-if-changed=../assets/en_us_java.json");
+    println!("cargo::rerun-if-changed=../assets/translations/pumpkin/");
+    println!("cargo::rerun-if-changed=../assets/translations/vanilla/en_us_java.json");
 }
 
 /// Converts a lowercase underscore-delimited filename stem to a Locale variant name.
