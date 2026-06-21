@@ -7,6 +7,7 @@ use pumpkin_data::chunk::ChunkStatus;
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::tag::Block::MINECRAFT_LEAVES;
 use pumpkin_data::{Block, BlockState};
+use pumpkin_i18n::get_translation;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::nbt_long_array;
 use pumpkin_util::math::position::BlockPos;
@@ -14,7 +15,6 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
-use thiserror::Error;
 use tokio::sync::Mutex;
 
 pub mod format;
@@ -27,44 +27,194 @@ pub const CHUNK_AREA: usize = CHUNK_WIDTH * CHUNK_WIDTH;
 pub const BIOME_VOLUME: usize = BiomePalette::VOLUME;
 pub const SUBCHUNK_VOLUME: usize = CHUNK_AREA * CHUNK_WIDTH;
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum ChunkReadingError {
-    #[error("Io error: {0}")]
     IoError(std::io::Error),
-    #[error("Invalid header")]
     InvalidHeader,
-    #[error("Region is invalid")]
     RegionIsInvalid,
-    #[error("Compression error {0}")]
     Compression(CompressionError),
-    #[error("Tried to read chunk which does not exist")]
     ChunkNotExist,
-    #[error("Failed to parse chunk from bytes: {0}")]
     ParsingError(ChunkParsingError),
 }
 
-#[derive(Error, Debug)]
+impl std::fmt::Display for ChunkReadingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::IoError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.io_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::InvalidHeader => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.invalid_header", locale)
+                )
+            }
+            Self::RegionIsInvalid => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.region_is_invalid", locale)
+                )
+            }
+            Self::Compression(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.compression_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::ChunkNotExist => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.chunk_not_exist", locale)
+                )
+            }
+            Self::ParsingError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.parsing_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkReadingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::IoError(e) => Some(e),
+            Self::Compression(e) => Some(e),
+            Self::ParsingError(e) => Some(e),
+            Self::InvalidHeader | Self::RegionIsInvalid | Self::ChunkNotExist => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum ChunkWritingError {
-    #[error("Io error: {0}")]
     IoError(std::io::Error),
-    #[error("Compression error {0}")]
     Compression(CompressionError),
-    #[error("Chunk serializing error: {0}")]
     ChunkSerializingError(String),
 }
 
-#[derive(Error, Debug)]
+impl std::fmt::Display for ChunkWritingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::IoError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.io_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::Compression(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.compression_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::ChunkSerializingError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.serializing_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkWritingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::IoError(e) => Some(e),
+            Self::Compression(e) => Some(e),
+            Self::ChunkSerializingError(_) => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum CompressionError {
-    #[error("Compression scheme not recognised")]
     UnknownCompression,
-    #[error("Error while working with zlib compression: {0}")]
     ZlibError(std::io::Error),
-    #[error("Error while working with Gzip compression: {0}")]
     GZipError(std::io::Error),
-    #[error("Error while working with LZ4 compression: {0}")]
     LZ4Error(std::io::Error),
-    #[error("Error while working with zstd compression: {0}")]
     ZstdError(std::io::Error),
+}
+
+impl std::fmt::Display for CompressionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::UnknownCompression => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.unknown_compression", locale)
+                )
+            }
+            Self::ZlibError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.zlib_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::GZipError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.gzip_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::LZ4Error(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.lz4_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::ZstdError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.zstd_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CompressionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ZlibError(e) | Self::GZipError(e) | Self::LZ4Error(e) | Self::ZstdError(e) => {
+                Some(e)
+            }
+            Self::UnknownCompression => None,
+        }
+    }
 }
 
 // Clone here cause we want to clone a snapshot of the chunk so we don't block writing for too long
@@ -159,14 +309,17 @@ pub enum ChunkHeightmapType {
     MotionBlockingNoLeaves = 2,
 }
 impl TryFrom<usize> for ChunkHeightmapType {
-    type Error = &'static str;
+    type Error = String;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::WorldSurface),
             1 => Ok(Self::MotionBlocking),
             2 => Ok(Self::MotionBlockingNoLeaves),
-            _ => Err("Invalid usize value for ChunkHeightmapType. The value should be 0~2."),
+            _ => Err(get_translation(
+                "pumpkin:world.chunk_system.invalid_heightmap_type",
+                crate::server_locale(),
+            )),
         }
     }
 }
@@ -754,20 +907,80 @@ impl ChunkData {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum ChunkParsingError {
-    #[error("Failed reading chunk status {0}")]
     FailedReadStatus(pumpkin_nbt::Error),
-    #[error("The chunk isn't generated yet")]
     ChunkNotGenerated,
-    #[error("Error deserializing chunk: {0}")]
     ErrorDeserializingChunk(String),
 }
 
-#[derive(Error, Debug)]
+impl std::fmt::Display for ChunkParsingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::FailedReadStatus(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.failed_read_status", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::ChunkNotGenerated => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.chunk_not_generated", locale)
+                )
+            }
+            Self::ErrorDeserializingChunk(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.error_deserializing_chunk", locale,)
+                        .replace("%s", e)
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkParsingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FailedReadStatus(e) => Some(e),
+            Self::ChunkNotGenerated | Self::ErrorDeserializingChunk(_) => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum ChunkSerializingError {
-    #[error("Error serializing chunk: {0}")]
     ErrorSerializingChunk(pumpkin_nbt::Error),
+}
+
+impl std::fmt::Display for ChunkSerializingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::ErrorSerializingChunk(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.chunk.error_serializing_chunk", locale,)
+                        .replace("%s", &e.to_string())
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkSerializingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ErrorSerializingChunk(e) => Some(e),
+        }
+    }
 }
 
 #[cfg(test)]

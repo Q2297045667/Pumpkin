@@ -5,6 +5,7 @@
 //! and mirroring transformations.
 
 use pumpkin_data::{Block, BlockState, Mirror, Rotation};
+use pumpkin_util::{text::TextComponent, text::translation::get_translation_text};
 use tracing::warn;
 
 use super::PaletteEntry;
@@ -36,7 +37,14 @@ impl BlockStateResolver {
         let block = if let Some(b) = block {
             b
         } else {
-            warn!("Unknown block in template: {}", entry.name);
+            warn!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.structure.unknown_block_in_template",
+                    crate::server_locale(),
+                    vec![TextComponent::text(entry.name.clone()).0]
+                )
+            );
             return None;
         };
 

@@ -2,6 +2,7 @@ use pumpkin_data::{
     structures::{Structure, StructureKeys},
     tag::{RegistryKey, get_tag_ids},
 };
+use pumpkin_util::text::translation::get_translation_text;
 
 use crate::{
     ProtoChunk,
@@ -71,10 +72,26 @@ pub fn try_generate_structure(
         | StructureKeys::VillageSnowy
         | StructureKeys::VillageTaiga => {
             let generator = JigsawGenerator::new(
-                structure
-                    .start_pool
-                    .expect("Jigsaw structure must have a start pool"),
-                structure.size.expect("Jigsaw structure must have a size"),
+                structure.start_pool.unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.structure.jigsaw_must_have_start_pool",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                }),
+                structure.size.unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.structure.jigsaw_must_have_size",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                }),
             );
             generator.get_structure_position(context)
         }
@@ -84,10 +101,26 @@ pub fn try_generate_structure(
         | StructureKeys::TrailRuins
         | StructureKeys::TrialChambers => {
             let generator = JigsawGenerator::new(
-                structure
-                    .start_pool
-                    .expect("Jigsaw structure must have a start pool"),
-                structure.size.expect("Jigsaw structure must have a size"),
+                structure.start_pool.unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.structure.jigsaw_must_have_start_pool",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                }),
+                structure.size.unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.structure.jigsaw_must_have_size",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                }),
             );
             generator.get_structure_position(context)
         }
@@ -167,10 +200,26 @@ pub fn lazily_generate_structure(
         | StructureKeys::TrailRuins
         | StructureKeys::TrialChambers => {
             let generator = JigsawGenerator::new(
-                structure
-                    .start_pool
-                    .expect("Jigsaw structure must have a start pool"),
-                structure.size.expect("Jigsaw structure must have a size"),
+                structure.start_pool.unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.structure.jigsaw_must_have_start_pool",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                }),
+                structure.size.unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.structure.jigsaw_must_have_size",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                }),
             );
             generator.get_structure_position(context)
         }

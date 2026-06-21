@@ -23,6 +23,7 @@ use pumpkin_data::biome::Biome;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::{Block, block_properties::has_random_ticks, fluid::Fluid};
 use pumpkin_util::math::{position::BlockPos, vector2::Vector2};
+use pumpkin_util::text::translation::get_translation_text;
 use pumpkin_util::world_seed::Seed;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Mutex, Weak};
@@ -135,8 +136,26 @@ impl Level {
         let region_folder = root_folder.join("region");
         let entities_folder = root_folder.join("entities");
 
-        std::fs::create_dir_all(&region_folder).expect("Failed to create Region folder");
-        std::fs::create_dir_all(&entities_folder).expect("Failed to create Entities folder");
+        std::fs::create_dir_all(&region_folder).unwrap_or_else(|_| {
+            panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.level.create_region_folder_failed",
+                    crate::server_locale(),
+                    vec![]
+                )
+            )
+        });
+        std::fs::create_dir_all(&entities_folder).unwrap_or_else(|_| {
+            panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.level.create_entities_folder_failed",
+                    crate::server_locale(),
+                    vec![]
+                )
+            )
+        });
 
         let level_folder = Arc::new(LevelFolder {
             root_folder,
@@ -261,7 +280,16 @@ impl Level {
                         }
                     }
                 })
-                .expect("Failed to spawn entity generation thread");
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.level.spawn_entity_thread_failed",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    )
+                });
         }
     }
 
@@ -277,7 +305,14 @@ impl Level {
 
     pub async fn shutdown(&self) {
         let world_id = self.level_folder.root_folder.display();
-        info!("Saving level ({})...", world_id);
+        info!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.level.saving_level",
+                crate::server_locale(),
+                vec![pumpkin_util::text::TextComponent::text(format!("{}", world_id)).0]
+            )
+        );
         self.cancel_token.cancel();
         self.shut_down_chunk_system.store(true, Ordering::Relaxed);
         self.level_channel.notify();
@@ -291,7 +326,17 @@ impl Level {
         };
 
         let handle_count = handles.len();
-        info!("Joining {} threads for {}...", handle_count, world_id);
+        info!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.level.joining_threads",
+                crate::server_locale(),
+                vec![
+                    pumpkin_util::text::TextComponent::text(handle_count.to_string()).0,
+                    pumpkin_util::text::TextComponent::text(format!("{}", world_id)).0
+                ]
+            )
+        );
         let join_task = tokio::task::spawn_blocking(move || {
             let mut failed_count = 0;
             for handle in handles {
@@ -306,23 +351,51 @@ impl Level {
             Ok(Ok(failed_count)) => {
                 if failed_count > 0 {
                     warn!(
-                        "{} threads failed to join properly for {}.",
-                        failed_count, world_id
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.level.threads_failed_to_join",
+                            crate::server_locale(),
+                            vec![
+                                pumpkin_util::text::TextComponent::text(failed_count.to_string()).0,
+                                pumpkin_util::text::TextComponent::text(format!("{}", world_id)).0
+                            ]
+                        )
                     );
                 }
             }
             Ok(Err(_)) => {
-                warn!("Thread join task panicked for {}.", world_id);
+                warn!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.level.thread_join_panicked",
+                        crate::server_locale(),
+                        vec![pumpkin_util::text::TextComponent::text(format!("{}", world_id)).0]
+                    )
+                );
             }
             Err(_) => {
-                warn!("Timed out waiting for threads to join for {}.", world_id);
+                warn!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.level.timed_out_waiting_threads",
+                        crate::server_locale(),
+                        vec![pumpkin_util::text::TextComponent::text(format!("{}", world_id)).0]
+                    )
+                );
             }
         }
 
         self.tasks.wait().await;
         self.chunk_system_tasks.wait().await;
 
-        info!("Flushing data to disk for {}...", world_id);
+        info!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.level.flushing_data_to_disk",
+                crate::server_locale(),
+                vec![pumpkin_util::text::TextComponent::text(format!("{}", world_id)).0]
+            )
+        );
         self.chunk_saver.block_and_await_ongoing_tasks().await;
         self.entity_saver.block_and_await_ongoing_tasks().await;
 
@@ -345,7 +418,14 @@ impl Level {
 
     pub fn list_cached(&self) {
         for entry in self.loaded_chunks.iter() {
-            debug!("In map: {:?}", entry.key());
+            debug!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.debug.in_map",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(format!("{:?}", entry.key())).0]
+                )
+            );
         }
     }
 
@@ -418,7 +498,19 @@ impl Level {
 
         let level = self.clone();
         self.spawn_task(async move {
-            debug!("Writing {} entity chunks to disk", chunks_to_process.len());
+            debug!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.level.writing_entity_chunks",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(
+                            chunks_to_process.len().to_string()
+                        )
+                        .0
+                    ]
+                )
+            );
             level.write_entity_chunks(chunks_to_process).await;
         });
     }
@@ -559,9 +651,16 @@ impl Level {
             lock.send_change();
         };
 
-        let chunk = recv
-            .await
-            .expect("Chunk listener dropped without sending chunk");
+        let chunk = recv.await.unwrap_or_else(|_| {
+            panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.level.chunk_listener_dropped",
+                    crate::server_locale(),
+                    vec![]
+                )
+            )
+        });
 
         {
             let mut lock = self.chunk_loading.lock().unwrap();
@@ -681,7 +780,16 @@ impl Level {
                     self.spawn_entity_generation(pos);
                 }
             }
-            rx.await.expect("Entity generation worker dropped")
+            rx.await.unwrap_or_else(|_| {
+                panic!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.level.entity_generation_worker_dropped",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                )
+            })
         }
     }
 
@@ -728,12 +836,26 @@ impl Level {
         let chunk_saver = self.chunk_saver.clone();
         let level_folder = self.level_folder.clone();
 
-        trace!("Sending chunks to ChunkIO {:}", chunks_to_write.len());
+        trace!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.io_write_thread_receive",
+                crate::server_locale(),
+                vec![pumpkin_util::text::TextComponent::text(chunks_to_write.len().to_string()).0]
+            )
+        );
         if let Err(error) = chunk_saver
             .save_chunks(&level_folder, chunks_to_write)
             .await
         {
-            error!("Failed writing Chunk to disk {error}");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.level.failed_write_chunk_disk",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(format!("{}", error)).0]
+                )
+            );
         }
     }
 
@@ -745,12 +867,26 @@ impl Level {
         let chunk_saver = self.entity_saver.clone();
         let level_folder = self.level_folder.clone();
 
-        trace!("Sending chunks to ChunkIO {:}", chunks_to_write.len());
+        trace!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.io_write_thread_receive",
+                crate::server_locale(),
+                vec![pumpkin_util::text::TextComponent::text(chunks_to_write.len().to_string()).0]
+            )
+        );
         if let Err(error) = chunk_saver
             .save_chunks(&level_folder, chunks_to_write)
             .await
         {
-            error!("Failed writing Chunk to disk {error}");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.level.failed_write_chunk_disk",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(format!("{}", error)).0]
+                )
+            );
         }
     }
 

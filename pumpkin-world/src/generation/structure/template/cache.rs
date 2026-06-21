@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use pumpkin_util::text::translation::get_translation_text;
 
 use super::{StructureTemplate, structure_template::TemplateError};
 
@@ -52,7 +53,17 @@ impl TemplateCache {
                 Some(arc)
             }
             Err(e) => {
-                tracing::error!("Failed to load template '{}': {}", name, e);
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.structure.failed_load_template",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(name.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(e.to_string()).0
+                        ]
+                    )
+                );
                 None
             }
         }
@@ -89,7 +100,17 @@ impl TemplateCache {
     pub fn preload(&self, names: &[&'static str]) {
         for name in names {
             if let Err(e) = self.get_or_error(name) {
-                tracing::warn!("Failed to preload template '{}': {}", name, e);
+                tracing::warn!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.structure.failed_preload_template",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(name.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(e.to_string()).0
+                        ]
+                    )
+                );
             }
         }
     }

@@ -1,7 +1,9 @@
 use pumpkin_data::{
     Block, BlockState, chunk_gen_settings::GenerationSettings, dimension::Dimension,
 };
+use pumpkin_i18n::Locale;
 use pumpkin_util::math::vector2::Vector2;
+use std::sync::OnceLock;
 
 pub mod biome;
 pub mod block;
@@ -26,6 +28,21 @@ pub const CURRENT_MC_VERSION: &str = "26.2";
 
 pub const CURRENT_BEDROCK_MC_VERSION: &str = "1.26.30";
 pub const CURRENT_BEDROCK_MC_PROTOCOL: u32 = 1001;
+
+/// Global logging locale for pumpkin-world, set by the pumpkin server crate
+/// during startup.
+static SERVER_LOGGING_LOCALE: OnceLock<Locale> = OnceLock::new();
+
+/// Returns the server logging locale, falling back to [`Locale::EnUs`].
+pub fn server_locale() -> Locale {
+    *SERVER_LOGGING_LOCALE.get().unwrap_or(&Locale::EnUs)
+}
+
+/// Sets the server logging locale. Called from the pumpkin server crate during
+/// initialization.
+pub fn set_server_locale(locale: Locale) {
+    let _ = SERVER_LOGGING_LOCALE.set(locale);
+}
 
 #[macro_export]
 macro_rules! global_path {

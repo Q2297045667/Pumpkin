@@ -4,6 +4,7 @@ use crate::level::Level;
 use crossbeam::queue::SegQueue;
 use pumpkin_config::lighting::LightingEngineConfig;
 use pumpkin_data::BlockDirection;
+use pumpkin_i18n::get_translation;
 use pumpkin_util::math::position::BlockPos;
 use std::sync::Arc;
 
@@ -488,7 +489,10 @@ impl DynamicLightEngine {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if section_index >= light_engine.block_light.len() {
-                return Err("Invalid section index".to_string());
+                return Err(get_translation(
+                    "pumpkin:world.light.invalid_section_index",
+                    crate::server_locale(),
+                ));
             }
             let relative_y = (relative.y - chunk.section.min_y) as usize % BlockPalette::SIZE;
             light_engine.block_light[section_index].set(
@@ -546,7 +550,10 @@ impl DynamicLightEngine {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if section_index >= light_engine.sky_light.len() {
-                return Err("Invalid section index".to_string());
+                return Err(get_translation(
+                    "pumpkin:world.light.invalid_section_index",
+                    crate::server_locale(),
+                ));
             }
             let relative_y = (relative.y - chunk.section.min_y) as usize % BlockPalette::SIZE;
             light_engine.sky_light[section_index].set(

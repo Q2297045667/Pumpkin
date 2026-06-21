@@ -1,6 +1,7 @@
 use pumpkin_data::block_properties::is_air;
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_util::HeightMap;
+use pumpkin_util::text::translation::get_translation_text;
 use std::collections::HashMap;
 use std::iter;
 use std::sync::LazyLock;
@@ -81,9 +82,16 @@ impl PlacedFeature {
         }
 
         let feature = match &self.feature {
-            Feature::Named(name) => CONFIGURED_FEATURES
-                .get(name)
-                .expect("Name: {name:?} not found"),
+            Feature::Named(name) => CONFIGURED_FEATURES.get(name).unwrap_or_else(|| {
+                panic!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.misc.name_not_found",
+                        crate::server_locale(),
+                        vec![pumpkin_util::text::TextComponent::text(format!("{:?}", name)).0]
+                    )
+                )
+            }),
             Feature::Inlined(feature) => feature,
         };
 

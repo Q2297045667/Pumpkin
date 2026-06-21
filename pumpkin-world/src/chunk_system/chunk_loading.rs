@@ -1,6 +1,7 @@
 use super::{ChunkLevel, ChunkPos, HashMapType, LevelChannel};
 use crate::chunk_system::chunk_state::StagedChunkEnum; // Fixed path
 use itertools::Itertools;
+use pumpkin_util::{text::TextComponent, text::translation::get_translation_text};
 use std::cmp::{Ordering, PartialEq, min};
 use std::collections::BinaryHeap;
 use std::collections::hash_map::Entry;
@@ -145,8 +146,22 @@ impl ChunkLoading {
             }
         }
         if temp.len() != self.pos_level.len() {
-            debug!("temp: \n{temp:?}");
-            debug!("pos_level: \n{:?}", self.pos_level);
+            debug!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.debug.temp",
+                    crate::server_locale(),
+                    vec![TextComponent::text(format!("{temp:?}")).0]
+                )
+            );
+            debug!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.debug.pos_level",
+                    crate::server_locale(),
+                    vec![TextComponent::text(format!("{:?}", self.pos_level)).0]
+                )
+            );
         }
         assert_eq!(temp.len(), self.pos_level.len());
         for val in &temp {
@@ -172,7 +187,14 @@ impl ChunkLoading {
         sy: i32,
         ty: i32,
     ) {
-        debug!("high_priority {pri:?}");
+        debug!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.debug.high_priority",
+                crate::server_locale(),
+                vec![TextComponent::text(format!("{pri:?}")).0]
+            )
+        );
 
         let mut header = "X/Y".to_string();
         for y in sy..=ty {
@@ -197,7 +219,17 @@ impl ChunkLoading {
             .collect::<Vec<_>>()
             .join("\n");
 
-        debug!("\nloading level:\n{header}\n{grid}");
+        debug!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.level.loading_level_header",
+                crate::server_locale(),
+                vec![
+                    TextComponent::text(header.clone()).0,
+                    TextComponent::text(grid).0
+                ]
+            )
+        );
     }
 
     #[inline]

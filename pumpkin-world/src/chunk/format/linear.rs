@@ -9,6 +9,7 @@ use crate::chunk::io::{ChunkSerializer, LoadedData};
 use crate::chunk::{ChunkReadingError, ChunkWritingError};
 use bytes::{Buf, BufMut, Bytes};
 use pumpkin_util::math::vector2::Vector2;
+use pumpkin_util::text::translation::get_translation_text;
 use ruzstd::decoding::StreamingDecoder;
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -62,13 +63,27 @@ impl LinearV2Superblock {
         b = &b[8..];
 
         if sig != SIGNATURE {
-            error!("Linear v2: invalid superblock signature");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.linear_invalid_superblock",
+                    crate::server_locale(),
+                    vec![]
+                )
+            );
             return Err(ChunkReadingError::InvalidHeader);
         }
 
         let version = b.get_u8();
         if version != 0x02 {
-            error!("Linear v2: unexpected version byte {version:#x} in superblock");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.linear_unexpected_version",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(format!("{version:#x}")).0]
+                )
+            );
             return Err(ChunkReadingError::InvalidHeader);
         }
 
@@ -78,7 +93,14 @@ impl LinearV2Superblock {
         let region_z = b.get_i32();
 
         if !VALID_GRID_SIZES.contains(&grid_size) {
-            error!("Linear v2: invalid grid size {grid_size}");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.linear_invalid_grid_size",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(grid_size.to_string()).0]
+                )
+            );
             return Err(ChunkReadingError::InvalidHeader);
         }
 
@@ -273,8 +295,15 @@ impl BucketChunkEntry {
         }
         if buf.remaining() < size {
             warn!(
-                "Linear v2: not enough bytes for chunk (need {size}, have {})",
-                buf.remaining()
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.linear.not_enough_bytes",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(size.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(buf.remaining().to_string()).0
+                    ]
+                )
             );
             return Err(ChunkReadingError::IoError(std::io::Error::from(
                 ErrorKind::UnexpectedEof,
@@ -498,7 +527,14 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for LinearV2File<S> {
         {
             let footer = &buf[footer_offset..footer_offset + SIGNATURE.len()];
             if footer != SIGNATURE {
-                error!("Linear v2: invalid footer signature");
+                error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.linear_invalid_footer",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 return Err(ChunkReadingError::InvalidHeader);
             }
         }
@@ -513,9 +549,18 @@ impl<S: SingleChunkDataSerializer> ChunkSerializer for LinearV2File<S> {
             let actual_hash = xxh64(&buf[..compressed_size], 0);
             if actual_hash != entry.xxhash {
                 error!(
-                    "Linear v2: xxhash mismatch for bucket {bucket_idx} \
-                     (expected {:#x}, got {:#x})",
-                    entry.xxhash, actual_hash
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.linear.xxhash_mismatch",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(bucket_idx.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(format!("{:#x}", entry.xxhash))
+                                .0,
+                            pumpkin_util::text::TextComponent::text(format!("{:#x}", actual_hash))
+                                .0
+                        ]
+                    )
                 );
                 // Skip the corrupted bucket rather than aborting the whole
                 // file — the remaining buckets may be intact.

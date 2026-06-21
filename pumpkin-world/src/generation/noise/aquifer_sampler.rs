@@ -3,6 +3,7 @@ use pumpkin_data::{Block, BlockState};
 use pumpkin_util::{
     math::{clamped_map, floor_div, vector3::Vector3},
     random::{RandomImpl, xoroshiro128::XoroshiroSplitter},
+    text::translation::get_translation_text,
 };
 
 use crate::generation::{
@@ -175,7 +176,15 @@ impl WorldAquiferSampler {
         let i10 = i00 + syz;
         let i11 = i10 + sy;
 
-        assert!(i11 + 2 < self.packed_positions.len(), "Index out of bounds");
+        assert!(
+            i11 + 2 < self.packed_positions.len(),
+            "{}",
+            get_translation_text(
+                "pumpkin:world.misc.index_out_of_bounds",
+                crate::server_locale(),
+                vec![]
+            )
+        );
 
         let p = &self.packed_positions;
 
@@ -480,7 +489,15 @@ impl WorldAquiferSampler {
 
         let p = &self.packed_positions;
         // i11 + 2 is the largest index we ever access; all others are strictly smaller.
-        assert!(i11 + 2 < p.len(), "Index out of bounds");
+        assert!(
+            i11 + 2 < p.len(),
+            "{}",
+            get_translation_text(
+                "pumpkin:world.misc.index_out_of_bounds",
+                crate::server_locale(),
+                vec![]
+            )
+        );
 
         let mut nearest = [(0i64, i32::MAX); 3];
 
@@ -744,7 +761,14 @@ mod random_positions_and_hypot {
         let first_sampler = samplers_vec.remove(0);
 
         let BlockStateSampler::Aquifer(sampler) = first_sampler else {
-            panic!("Expected Aquifer")
+            panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.generation.expected_aquifer",
+                    crate::server_locale(),
+                    vec![]
+                )
+            )
         };
 
         let AquiferSampler::Aquifer(aquifer) = sampler else {

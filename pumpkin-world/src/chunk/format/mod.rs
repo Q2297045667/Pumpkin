@@ -15,6 +15,8 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+use pumpkin_util::text::translation::get_translation_text;
+
 use crate::{
     chunk::{
         ChunkEntityData, ChunkReadingError, ChunkSerializingError,
@@ -85,10 +87,18 @@ impl ChunkData {
                 .map_err(|e| ChunkParsingError::ErrorDeserializingChunk(e.to_string()))?;
 
         if chunk_data.x_pos != position.x || chunk_data.z_pos != position.y {
-            return Err(ChunkParsingError::ErrorDeserializingChunk(format!(
-                "Expected data for chunk {},{} but got it for {},{}!",
-                position.x, position.y, chunk_data.x_pos, chunk_data.z_pos,
-            )));
+            return Err(ChunkParsingError::ErrorDeserializingChunk(
+                get_translation_text(
+                    "pumpkin:world.chunk.chunk_data_pos_mismatch",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(position.x.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(position.y.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(chunk_data.x_pos.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(chunk_data.z_pos.to_string()).0,
+                    ],
+                ),
+            ));
         }
         let min_y_section = chunk_data.min_y_section;
         let max_y_section = chunk_data
@@ -281,24 +291,45 @@ impl ChunkEntityData {
         if chunk_entity_data.position[0] != position.x
             || chunk_entity_data.position[1] != position.y
         {
-            return Err(ChunkParsingError::ErrorDeserializingChunk(format!(
-                "Expected data for entity chunk {},{} but got it for {},{}!",
-                position.x,
-                position.y,
-                chunk_entity_data.position[0],
-                chunk_entity_data.position[1],
-            )));
+            return Err(ChunkParsingError::ErrorDeserializingChunk(
+                get_translation_text(
+                    "pumpkin:world.chunk.entity_chunk_data_pos_mismatch",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(position.x.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(position.y.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(
+                            chunk_entity_data.position[0].to_string(),
+                        )
+                        .0,
+                        pumpkin_util::text::TextComponent::text(
+                            chunk_entity_data.position[1].to_string(),
+                        )
+                        .0,
+                    ],
+                ),
+            ));
         }
         let mut map = FxHashMap::default();
         for entity_nbt in chunk_entity_data.entities {
             let uuid = if let Some(uuid) = entity_nbt.get_int_array("UUID") {
                 if uuid.len() != 4 {
                     debug!(
-                        "Entity in chunk {},{} has invalid UUID array length {}: {:?}",
-                        position.x,
-                        position.y,
-                        uuid.len(),
-                        entity_nbt
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk.entity_invalid_uuid_length",
+                            crate::server_locale(),
+                            vec![
+                                pumpkin_util::text::TextComponent::text(position.x.to_string()).0,
+                                pumpkin_util::text::TextComponent::text(position.y.to_string()).0,
+                                pumpkin_util::text::TextComponent::text(uuid.len().to_string()).0,
+                                pumpkin_util::text::TextComponent::text(format!(
+                                    "{:?}",
+                                    entity_nbt
+                                ))
+                                .0,
+                            ],
+                        )
                     );
                     continue;
                 }
@@ -310,8 +341,16 @@ impl ChunkEntityData {
                 )
             } else {
                 debug!(
-                    "Entity in chunk {},{} is missing UUID: {:?}",
-                    position.x, position.y, entity_nbt
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.entity_missing_uuid",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(position.x.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(position.y.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(format!("{:?}", entity_nbt)).0,
+                        ],
+                    )
                 );
                 continue;
             };

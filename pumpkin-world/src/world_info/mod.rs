@@ -3,9 +3,9 @@ use std::path::Path;
 
 use crate::CURRENT_MC_VERSION;
 use pumpkin_data::game_rules::GameRuleRegistry;
+use pumpkin_i18n::get_translation;
 use pumpkin_util::{Difficulty, serde_enum_as_integer, world_seed::Seed};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 pub mod anvil;
 
@@ -337,19 +337,63 @@ impl LevelData {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum WorldInfoError {
-    #[error("Io error: {0}")]
     IoError(std::io::ErrorKind),
-    #[error("Info not found!")]
     InfoNotFound,
-    #[error("Deserialization error: {0}")]
     DeserializationError(String),
-    #[error("Unsupported world data version: {0}")]
     UnsupportedDataVersion(i32),
-    #[error("Unsupported world level version: {0}")]
     UnsupportedLevelVersion(i32),
 }
+
+impl std::fmt::Display for WorldInfoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::IoError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.info.io_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::InfoNotFound => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.info.not_found", locale)
+                )
+            }
+            Self::DeserializationError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.info.deserialization_error", locale)
+                        .replace("%s", e)
+                )
+            }
+            Self::UnsupportedDataVersion(v) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.info.unsupported_data_version", locale,)
+                        .replace("%s", &v.to_string())
+                )
+            }
+            Self::UnsupportedLevelVersion(v) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.info.unsupported_level_version", locale,)
+                        .replace("%s", &v.to_string())
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorldInfoError {}
 
 impl From<std::io::Error> for WorldInfoError {
     fn from(value: std::io::Error) -> Self {

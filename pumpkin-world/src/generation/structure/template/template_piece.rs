@@ -9,6 +9,8 @@ use pumpkin_data::{Mirror, Rotation};
 use pumpkin_util::{
     math::{block_box::BlockBox, vector3::Vector3},
     random::RandomGenerator,
+    text::TextComponent,
+    text::translation::get_translation_text,
 };
 use tracing::debug;
 
@@ -137,7 +139,14 @@ impl TemplatePiece {
             {
                 s
             } else {
-                debug!("Failed to resolve block: {}", palette_entry.name);
+                debug!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.misc.failed_resolve_block",
+                        crate::server_locale(),
+                        vec![TextComponent::text(palette_entry.name.clone()).0]
+                    )
+                );
                 continue;
             };
 

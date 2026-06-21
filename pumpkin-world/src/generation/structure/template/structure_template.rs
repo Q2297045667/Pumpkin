@@ -5,24 +5,77 @@
 
 use std::io::Cursor;
 
+use pumpkin_i18n::get_translation;
 use pumpkin_nbt::{compound::NbtCompound, nbt_compress::read_gzip_compound_tag, tag::NbtTag};
 use pumpkin_util::math::vector3::Vector3;
-use thiserror::Error;
 
 /// Errors that can occur when loading a structure template.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum TemplateError {
-    #[error("Failed to decompress NBT: {0}")]
-    NbtError(#[from] pumpkin_nbt::Error),
+    NbtError(pumpkin_nbt::Error),
 
-    #[error("Missing required field: {0}")]
     MissingField(&'static str),
 
-    #[error("Invalid field type for {0}")]
     InvalidFieldType(&'static str),
 
-    #[error("Invalid palette index: {0}")]
     InvalidPaletteIndex(u32),
+}
+
+impl From<pumpkin_nbt::Error> for TemplateError {
+    fn from(e: pumpkin_nbt::Error) -> Self {
+        Self::NbtError(e)
+    }
+}
+
+impl std::fmt::Display for TemplateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::NbtError(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.structure.nbt_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::MissingField(field) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.structure.missing_field", locale)
+                        .replace("%s", field)
+                )
+            }
+            Self::InvalidFieldType(field) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.structure.invalid_field_type", locale)
+                        .replace("%s", field)
+                )
+            }
+            Self::InvalidPaletteIndex(idx) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.structure.invalid_palette_index", locale)
+                        .replace("%s", &idx.to_string())
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TemplateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NbtError(e) => Some(e),
+            Self::MissingField(_) | Self::InvalidFieldType(_) | Self::InvalidPaletteIndex(_) => {
+                None
+            }
+        }
+    }
 }
 
 /// A loaded structure template from an NBT file.

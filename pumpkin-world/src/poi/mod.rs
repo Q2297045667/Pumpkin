@@ -8,6 +8,8 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::text::TextComponent;
+use pumpkin_util::text::translation::get_translation_text;
 use serde::{Deserialize, Serialize};
 
 /// POI type identifier for nether portals
@@ -356,7 +358,17 @@ impl PoiRegion {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to parse POI chunk at index {index}: {e}");
+                    warn!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.poi.failed_parse_chunk",
+                            crate::server_locale(),
+                            vec![
+                                pumpkin_util::text::TextComponent::text(index.to_string()).0,
+                                pumpkin_util::text::TextComponent::text(e.to_string()).0
+                            ]
+                        )
+                    );
                 }
             }
         }
@@ -398,7 +410,21 @@ impl PoiStorage {
         self.regions.entry((rx, rz)).or_insert_with(|| {
             PoiRegion::load(&path).unwrap_or_else(|e| {
                 if path.exists() {
-                    warn!("Failed to load POI region {}: {}", path.display(), e);
+                    warn!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.poi.failed_load_region",
+                            crate::server_locale(),
+                            vec![
+                                pumpkin_util::text::TextComponent::text(format!(
+                                    "{}",
+                                    path.display()
+                                ))
+                                .0,
+                                pumpkin_util::text::TextComponent::text(e.to_string()).0
+                            ]
+                        )
+                    );
                 }
                 PoiRegion::new()
             })
@@ -483,7 +509,14 @@ impl PoiStorage {
         }
 
         if saved > 0 {
-            info!("Saved {saved} POI region(s)");
+            info!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.poi.saved_poi_regions",
+                    crate::server_locale(),
+                    vec![TextComponent::text(saved.to_string()).0]
+                )
+            );
         }
         Ok(())
     }

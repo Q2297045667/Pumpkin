@@ -82,6 +82,9 @@ pub fn init_logger(advanced_config: &AdvancedConfiguration) {
         &advanced_config.locale.server_logging,
     ));
 
+    // Also set the locale for pumpkin-world crate
+    pumpkin_world::set_server_locale(server_locale());
+
     let logger = advanced_config.logging.enabled.then(|| {
         let level = std::env::var("RUST_LOG")
             .ok()
@@ -92,12 +95,24 @@ pub fn init_logger(advanced_config: &AdvancedConfiguration) {
 
         let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             let level_str = match level {
-                LevelFilter::OFF => "off",
-                LevelFilter::ERROR => "error",
-                LevelFilter::WARN => "warn",
-                LevelFilter::INFO => "info",
-                LevelFilter::DEBUG => "debug",
-                LevelFilter::TRACE => "trace",
+                LevelFilter::OFF => {
+                    get_translation("pumpkin:server.log.levefilter.off", server_locale())
+                }
+                LevelFilter::ERROR => {
+                    get_translation("pumpkin:server.log.levefilter.error", server_locale())
+                }
+                LevelFilter::WARN => {
+                    get_translation("pumpkin:server.log.levefilter.warn", server_locale())
+                }
+                LevelFilter::INFO => {
+                    get_translation("pumpkin:server.log.levefilter.info", server_locale())
+                }
+                LevelFilter::DEBUG => {
+                    get_translation("pumpkin:server.log.levefilter.debug", server_locale())
+                }
+                LevelFilter::TRACE => {
+                    get_translation("pumpkin:server.log.levefilter.trace", server_locale())
+                }
             };
             EnvFilter::new(level_str)
         });

@@ -1,4 +1,6 @@
+use pumpkin_i18n::get_translation;
 use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_util::text::translation::get_translation_text;
 use std::fs::{File, create_dir_all};
 use std::io;
 use std::path::PathBuf;
@@ -16,12 +18,48 @@ pub struct PlayerDataStorage {
     save_enabled: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PlayerDataError {
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-    #[error("NBT error: {0}")]
+    Io(io::Error),
     Nbt(String),
+}
+
+impl From<io::Error> for PlayerDataError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl std::fmt::Display for PlayerDataError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locale = crate::server_locale();
+        match self {
+            Self::Io(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.player.io_error", locale)
+                        .replace("%s", &e.to_string())
+                )
+            }
+            Self::Nbt(e) => {
+                write!(
+                    f,
+                    "{}",
+                    get_translation("pumpkin:world.player.nbt_error", locale).replace("%s", e)
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlayerDataError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Nbt(_) => None,
+        }
+    }
 }
 
 impl PlayerDataStorage {
@@ -32,8 +70,15 @@ impl PlayerDataStorage {
             && let Err(e) = create_dir_all(&path)
         {
             error!(
-                "Failed to create player data directory at {}: {e}",
-                path.display()
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.player.failed_create_dir",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(format!("{}", path.display())).0,
+                        pumpkin_util::text::TextComponent::text(e.to_string()).0,
+                    ],
+                )
             );
         }
 
@@ -84,25 +129,59 @@ impl PlayerDataStorage {
         // If not in cache, load from disk
         let path = self.get_player_data_path(uuid);
         if !path.exists() {
-            debug!("No player data file found for {uuid}");
+            debug!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.player.no_player_data_file",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(uuid.to_string()).0]
+                )
+            );
             return Ok((false, NbtCompound::new()));
         }
 
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(e) => {
-                error!("Failed to open player data file for {uuid}: {e}");
+                error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.player.failed_open_file",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(uuid.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(e.to_string()).0
+                        ]
+                    )
+                );
                 return Err(PlayerDataError::Io(e));
             }
         };
 
         match pumpkin_nbt::nbt_compress::read_gzip_compound_tag(file) {
             Ok(nbt) => {
-                debug!("Loaded player data for {uuid} from disk");
+                debug!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.player.loaded_player_data",
+                        crate::server_locale(),
+                        vec![pumpkin_util::text::TextComponent::text(uuid.to_string()).0]
+                    )
+                );
                 Ok((true, nbt))
             }
             Err(e) => {
-                error!("Failed to read player data for {uuid}: {e}");
+                error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.player.failed_read_data",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(uuid.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(e.to_string()).0
+                        ]
+                    )
+                );
                 Err(PlayerDataError::Nbt(e.to_string()))
             }
         }
@@ -133,7 +212,17 @@ impl PlayerDataStorage {
         if let Some(parent) = path.parent()
             && let Err(e) = create_dir_all(parent)
         {
-            error!("Failed to create player data directory for {uuid}: {e}");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.player.failed_create_dir",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(uuid.to_string()).0,
+                        pumpkin_util::text::TextComponent::text(e.to_string()).0
+                    ]
+                )
+            );
             return Err(PlayerDataError::Io(e));
         }
 
@@ -141,15 +230,42 @@ impl PlayerDataStorage {
         match File::create(&path) {
             Ok(file) => {
                 if let Err(e) = pumpkin_nbt::nbt_compress::write_gzip_compound_tag(data, file) {
-                    error!("Failed to write compressed player data for {uuid}: {e}");
+                    error!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.player.failed_write_compressed",
+                            crate::server_locale(),
+                            vec![
+                                pumpkin_util::text::TextComponent::text(uuid.to_string()).0,
+                                pumpkin_util::text::TextComponent::text(e.to_string()).0
+                            ]
+                        )
+                    );
                     Err(PlayerDataError::Nbt(e.to_string()))
                 } else {
-                    debug!("Saved player data for {uuid} to disk");
+                    debug!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.player.saved_player_data",
+                            crate::server_locale(),
+                            vec![pumpkin_util::text::TextComponent::text(uuid.to_string()).0]
+                        )
+                    );
                     Ok(())
                 }
             }
             Err(e) => {
-                error!("Failed to create player data file for {uuid}: {e}");
+                error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.player.failed_create_file",
+                        crate::server_locale(),
+                        vec![
+                            pumpkin_util::text::TextComponent::text(uuid.to_string()).0,
+                            pumpkin_util::text::TextComponent::text(e.to_string()).0
+                        ]
+                    )
+                );
                 Err(PlayerDataError::Io(e))
             }
         }

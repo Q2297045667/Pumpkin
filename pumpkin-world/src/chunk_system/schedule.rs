@@ -14,6 +14,8 @@ use dashmap::DashMap;
 use pumpkin_config::lighting::LightingEngineConfig;
 use pumpkin_data::chunk_gen_settings::GenerationSettings;
 use pumpkin_util::math::vector2::Vector2;
+use pumpkin_util::text::TextComponent;
+use pumpkin_util::text::translation::get_translation_text;
 use slotmap::Key;
 use std::cmp::{Ordering, max};
 use std::collections::{BinaryHeap, HashMap};
@@ -130,7 +132,16 @@ impl GenerationSchedule {
                     .spawn(move || {
                         generation_work(recv_gen, send_chunk, level_clone);
                     })
-                    .expect("Failed to spawn Generation Thread");
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "{}",
+                            get_translation_text(
+                                "pumpkin:world.level.spawn_generation_thread_failed",
+                                crate::server_locale(),
+                                vec![]
+                            )
+                        )
+                    });
 
                 thread_tracker.push(handle);
             }
@@ -172,7 +183,16 @@ impl GenerationSchedule {
                 };
                 scheduler.work(level_sched);
             })
-            .expect("Failed to spawn Scheduler Thread");
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.level.spawn_scheduler_thread_failed",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                )
+            });
 
         thread_tracker.push(handle);
     }
@@ -609,8 +629,16 @@ impl GenerationSchedule {
                             self.chunk_map.remove(&pos);
                         } else {
                             warn!(
-                                "unload_chunk: chunk {pos:?} still has {} strong refs; cannot unload. holder.public={}",
-                                sc, holder.public
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.unload_chunk_refs",
+                                    crate::server_locale(),
+                                    vec![
+                                        TextComponent::text(format!("{pos:?}")).0,
+                                        TextComponent::text(sc.to_string()).0,
+                                        TextComponent::text(holder.public.to_string()).0,
+                                    ],
+                                )
                             );
                             self.unload_chunks.insert(pos);
                             holder.chunk = Some(Chunk::Level(chunk));
@@ -636,8 +664,12 @@ impl GenerationSchedule {
         drop(data);
         if let Err(e) = self.io_write.send(chunks) {
             error!(
-                "Failed to send chunks to io write thread during save (may have shut down): {:?}",
-                e
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.failed_send_chunks_save",
+                    crate::server_locale(),
+                    vec![TextComponent::text(format!("{:?}", e)).0],
+                )
             );
         }
     }
@@ -672,9 +704,15 @@ impl GenerationSchedule {
         }
 
         info!(
-            "Saving {} chunks (collected from {} holders)...",
-            chunks.len(),
-            self.chunk_map.len()
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.saving_chunks_collected",
+                crate::server_locale(),
+                vec![
+                    TextComponent::text(chunks.len().to_string()).0,
+                    TextComponent::text(self.chunk_map.len().to_string()).0,
+                ],
+            )
         );
 
         let mut data = self.io_lock.0.lock().unwrap();
@@ -684,7 +722,14 @@ impl GenerationSchedule {
         drop(data);
 
         if let Err(e) = self.io_write.send(chunks) {
-            error!("Failed to send chunks to io write thread: {:?}", e);
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.failed_send_chunks_io",
+                    crate::server_locale(),
+                    vec![TextComponent::text(format!("{:?}", e)).0],
+                )
+            );
         }
     }
 
@@ -725,8 +770,12 @@ impl GenerationSchedule {
                 let mut holder = self.chunk_map.remove(&pos).unwrap();
                 if holder.chunk.is_some() {
                     warn!(
-                        "receive_chunk(IO): holder already has chunk at {:?}; replacing",
-                        pos
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk_system.holder_already_has_chunk",
+                            crate::server_locale(),
+                            vec![TextComponent::text(format!("{:?}", pos)).0],
+                        )
                     );
                 }
                 debug_assert_eq!(holder.current_stage, StagedChunkEnum::None);
@@ -746,22 +795,34 @@ impl GenerationSchedule {
                         let result = self.public_chunk_map.insert(pos, data.clone());
                         if result.is_some() {
                             warn!(
-                                "receive_chunk(IO): replacing existing public chunk at {:?}",
-                                pos
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.replacing_existing_public_chunk",
+                                    crate::server_locale(),
+                                    vec![TextComponent::text(format!("{:?}", pos)).0],
+                                )
                             );
                         }
                         holder.public = true;
                         trace!(
-                            "Notifying players: chunk {:?} loaded from disk (Full status)",
-                            pos
+                            "{}",
+                            get_translation_text(
+                                "pumpkin:world.chunk_system.notify_chunk_loaded_disk",
+                                crate::server_locale(),
+                                vec![TextComponent::text(format!("{:?}", pos)).0],
+                            )
                         );
                         self.listener.process_new_chunk(pos, data);
                     }
                     Chunk::Proto(_) => {
                         if holder.public {
                             debug!(
-                                "Chunk {:?} downgraded to Proto for relighting, marking as non-public",
-                                pos
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.downgraded_proto_relight",
+                                    crate::server_locale(),
+                                    vec![TextComponent::text(format!("{:?}", pos)).0],
+                                )
                             );
                             self.public_chunk_map.remove(&pos);
                             holder.public = false;
@@ -785,10 +846,24 @@ impl GenerationSchedule {
                             if new_pos == pos {
                                 if holder.current_stage != StagedChunkEnum::Spawn {
                                     warn!(
-                                        "receive_chunk(Level): holder at {:?} for pos {:?} expected {:?}; aligning",
-                                        holder.current_stage,
-                                        new_pos,
-                                        StagedChunkEnum::Spawn
+                                        "{}",
+                                        get_translation_text(
+                                            "pumpkin:world.chunk_system.holder_mismatch_aligning",
+                                            crate::server_locale(),
+                                            vec![
+                                                TextComponent::text(format!(
+                                                    "{:?}",
+                                                    holder.current_stage
+                                                ))
+                                                .0,
+                                                TextComponent::text(format!("{:?}", new_pos)).0,
+                                                TextComponent::text(format!(
+                                                    "{:?}",
+                                                    StagedChunkEnum::Spawn
+                                                ))
+                                                .0,
+                                            ],
+                                        )
                                     );
                                     holder.current_stage = StagedChunkEnum::Spawn;
                                 }
@@ -806,8 +881,12 @@ impl GenerationSchedule {
                                     holder.chunk = Some(Chunk::Level(chunk.clone()));
                                     self.public_chunk_map.insert(new_pos, chunk.clone());
                                     info!(
-                                        "Notifying players: regenerated chunk at {:?} (was already public)",
-                                        new_pos
+                                        "{}",
+                                        get_translation_text(
+                                            "pumpkin:world.chunk_system.notify_regenerated_chunk",
+                                            crate::server_locale(),
+                                            vec![TextComponent::text(format!("{:?}", new_pos)).0],
+                                        )
                                     );
                                     self.listener.process_new_chunk(new_pos, &chunk);
                                 } else {
@@ -819,19 +898,36 @@ impl GenerationSchedule {
                                     holder.public = true;
                                     if result.is_some() {
                                         warn!(
-                                            "public_chunk_map.insert returned existing chunk for {new_pos:?}"
+                                            "{}",
+                                            get_translation_text(
+                                                "pumpkin:world.chunk_system.public_chunk_map_insert_existing",
+                                                crate::server_locale(),
+                                                vec![TextComponent::text(format!("{new_pos:?}")).0],
+                                            )
                                         );
                                     }
                                     if let Some(pc) = self.public_chunk_map.get(&new_pos) {
                                         trace!(
-                                            "Notifying players: new chunk at {:?} (generation complete)",
-                                            new_pos
+                                            "{}",
+                                            get_translation_text(
+                                                "pumpkin:world.chunk_system.notify_new_chunk_complete",
+                                                crate::server_locale(),
+                                                vec![
+                                                    TextComponent::text(format!("{:?}", new_pos)).0
+                                                ],
+                                            )
                                         );
                                         self.listener.process_new_chunk(new_pos, &pc);
                                     } else {
                                         error!(
-                                            "CRITICAL: Failed to retrieve chunk {:?} from public_chunk_map immediately after insert!",
-                                            new_pos
+                                            "{}",
+                                            get_translation_text(
+                                                "pumpkin:world.chunk_system.critical_public_chunk_map_failure",
+                                                crate::server_locale(),
+                                                vec![
+                                                    TextComponent::text(format!("{:?}", new_pos)).0
+                                                ],
+                                            )
                                         );
                                     }
                                 }
@@ -918,8 +1014,16 @@ impl GenerationSchedule {
                 error,
             } => {
                 error!(
-                    "Received generation failure notification for chunk {:?} at stage {:?}: {}",
-                    fail_pos, stage, error
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk_system.generation_failure_notification",
+                        crate::server_locale(),
+                        vec![
+                            TextComponent::text(format!("{:?}", fail_pos)).0,
+                            TextComponent::text(format!("{:?}", stage)).0,
+                            TextComponent::text(error.to_string()).0,
+                        ],
+                    )
                 );
 
                 if let Some(mut holder) = self.chunk_map.remove(&pos) {
@@ -973,11 +1077,25 @@ impl GenerationSchedule {
                     self.chunk_map.insert(pos, holder);
 
                     warn!(
-                        "Chunk {:?} reset to None and re-queued for regeneration (target: {:?})",
-                        pos, target_stage
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk_system.reset_requeued_regeneration",
+                            crate::server_locale(),
+                            vec![
+                                TextComponent::text(format!("{:?}", pos)).0,
+                                TextComponent::text(format!("{:?}", target_stage)).0,
+                            ],
+                        )
                     );
                 } else {
-                    error!("Failed to find holder for failed chunk {:?}", pos);
+                    error!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.misc.failed_find_holder",
+                            crate::server_locale(),
+                            vec![TextComponent::text(format!("{:?}", pos)).0],
+                        )
+                    );
                 }
             }
         }
@@ -986,9 +1104,16 @@ impl GenerationSchedule {
 
     fn work(mut self, level: Arc<Level>) {
         debug!(
-            "schedule thread start id: {:?} name: {}",
-            thread::current().id(),
-            thread::current().name().unwrap_or("unknown")
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.thread_start_info",
+                crate::server_locale(),
+                vec![
+                    TextComponent::text(format!("{:?}", thread::current().id())).0,
+                    TextComponent::text(thread::current().name().unwrap_or("unknown").to_string(),)
+                        .0,
+                ],
+            )
         );
         loop {
             if level.should_unload.swap(false, Relaxed) {
@@ -999,7 +1124,14 @@ impl GenerationSchedule {
                 self.save_all_chunk(false);
             }
             if level.shut_down_chunk_system.load(Relaxed) {
-                info!("Saving chunks before shutdown...");
+                info!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk_system.saving_chunks_before_shutdown",
+                        crate::server_locale(),
+                        vec![],
+                    )
+                );
                 self.garbage_collect_dependencies();
                 self.process_unload_queue();
                 self.save_all_chunk(true);
@@ -1030,7 +1162,14 @@ impl GenerationSchedule {
             'out2: while let Some(task) = self.queue.pop() {
                 if level.shut_down_chunk_system.load(Relaxed) {
                     self.queue.push(task);
-                    info!("Shutdown detected during task processing, saving chunks...");
+                    info!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk_system.shutdown_detected",
+                            crate::server_locale(),
+                            vec![],
+                        )
+                    );
                     self.save_all_chunk(true);
                     break 'out2;
                 }
@@ -1076,7 +1215,14 @@ impl GenerationSchedule {
                         if io_batch.len() >= 16
                             && self.io_read.send(std::mem::take(&mut io_batch)).is_err()
                         {
-                            info!("IO read thread closed, saving remaining chunks...");
+                            info!(
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.io_read_thread_closed",
+                                    crate::server_locale(),
+                                    vec![],
+                                )
+                            );
                             self.save_all_chunk(true);
                             break 'out2;
                         }
@@ -1085,7 +1231,14 @@ impl GenerationSchedule {
                         if !io_batch.is_empty()
                             && self.io_read.send(std::mem::take(&mut io_batch)).is_err()
                         {
-                            info!("IO read thread closed, saving remaining chunks...");
+                            info!(
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.io_read_thread_closed",
+                                    crate::server_locale(),
+                                    vec![],
+                                )
+                            );
                             self.save_all_chunk(true);
                             break 'out2;
                         }
@@ -1145,10 +1298,29 @@ impl GenerationSchedule {
                                 swap(&mut tmp, &mut holder.chunk);
                                 let tmp = match tmp {
                                     Some(v) => v,
-                                    None => panic!(
-                                        "Missing chunk for position {:?} while processing generation task for {:?} stage {:?}",
-                                        new_pos, node.pos, node.stage
-                                    ),
+                                    None => {
+                                        panic!(
+                                            "{}",
+                                            get_translation_text(
+                                                "pumpkin:world.chunk_system.missing_chunk_for_generation",
+                                                crate::server_locale(),
+                                                vec![
+                                                    pumpkin_util::text::TextComponent::text(
+                                                        format!("{:?}", new_pos)
+                                                    )
+                                                    .0,
+                                                    pumpkin_util::text::TextComponent::text(
+                                                        format!("{:?}", node.pos)
+                                                    )
+                                                    .0,
+                                                    pumpkin_util::text::TextComponent::text(
+                                                        format!("{:?}", node.stage)
+                                                    )
+                                                    .0,
+                                                ],
+                                            )
+                                        )
+                                    }
                                 };
                                 match tmp {
                                     Chunk::Level(chunk) => {
@@ -1207,7 +1379,14 @@ impl GenerationSchedule {
                             });
                         } else if self.generate.send((node.pos, cache, node.stage)).is_err() {
                             self.running_task_count = self.running_task_count.saturating_sub(1);
-                            info!("Generation thread closed, saving remaining chunks...");
+                            info!(
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.generation_thread_closed",
+                                    crate::server_locale(),
+                                    vec![],
+                                )
+                            );
                             self.save_all_chunk(true);
                             break 'out2;
                         }
@@ -1217,7 +1396,14 @@ impl GenerationSchedule {
 
             // Flush any remaining IO batch
             if !io_batch.is_empty() && self.io_read.send(std::mem::take(&mut io_batch)).is_err() {
-                info!("IO read thread closed, saving remaining chunks...");
+                info!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk_system.io_read_thread_closed",
+                        crate::server_locale(),
+                        vec![],
+                    )
+                );
                 self.save_all_chunk(true);
             }
 
@@ -1253,8 +1439,12 @@ impl GenerationSchedule {
             }
         }
         info!(
-            "schedule: waiting for {} generation tasks to finish",
-            self.running_task_count
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.waiting_generation_tasks",
+                crate::server_locale(),
+                vec![TextComponent::text(self.running_task_count.to_string()).0],
+            )
         );
         let mut wait_iterations = 0;
         let max_wait_iterations = 100; // 5 seconds max wait
@@ -1266,9 +1456,15 @@ impl GenerationSchedule {
                 wait_iterations += 1;
                 if wait_iterations % 20 == 0 {
                     warn!(
-                        "Still waiting for {} tasks to complete (waited {}ms)",
-                        self.running_task_count,
-                        wait_iterations * 50
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk_system.still_waiting_tasks",
+                            crate::server_locale(),
+                            vec![
+                                TextComponent::text(self.running_task_count.to_string()).0,
+                                TextComponent::text((wait_iterations * 50).to_string()).0,
+                            ],
+                        )
                     );
                 }
                 thread::sleep(Duration::from_millis(50));
@@ -1277,8 +1473,12 @@ impl GenerationSchedule {
 
         if self.running_task_count > 0 {
             warn!(
-                "Cancelling {} in-flight generation tasks",
-                self.running_task_count
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.cancelling_in_flight_tasks",
+                    crate::server_locale(),
+                    vec![TextComponent::text(self.running_task_count.to_string()).0],
+                )
             );
             let mut nodes_to_drop = Vec::new();
 
@@ -1313,8 +1513,12 @@ impl GenerationSchedule {
         let unreleased_count = self.graph.nodes.len();
         if unreleased_count > 0 {
             warn!(
-                "Cleaning up {} unreleased nodes from incomplete tasks",
-                unreleased_count
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.cleaning_unreleased_nodes",
+                    crate::server_locale(),
+                    vec![TextComponent::text(unreleased_count.to_string()).0],
+                )
             );
         }
         self.graph.edges.clear();
@@ -1323,9 +1527,26 @@ impl GenerationSchedule {
     fn debug_check(&self) -> bool {
         if !self.graph.nodes.is_empty() {
             for (key, value) in &self.graph.nodes {
-                error!("unrelease node {key:?}: {value:?}");
+                error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.debug.unrelease_node",
+                        crate::server_locale(),
+                        vec![
+                            TextComponent::text(format!("{key:?}")).0,
+                            TextComponent::text(format!("{value:?}")).0,
+                        ],
+                    )
+                );
             }
-            panic!("nodes count error");
+            panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.nodes_count_error",
+                    crate::server_locale(),
+                    vec![]
+                )
+            );
         }
         for (pos, holder) in &self.chunk_map {
             for i in &holder.tasks {

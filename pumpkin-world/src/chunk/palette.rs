@@ -6,6 +6,7 @@ use pumpkin_data::{
     fluid::Fluid,
 };
 use pumpkin_util::encompassing_bits;
+use pumpkin_util::text::translation::get_translation_text;
 use tracing::warn;
 
 use super::format::{ChunkSectionBiomes, ChunkSectionBlockStates};
@@ -246,7 +247,14 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
         minimum_bits_per_entry: u8,
     ) -> Self {
         if palette.is_empty() {
-            warn!("No palette data! Defaulting...");
+            warn!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk.no_palette_data",
+                    crate::server_locale(),
+                    vec![]
+                )
+            );
             return Self::Homogeneous(V::default());
         }
 
@@ -282,7 +290,14 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
                     *index_out = idx as u8;
                     counts[idx] += 1;
                 } else {
-                    warn!("Lookup index out of bounds! Defaulting...");
+                    warn!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk.lookup_index_out_of_bounds",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    );
                     // value is already 0, and counts[0] will be updated correctly if we track it
                 }
             }
@@ -316,7 +331,14 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
                 .get(lookup_index as usize)
                 .copied()
                 .unwrap_or_else(|| {
-                    warn!("Lookup index out of bounds! Defaulting...");
+                    warn!(
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk.lookup_index_out_of_bounds",
+                            crate::server_locale(),
+                            vec![]
+                        )
+                    );
                     V::default()
                 });
 
@@ -333,7 +355,14 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
                 counts[index] += 1;
             } else {
                 // This case should ideally not happen if the palette is complete.
-                warn!("Decompressed value not found in palette!");
+                warn!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.chunk.decompressed_value_not_found",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
             }
         }
 

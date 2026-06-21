@@ -15,6 +15,8 @@ use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::HeightMap;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::text::TextComponent;
+use pumpkin_util::text::translation::get_translation_text;
 use tracing::debug;
 
 pub struct Cache {
@@ -147,8 +149,17 @@ impl GenerationCache for Cache {
         if !(dx < self.size && dz < self.size && dx >= 0 && dz >= 0) {
             // breakpoint here
             debug!(
-                "illegal get_block_state {pos:?} cache pos ({}, {}) size {}",
-                self.x, self.z, self.size
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.generation.illegal_get_block_state",
+                    crate::server_locale(),
+                    vec![
+                        TextComponent::text(format!("{pos:?}")).0,
+                        TextComponent::text(self.x.to_string()).0,
+                        TextComponent::text(self.z.to_string()).0,
+                        TextComponent::text(self.size.to_string()).0,
+                    ]
+                )
             );
             return RawBlockState::AIR;
         }
@@ -169,8 +180,17 @@ impl GenerationCache for Cache {
         if !(dx < self.size && dz < self.size && dx >= 0 && dz >= 0) {
             // breakpoint here
             debug!(
-                "illegal set_block_state {pos:?} cache pos ({}, {}) size {}",
-                self.x, self.z, self.size
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.generation.illegal_set_block_state",
+                    crate::server_locale(),
+                    vec![
+                        TextComponent::text(format!("{pos:?}")).0,
+                        TextComponent::text(self.x.to_string()).0,
+                        TextComponent::text(self.z.to_string()).0,
+                        TextComponent::text(self.size.to_string()).0,
+                    ]
+                )
             );
             return;
         }
@@ -194,15 +214,31 @@ impl GenerationCache for Cache {
         let dz = (pos.z >> 4) - self.z;
         if !(dx < self.size && dz < self.size && dx >= 0 && dz >= 0) {
             debug!(
-                "illegal add_block_entity {pos:?} cache pos ({}, {}) size {}",
-                self.x, self.z, self.size
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.generation.illegal_add_block_entity",
+                    crate::server_locale(),
+                    vec![
+                        TextComponent::text(format!("{pos:?}")).0,
+                        TextComponent::text(self.x.to_string()).0,
+                        TextComponent::text(self.z.to_string()).0,
+                        TextComponent::text(self.size.to_string()).0,
+                    ]
+                )
             );
             return;
         }
 
         match &mut self.chunks[(dx * self.size + dz) as usize] {
             Chunk::Level(_) => {
-                debug!("add_block_entity on non-proto chunk at {pos:?}");
+                debug!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.debug.add_block_entity_non_proto",
+                        crate::server_locale(),
+                        vec![TextComponent::text(format!("{pos:?}")).0]
+                    )
+                );
             }
             Chunk::Proto(data) => {
                 data.add_block_entity(nbt);
@@ -349,7 +385,14 @@ impl Cache {
     ) {
         let mid = ((self.size * self.size) >> 1) as usize;
         match stage {
-            StagedChunkEnum::Empty => panic!("empty stage"),
+            StagedChunkEnum::Empty => panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.empty_stage",
+                    crate::server_locale(),
+                    vec![]
+                )
+            ),
             StagedChunkEnum::StructureStart => {
                 self.chunks[mid]
                     .get_proto_chunk_mut()

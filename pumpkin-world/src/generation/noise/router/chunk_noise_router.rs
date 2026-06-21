@@ -1,6 +1,7 @@
 use enum_dispatch::enum_dispatch;
 use pumpkin_data::noise_router::WrapperType;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::text::translation::get_translation_text;
 
 use crate::generation::biome_coords;
 
@@ -486,11 +487,25 @@ impl<'a> ChunkNoiseRouter<'a> {
             let (component_stack, component) = components.split_at_mut(*cell_cache_index);
 
             let Some(ChunkNoiseFunctionComponent::Chunk(chunk)) = component.first_mut() else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
             let ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache) = chunk else {
-                tracing::error!("Expected ChunkSpecificNoiseFunctionComponent::CellCache");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_cell_cache",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
 
@@ -516,14 +531,26 @@ impl<'a> ChunkNoiseRouter<'a> {
             let (component_stack, component) = components.split_at_mut(*interpolator_index);
 
             let Some(ChunkNoiseFunctionComponent::Chunk(chunk)) = component.first_mut() else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
             let ChunkSpecificNoiseFunctionComponent::DensityInterpolator(density_interpolator) =
                 chunk
             else {
                 tracing::error!(
-                    "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator"
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_density_interpolator",
+                        crate::server_locale(),
+                        vec![]
+                    )
                 );
                 continue;
             };
@@ -552,7 +579,14 @@ impl<'a> ChunkNoiseRouter<'a> {
         for interpolator_index in indices {
             let ChunkNoiseFunctionComponent::Chunk(chunk) = &mut components[*interpolator_index]
             else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
 
@@ -560,7 +594,12 @@ impl<'a> ChunkNoiseRouter<'a> {
                 chunk
             else {
                 tracing::error!(
-                    "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator"
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_density_interpolator",
+                        crate::server_locale(),
+                        vec![]
+                    )
                 );
                 continue;
             };
@@ -575,7 +614,14 @@ impl<'a> ChunkNoiseRouter<'a> {
         for interpolator_index in indices {
             let ChunkNoiseFunctionComponent::Chunk(chunk) = &mut components[*interpolator_index]
             else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
 
@@ -583,7 +629,12 @@ impl<'a> ChunkNoiseRouter<'a> {
                 chunk
             else {
                 tracing::error!(
-                    "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator"
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_density_interpolator",
+                        crate::server_locale(),
+                        vec![]
+                    )
                 );
                 continue;
             };
@@ -598,14 +649,26 @@ impl<'a> ChunkNoiseRouter<'a> {
         for interpolator_index in indices {
             let ChunkNoiseFunctionComponent::Chunk(chunk) = &mut components[*interpolator_index]
             else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
             let ChunkSpecificNoiseFunctionComponent::DensityInterpolator(density_interpolator) =
                 chunk
             else {
                 tracing::error!(
-                    "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator"
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_density_interpolator",
+                        crate::server_locale(),
+                        vec![]
+                    )
                 );
                 continue;
             };
@@ -620,14 +683,26 @@ impl<'a> ChunkNoiseRouter<'a> {
         for interpolator_index in indices {
             let ChunkNoiseFunctionComponent::Chunk(chunk) = &mut components[*interpolator_index]
             else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
             let ChunkSpecificNoiseFunctionComponent::DensityInterpolator(density_interpolator) =
                 chunk
             else {
                 tracing::error!(
-                    "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator"
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_density_interpolator",
+                        crate::server_locale(),
+                        vec![]
+                    )
                 );
                 continue;
             };
@@ -642,14 +717,26 @@ impl<'a> ChunkNoiseRouter<'a> {
         for interpolator_index in indices {
             let ChunkNoiseFunctionComponent::Chunk(chunk) = &mut components[*interpolator_index]
             else {
-                tracing::error!("Expected ChunkNoiseFunctionComponent::Chunk");
+                tracing::error!(
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_chunk_component",
+                        crate::server_locale(),
+                        vec![]
+                    )
+                );
                 continue;
             };
             let ChunkSpecificNoiseFunctionComponent::DensityInterpolator(density_interpolator) =
                 chunk
             else {
                 tracing::error!(
-                    "Expected ChunkSpecificNoiseFunctionComponent::DensityInterpolator"
+                    "{}",
+                    get_translation_text(
+                        "pumpkin:world.generation.expected_density_interpolator",
+                        crate::server_locale(),
+                        vec![]
+                    )
                 );
                 continue;
             };

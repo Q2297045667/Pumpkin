@@ -2,6 +2,7 @@ use crate::chunk::{ChunkData, ChunkLight, ChunkSections};
 use crate::generation::biome_coords;
 use pumpkin_config::lighting::LightingEngineConfig;
 use pumpkin_data::dimension::Dimension;
+use pumpkin_util::text::translation::get_translation_text;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -207,14 +208,28 @@ impl Chunk {
     }
     pub fn get_proto_chunk_mut(&mut self) -> &mut ProtoChunk {
         match self {
-            Self::Level(_) => panic!("chunk isn't a ProtoChunk"),
+            Self::Level(_) => panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.chunk_not_proto_chunk",
+                    crate::server_locale(),
+                    vec![]
+                )
+            ),
             Self::Proto(chunk) => chunk,
         }
     }
     #[must_use]
     pub fn get_proto_chunk(&self) -> &ProtoChunk {
         match self {
-            Self::Level(_) => panic!("chunk isn't a ProtoChunk"),
+            Self::Level(_) => panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.chunk_not_proto_chunk",
+                    crate::server_locale(),
+                    vec![]
+                )
+            ),
             Self::Proto(chunk) => chunk,
         }
     }
@@ -243,7 +258,14 @@ impl Chunk {
             })),
         ) {
             Self::Proto(proto) => proto,
-            Self::Level(_) => panic!("Cannot upgrade a Level chunk"),
+            Self::Level(_) => panic!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.cannot_upgrade_level_chunk",
+                    crate::server_locale(),
+                    vec![]
+                )
+            ),
         };
 
         let proto_chunk = *proto_chunk_box;

@@ -10,6 +10,7 @@ use crossfire::compat::AsyncRx;
 use pumpkin_config::lighting::LightingEngineConfig;
 use pumpkin_data::chunk::ChunkStatus;
 use pumpkin_data::chunk_gen_settings::GenerationSettings;
+use pumpkin_util::text::translation::get_translation_text;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -38,7 +39,16 @@ fn needs_relighting(chunk: &crate::chunk::ChunkData, config: &LightingEngineConf
         return false;
     }
 
-    let engine = chunk.light_engine.lock().expect("Mutex poisoned");
+    let engine = chunk.light_engine.lock().unwrap_or_else(|_| {
+        panic!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.mutex_poisoned",
+                crate::server_locale(),
+                vec![]
+            )
+        )
+    });
 
     // Scan for any complex lighting data
     let has_complex_light = engine.sky_light.iter().any(|lc| match lc {
@@ -59,7 +69,14 @@ pub async fn io_read_work(
     level: Arc<Level>,
     lock: IOLock,
 ) {
-    debug!("io read thread start");
+    debug!(
+        "{}",
+        get_translation_text(
+            "pumpkin:world.chunk_system.io_read_thread_start",
+            crate::server_locale(),
+            vec![]
+        )
+    );
 
     // Cleaner loop and async recv
     while let Ok(batch) = recv.recv().await {
@@ -101,7 +118,18 @@ pub async fn io_read_work(
 
                         if needs_relight {
                             debug!(
-                                "Chunk {pos:?} has uniform lighting, downgrading to Features stage for relighting"
+                                "{}",
+                                get_translation_text(
+                                    "pumpkin:world.chunk_system.relight_downgrade",
+                                    crate::server_locale(),
+                                    vec![
+                                        pumpkin_util::text::TextComponent::text(format!(
+                                            "{:?}",
+                                            pos
+                                        ))
+                                        .0
+                                    ]
+                                )
                             );
 
                             // Create ProtoChunk using the async method
@@ -163,7 +191,14 @@ pub async fn io_read_work(
         }
         let _ = fetch_task.await;
     }
-    debug!("io read thread stop");
+    debug!(
+        "{}",
+        get_translation_text(
+            "pumpkin:world.chunk_system.io_read_thread_stop",
+            crate::server_locale(),
+            vec![]
+        )
+    );
 }
 
 pub async fn io_write_work(recv: AsyncRx<Vec<(ChunkPos, Chunk)>>, level: Arc<Level>, lock: IOLock) {
@@ -184,7 +219,16 @@ pub async fn io_write_work(recv: AsyncRx<Vec<(ChunkPos, Chunk)>>, level: Arc<Lev
                 Chunk::Proto(chunk) => {
                     let mut temp = Chunk::Proto(chunk);
                     temp.upgrade_to_level_chunk(&level.world_gen.dimension, &level.lighting_config);
-                    let Chunk::Level(chunk) = temp else { panic!() };
+                    let Chunk::Level(chunk) = temp else {
+                        panic!(
+                            "{}",
+                            get_translation_text(
+                                "pumpkin:world.chunk_system.chunk_not_proto_chunk",
+                                crate::server_locale(),
+                                vec![]
+                            )
+                        )
+                    };
                     vec.push((pos, chunk));
                 }
             }
@@ -194,7 +238,14 @@ pub async fn io_write_work(recv: AsyncRx<Vec<(ChunkPos, Chunk)>>, level: Arc<Lev
             .save_chunks(&level.level_folder, vec)
             .await
         {
-            error!("Failed to save chunks: {:?}", e);
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.failed_save_chunks",
+                    crate::server_locale(),
+                    vec![pumpkin_util::text::TextComponent::text(format!("{:?}", e)).0]
+                )
+            );
         }
 
         for i in positions {
@@ -212,8 +263,12 @@ pub async fn io_write_work(recv: AsyncRx<Vec<(ChunkPos, Chunk)>>, level: Arc<Lev
                 }
                 Entry::Vacant(_) => {
                     warn!(
-                        "io_write: attempted to release missing lock entry for {:?}",
-                        i
+                        "{}",
+                        get_translation_text(
+                            "pumpkin:world.chunk_system.io_write_missing_lock",
+                            crate::server_locale(),
+                            vec![pumpkin_util::text::TextComponent::text(format!("{:?}", i)).0]
+                        )
                     );
                     // continue without panicking to avoid crashing on shutdown races
                 }
@@ -230,7 +285,16 @@ pub fn run_generation(
     _settings: &GenerationSettings,
 ) -> RecvChunk {
     let portal = level.world_portal.load_full();
-    let portal_ref = portal.as_deref().expect("Portal should be initialized");
+    let portal_ref = portal.as_deref().unwrap_or_else(|| {
+        panic!(
+            "{}",
+            get_translation_text(
+                "pumpkin:world.chunk_system.portal_should_be_initialized",
+                crate::server_locale(),
+                vec![]
+            )
+        )
+    });
     // Run generation with panic catching
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         cache.advance(stage, &level.world_gen, portal_ref, &level.lighting_config);
@@ -240,22 +304,35 @@ pub fn run_generation(
     match result {
         Ok(cache) => RecvChunk::Generation(cache),
         Err(payload) => {
-            let msg = payload
+            let msg: String = payload
                 .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| {
-                    payload
-                        .downcast_ref::<String>()
-                        .map(std::string::String::as_str)
-                })
-                .unwrap_or("Unknown panic payload");
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| {
+                    get_translation_text(
+                        "pumpkin:world.chunk_system.unknown_panic_payload",
+                        crate::server_locale(),
+                        vec![],
+                    )
+                });
 
-            error!("Chunk generation FAILED at {pos:?} ({stage:?}): {msg}");
+            error!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.chunk_generation_failed",
+                    crate::server_locale(),
+                    vec![
+                        pumpkin_util::text::TextComponent::text(format!("{:?}", pos)).0,
+                        pumpkin_util::text::TextComponent::text(format!("{:?}", stage)).0,
+                        pumpkin_util::text::TextComponent::text(msg.clone()).0
+                    ]
+                )
+            );
 
             RecvChunk::GenerationFailure {
                 pos,
                 stage,
-                error: msg.to_string(),
+                error: msg,
             }
         }
     }
@@ -272,7 +349,14 @@ pub fn generation_work(
         let (pos, cache, stage) = if let Ok(data) = recv.recv() {
             data
         } else {
-            debug!("generation channel closed, exiting");
+            debug!(
+                "{}",
+                get_translation_text(
+                    "pumpkin:world.chunk_system.generation_channel_closed",
+                    crate::server_locale(),
+                    vec![]
+                )
+            );
             break;
         };
 

@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_util::text::translation::get_translation_text;
 use pumpkin_util::{
     math::position::BlockPos,
     resource_location::{FromResourceLocation, ResourceLocation, ToResourceLocation},
@@ -149,16 +150,33 @@ where
 
         let delay = get_int("t")? as u8;
 
-        let priority = TickPriority::try_from(get_int("p")?)
-            .map_err(|_| D::Error::custom("Invalid tick priority"))?;
+        let priority = TickPriority::try_from(get_int("p")?).map_err(|_| {
+            D::Error::custom(get_translation_text(
+                "pumpkin:world.tick.invalid_tick_priority",
+                crate::server_locale(),
+                vec![],
+            ))
+        })?;
 
         let res_loc_str = get_str("i")?;
         let res_loc = ResourceLocation::from_str(res_loc_str).map_err(|e| {
-            D::Error::custom(format!("Invalid ResourceLocation '{res_loc_str}': {e}"))
+            D::Error::custom(get_translation_text(
+                "pumpkin:world.tick.invalid_resource_location",
+                crate::server_locale(),
+                vec![
+                    pumpkin_util::text::TextComponent::text(res_loc_str.to_string()).0,
+                    pumpkin_util::text::TextComponent::text(e.to_string()).0,
+                ],
+            ))
         })?;
 
-        let value = T::from_resource_location(&res_loc)
-            .ok_or_else(|| D::Error::custom(format!("Unknown tick type: {res_loc_str}")))?;
+        let value = T::from_resource_location(&res_loc).ok_or_else(|| {
+            D::Error::custom(get_translation_text(
+                "pumpkin:world.tick.unknown_tick_type",
+                crate::server_locale(),
+                vec![pumpkin_util::text::TextComponent::text(res_loc_str.to_string()).0],
+            ))
+        })?;
 
         Ok(Self {
             delay,
