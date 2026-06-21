@@ -83,40 +83,6 @@ pub fn resolve_client_locale(player_locale: &str, config_value: &str) -> Locale 
     crate::parse_locale_value(source)
 }
 
-/// Resolve locale for a Java Edition player.
-///
-/// Java Edition clients report locale as lowercase with underscores
-/// (e.g. `"en_us"`, `"zh_cn"`). This function normalises and resolves
-/// via the server configuration.
-///
-/// # Arguments
-/// * `player_locale` — The locale string from the Java client (e.g. `"zh_cn"`).
-/// * `config_value` — The `client_java_edition` config value.
-///
-/// # Returns
-/// The resolved [`Locale`].
-#[must_use]
-pub fn resolve_java_locale(player_locale: &str, config_value: &str) -> Locale {
-    resolve_client_locale(player_locale, config_value)
-}
-
-/// Resolve locale for a Bedrock Edition player.
-///
-/// Bedrock Edition clients may report locale in mixed‑case with underscores
-/// (e.g. `"en_US"`, `"zh_CN"`). Normalisation to lowercase is handled
-/// automatically.
-///
-/// # Arguments
-/// * `player_locale` — The locale string from the Bedrock client (e.g. `"zh_CN"`).
-/// * `config_value` — The `client_bedrock_edition` config value.
-///
-/// # Returns
-/// The resolved [`Locale`].
-#[must_use]
-pub fn resolve_bedrock_locale(player_locale: &str, config_value: &str) -> Locale {
-    resolve_client_locale(player_locale, config_value)
-}
-
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
