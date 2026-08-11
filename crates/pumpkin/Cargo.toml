@@ -26,6 +26,7 @@ pumpkin-nbt.workspace = true
 pumpkin-config.workspace = true
 pumpkin-inventory.workspace = true
 pumpkin-world.workspace = true
+pumpkin-gpu = { workspace = true, optional = true }
 pumpkin-data = { workspace = true, features = ["default"] }
 pumpkin-protocol = { workspace = true, features = ["default"] }
 pumpkin-macros.workspace = true
@@ -127,6 +128,7 @@ tempfile.workspace = true
 
 [features]
 console-subscriber = ["dep:console-subscriber"]
+gpu = ["dep:pumpkin-gpu", "pumpkin-gpu/gpu", "pumpkin-world/gpu", "pumpkin-config/gpu"]
 
 [lints]
 workspace = true

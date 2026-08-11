@@ -56,6 +56,7 @@ rand.workspace = true
 rustc-hash.workspace = true
 slotmap.workspace = true
 crossfire.workspace = true
+pumpkin-gpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -83,9 +84,16 @@ harness = false
 name = "noise_router"
 harness = false
 
+[[bench]]
+name = "gpu_noise"
+harness = false
+
 
 [lints]
 workspace = true
+
+[features]
+gpu = ["dep:pumpkin-gpu", "pumpkin-gpu/gpu", "pumpkin-config/gpu"]
 
 [package.metadata.cargo-machete]
 ignored = ["serde_json"]

@@ -52,6 +52,10 @@ pub mod lighting;
 pub mod op;
 
 mod advancement;
+/// GPU acceleration configuration options.
+/// Only available when compiled with the `gpu` feature.
+#[cfg(feature = "gpu")]
+pub mod gpu;
 mod player_data;
 mod pvp;
 mod server_links;
@@ -161,6 +165,10 @@ pub struct AdvancedConfiguration {
     pub plugins: PluginsConfig,
     /// Advancement configuration
     pub advancement: AdvancementConfig,
+    /// GPU acceleration configuration.
+    /// Only available when compiled with the `gpu` feature.
+    #[cfg(feature = "gpu")]
+    pub gpu: crate::gpu::GpuConfig,
 }
 
 /// Basic configuration for core server settings.
@@ -239,8 +247,9 @@ impl BasicConfiguration {
 
 impl AdvancedConfiguration {
     /// Validates advanced configuration options.
-    pub const fn validate(&self) {
-        //self.resource_pack.validate();
+    pub fn validate(&self) {
+        #[cfg(feature = "gpu")]
+        self.gpu.validate();
     }
 }
 

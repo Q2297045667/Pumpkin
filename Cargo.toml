@@ -6,6 +6,7 @@ members = [
     "crates/pumpkin-codecs",
     "crates/pumpkin-config",
     "crates/pumpkin-data",
+    "crates/pumpkin-gpu",
     "crates/pumpkin-inventory",
     "crates/pumpkin-macros",
     "crates/pumpkin-nbt",
@@ -144,6 +145,7 @@ aes = { version = "0.9", default-features = false }
 async-compression = { version = "0.4.43", default-features = false }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.1", default-features = false, features = ["std"] }
+bytemuck = { version = "1.23", default-features = false, features = ["derive"] }
 cesu8 = { version = "1.1", default-features = false }
 cfb8 = { version = "0.9", default-features = false }
 colored = { version = "3.1", default-features = false }
@@ -173,6 +175,7 @@ proc-macro2 = { version = "1.0", default-features = false, features = ["proc-mac
 pumpkin-codecs = { path = "crates/pumpkin-codecs", default-features = false }
 pumpkin-config = { path = "crates/pumpkin-config", default-features = false }
 pumpkin-data = { path = "crates/pumpkin-data", default-features = false }
+pumpkin-gpu = { path = "crates/pumpkin-gpu", default-features = false }
 pumpkin-inventory = { path = "crates/pumpkin-inventory", default-features = false }
 pumpkin-macros = { path = "crates/pumpkin-macros", default-features = false }
 pumpkin-nbt = { path = "crates/pumpkin-nbt", default-features = false }

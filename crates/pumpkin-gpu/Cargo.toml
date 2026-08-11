@@ -1,0 +1,61 @@
+[package]
+name = "pumpkin-gpu"
+version.workspace = true
+description = "GPU-accelerated compute kernels for Pumpkin world generation"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core
+tracing.workspace = true
+thiserror.workspace = true
+rustc-hash.workspace = true
+bytemuck.workspace = true
+parking_lot = "0.12"
+
+# CUDA backend (optional)
+cudarc = { version = "0.19", default-features = false, features = [
+    "driver",
+    "dynamic-loading",
+    "cuda-version-from-build-system",
+], optional = true }
+
+# OpenCL backend (optional)
+opencl3 = { version = "0.12", optional = true }
+
+# Shared types with pumpkin
+pumpkin-util = { workspace = true, optional = true }
+pumpkin-config = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand.workspace = true
+tempfile.workspace = true
+pumpkin-util = { workspace = true }
+
+[features]
+default = []
+# Individual backend features
+cuda = ["dep:cudarc"]
+opencl = ["dep:opencl3"]
+# Enables pumpkin-config integration
+pumpkin-config = ["dep:pumpkin-config", "pumpkin-config/gpu"]
+# Enables pumpkin-util integration (noise module)
+pumpkin-util = ["dep:pumpkin-util"]
+# Meta-feature: enables ALL GPU backends (what `pumpkin` crate uses)
+gpu = ["cuda", "opencl", "pumpkin-util", "pumpkin-config"]
+# CPU fallback is always available
+
+[[test]]
+name = "buffer_tests"
+harness = true
+
+[[test]]
+name = "kernel_tests"
+harness = true
+
+[lints]
+workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["pumpkin-util"]

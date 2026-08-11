@@ -13,6 +13,8 @@ uuid.workspace = true
 
 toml.workspace = true
 
+[features]
+gpu = []
 
 [lints]
 workspace = true

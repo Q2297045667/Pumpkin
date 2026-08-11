@@ -76,6 +76,30 @@ impl PerlinNoiseSampler {
         self.sample_no_fade(x, y, z, 0.0, 0.0)
     }
 
+    /// Returns the permutation table (256 bytes).
+    #[must_use]
+    pub const fn permutation(&self) -> &[u8; 256] {
+        &self.permutation
+    }
+
+    /// Returns the X origin offset.
+    #[must_use]
+    pub const fn x_origin(&self) -> f64 {
+        self.x_origin
+    }
+
+    /// Returns the Y origin offset.
+    #[must_use]
+    pub const fn y_origin(&self) -> f64 {
+        self.y_origin
+    }
+
+    /// Returns the Z origin offset.
+    #[must_use]
+    pub const fn z_origin(&self) -> f64 {
+        self.z_origin
+    }
+
     /// Samples noise with optional vertical scaling and clamping.
     ///
     /// This method applies the origin offsets, computes the integer lattice points,
@@ -235,6 +259,26 @@ pub struct SamplerData {
     pub persistence: f64,
     /// The lacunarity factor (frequency scaling between octaves).
     pub lacunarity: f64,
+}
+
+impl SamplerData {
+    /// Returns the amplitude.
+    #[must_use]
+    pub const fn amplitude(&self) -> f64 {
+        self.amplitude
+    }
+
+    /// Returns the persistence.
+    #[must_use]
+    pub const fn persistence(&self) -> f64 {
+        self.persistence
+    }
+
+    /// Returns the lacunarity.
+    #[must_use]
+    pub const fn lacunarity(&self) -> f64 {
+        self.lacunarity
+    }
 }
 
 /// A multi-octave Perlin noise sampler that combines multiple noise layers.
