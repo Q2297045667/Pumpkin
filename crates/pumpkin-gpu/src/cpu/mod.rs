@@ -14,7 +14,7 @@ impl CpuBackend {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            name: String::from("CPU Fallback"),
+            name: get_cpu_name(),
             launcher: CpuKernelLauncher,
         }
     }
@@ -117,6 +117,22 @@ impl CpuBackend {
     pub fn kernel_launcher(&self) -> Option<&dyn KernelLauncher> {
         Some(&self.launcher)
     }
+}
+
+#[cfg(feature = "gpu")]
+fn get_cpu_name() -> String {
+    use sysinfo::System;
+
+    let sys = System::new_all();
+    sys.cpus().first().map_or_else(
+        || String::from("CPU Fallback"),
+        |cpu| format!("CPU: {} ({})", cpu.brand(), cpu.name()),
+    )
+}
+
+#[cfg(not(feature = "gpu"))]
+fn get_cpu_name() -> String {
+    String::from("CPU Fallback")
 }
 
 struct CpuKernelLauncher;

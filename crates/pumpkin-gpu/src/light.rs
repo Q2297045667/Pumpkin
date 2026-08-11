@@ -4,6 +4,7 @@
 
 use crate::GpuDevice;
 use crate::common::DeviceError;
+use crate::common::kernel::{GpuBufferRef, KernelArg};
 
 /// GPU 光照加速器。
 pub struct GpuLightSampler {
@@ -42,8 +43,19 @@ impl GpuLightSampler {
                     name: "sky_light_fill_u8",
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    args: vec![],
-                    buffers: vec![],
+                    args: vec![
+                        KernelArg::BufferRef(0),
+                        KernelArg::BufferRef(1),
+                        KernelArg::BufferRef(2),
+                        KernelArg::I32(n as i32),
+                        KernelArg::I32(max_height as i32),
+                        KernelArg::I32(0),
+                    ],
+                    gpu_buffers: vec![
+                        GpuBufferRef::I32(&d_hm),
+                        GpuBufferRef::U8(&d_op),
+                        GpuBufferRef::U8(&d_sl),
+                    ],
                 })?;
                 l.synchronize()?;
                 self.device.copy_from_device(&d_sl, sky_light)?;
@@ -92,8 +104,19 @@ impl GpuLightSampler {
                     name: "block_light_scan_u8",
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    args: vec![],
-                    buffers: vec![],
+                    args: vec![
+                        KernelArg::BufferRef(0),
+                        KernelArg::BufferRef(1),
+                        KernelArg::BufferRef(2),
+                        KernelArg::BufferRef(3),
+                        KernelArg::I32(n as i32),
+                    ],
+                    gpu_buffers: vec![
+                        GpuBufferRef::U8(&d_lum),
+                        GpuBufferRef::U8(&d_bl),
+                        GpuBufferRef::I32(&d_src),
+                        GpuBufferRef::I32(&d_cnt),
+                    ],
                 })?;
                 l.synchronize()?;
                 self.device.copy_from_device(&d_bl, block_light)?;
@@ -154,8 +177,19 @@ impl GpuLightSampler {
                         name: "light_propagate_u8",
                         global_work_size: [n, 1, 1],
                         local_work_size: Some([256, 1, 1]),
-                        args: vec![],
-                        buffers: vec![],
+                        args: vec![
+                            KernelArg::BufferRef(0),
+                            KernelArg::BufferRef(1),
+                            KernelArg::BufferRef(2),
+                            KernelArg::BufferRef(3),
+                            KernelArg::I32(n as i32),
+                        ],
+                        gpu_buffers: vec![
+                            GpuBufferRef::U8(&d_light),
+                            GpuBufferRef::U8(&d_opacity),
+                            GpuBufferRef::I32(&d_neighbors),
+                            GpuBufferRef::U8(&d_changed),
+                        ],
                     })?;
                     l.synchronize()?;
                     iterations += 1;

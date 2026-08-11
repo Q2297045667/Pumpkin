@@ -53,6 +53,12 @@ impl LightAccelerator {
             if s.batch_sky_fill(hm, op, sl, n, h).is_ok() {
                 return;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU batch sky fill failed".into(),
+                ),
+                "light_accel::batch_sky_fill",
+            );
         }
         for col in 0..n {
             let top = hm[col] as i32;
@@ -75,6 +81,12 @@ impl LightAccelerator {
             if let Ok(src) = s.batch_block_scan(lum, bl, n) {
                 return src;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU batch block scan failed".into(),
+                ),
+                "light_accel::batch_block_scan",
+            );
         }
         let mut src = Vec::new();
         for i in 0..n {
@@ -100,6 +112,12 @@ impl LightAccelerator {
             if let Ok(it) = s.iterative_propagate(light, opacity, neighbors, n, max_iters) {
                 return it;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU iterative propagate failed".into(),
+                ),
+                "light_accel::iterative_propagate",
+            );
         }
         let mut it = 0;
         for _ in 0..max_iters {

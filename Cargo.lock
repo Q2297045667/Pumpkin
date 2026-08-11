@@ -3472,6 +3472,7 @@ dependencies = [
  "pumpkin-util",
  "rand 0.10.2",
  "rustc-hash",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.20",
  "tracing",

@@ -58,6 +58,12 @@ impl NoiseAccelerator {
             if i.sample_octave_batch(s, pos, res).is_ok() {
                 return;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU octave sample failed".into(),
+                ),
+                "noise_accel::sample_octave",
+            );
         }
         // CPU 路径
         for i in 0..res.len() {
@@ -77,6 +83,12 @@ impl NoiseAccelerator {
             if i.sample_double_perlin_batch(a, b, amp, pos, res).is_ok() {
                 return;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU double perlin sample failed".into(),
+                ),
+                "noise_accel::sample_double_perlin",
+            );
         }
         let c = 1.0181268882175227f64;
         for i in 0..res.len() {
@@ -92,6 +104,12 @@ impl NoiseAccelerator {
             if i.sample_shift_a_batch(s, xz, res).is_ok() {
                 return;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU shift A sample failed".into(),
+                ),
+                "noise_accel::sample_shift_a",
+            );
         }
         for i in 0..res.len() {
             res[i] = s.sample(xz[i * 2] * 0.25, 0.0, xz[i * 2 + 1] * 0.25) * 4.0;
@@ -103,6 +121,12 @@ impl NoiseAccelerator {
             if i.sample_shift_b_batch(s, zx, res).is_ok() {
                 return;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU shift B sample failed".into(),
+                ),
+                "noise_accel::sample_shift_b",
+            );
         }
         for i in 0..res.len() {
             res[i] = s.sample(zx[i * 2 + 1] * 0.25, 0.0, zx[i * 2] * 0.25) * 4.0;
@@ -114,6 +138,12 @@ impl NoiseAccelerator {
             if i.batch_trilinear(corners, deltas, results).is_ok() {
                 return;
             }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU batch trilinear failed".into(),
+                ),
+                "noise_accel::batch_trilinear",
+            );
         }
         for i in 0..results.len() {
             let b = i * 8;
@@ -141,6 +171,15 @@ impl NoiseAccelerator {
             && i.precompute_flatcache(s, xz, results).is_ok()
         {
             return;
+        }
+        #[cfg(feature = "gpu")]
+        if self.inner.is_some() {
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU flatcache precompute failed".into(),
+                ),
+                "noise_accel::precompute_flatcache",
+            );
         }
         for i in 0..results.len() {
             results[i] = s.sample(xz[i * 2], 0.0, xz[i * 2 + 1]);

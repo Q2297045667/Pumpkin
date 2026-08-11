@@ -29,6 +29,9 @@ opencl3 = { version = "0.12", optional = true }
 pumpkin-util = { workspace = true, optional = true }
 pumpkin-config = { workspace = true, optional = true }
 
+# System info (CPU name for fallback logs)
+sysinfo = { workspace = true, optional = true }
+
 [dev-dependencies]
 rand.workspace = true
 tempfile.workspace = true
@@ -44,7 +47,7 @@ pumpkin-config = ["dep:pumpkin-config", "pumpkin-config/gpu"]
 # Enables pumpkin-util integration (noise module)
 pumpkin-util = ["dep:pumpkin-util"]
 # Meta-feature: enables ALL GPU backends (what `pumpkin` crate uses)
-gpu = ["cuda", "opencl", "pumpkin-util", "pumpkin-config"]
+gpu = ["cuda", "opencl", "pumpkin-util", "pumpkin-config", "dep:sysinfo"]
 # CPU fallback is always available
 
 [[test]]

@@ -11,6 +11,7 @@
 
 use crate::GpuDevice;
 use crate::common::DeviceError;
+use crate::common::kernel::{GpuBufferRef, KernelArg};
 use crate::noise::cache::NoiseCache;
 
 // ============================================================================
@@ -110,7 +111,7 @@ impl GpuCellBatchSampler {
 
         self.device.copy_to_device(&mut d_pos, positions)?;
 
-        let ok = self.try_launch("cell_cache_fill_f64", n);
+        let ok = self.try_launch("cell_cache_fill_f64", n, vec![], vec![]);
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -148,7 +149,7 @@ impl GpuCellBatchSampler {
 
         self.device.copy_to_device(&mut d_pos, positions)?;
 
-        let ok = self.try_launch("interpolator_fill_f64", n);
+        let ok = self.try_launch("interpolator_fill_f64", n, vec![], vec![]);
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -161,17 +162,21 @@ impl GpuCellBatchSampler {
     }
 
     /// Helper: try to launch GPU kernel, return true if successful.
-    fn try_launch(&self, name: &str, n: usize) -> bool {
+    fn try_launch(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<KernelArg<'_>>,
+        gpu_buffers: Vec<GpuBufferRef<'_>>,
+    ) -> bool {
         match self.device.kernel_launcher() {
             Some(l) if l.has_kernel(name) => {
                 l.launch(crate::common::kernel::KernelLaunch {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
-                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
-                    args: vec![],
-                    buffers: vec![],
+                    args,
+                    gpu_buffers,
                 })
                 .is_ok()
                     && l.synchronize().is_ok()
@@ -266,7 +271,30 @@ impl GpuAquiferBatchSampler {
         self.device.copy_to_device(&mut d_gpos, &grid_positions)?;
         self.device.copy_to_device(&mut d_gden, &grid_densities)?;
 
-        let ok = self.try_launch("aquifer_batch_f64", n);
+        let ok = self.try_launch(
+            "aquifer_batch_f64",
+            n,
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
+                KernelArg::BufferRef(5),
+                KernelArg::F64(fluid_level),
+                KernelArg::F64(barrier_scale),
+                KernelArg::I32(n as i32),
+                KernelArg::I32(m as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::F64(&d_gpos),
+                GpuBufferRef::F64(&d_dens),
+                GpuBufferRef::F64(&d_gden),
+                GpuBufferRef::I32(&d_bids),
+                GpuBufferRef::U8(&d_flags),
+            ],
+        );
         let mut block_ids = vec![0i32; n];
         let mut fluid_updates = vec![0u8; n];
 
@@ -299,17 +327,21 @@ impl GpuAquiferBatchSampler {
         })
     }
 
-    fn try_launch(&self, name: &str, n: usize) -> bool {
+    fn try_launch(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<KernelArg<'_>>,
+        gpu_buffers: Vec<GpuBufferRef<'_>>,
+    ) -> bool {
         match self.device.kernel_launcher() {
             Some(l) if l.has_kernel(name) => {
                 l.launch(crate::common::kernel::KernelLaunch {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
-                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
-                    args: vec![],
-                    buffers: vec![],
+                    args,
+                    gpu_buffers,
                 })
                 .is_ok()
                     && l.synchronize().is_ok()
@@ -388,7 +420,7 @@ impl GpuBeardifierBatchSampler {
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
         self.device.copy_to_device(&mut d_junct, &junct_flat)?;
 
-        let ok = self.try_launch("beardifier_batch_f64", n);
+        let ok = self.try_launch("beardifier_batch_f64", n, vec![], vec![]);
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -402,17 +434,21 @@ impl GpuBeardifierBatchSampler {
         Ok(())
     }
 
-    fn try_launch(&self, name: &str, n: usize) -> bool {
+    fn try_launch(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<KernelArg<'_>>,
+        gpu_buffers: Vec<GpuBufferRef<'_>>,
+    ) -> bool {
         match self.device.kernel_launcher() {
             Some(l) if l.has_kernel(name) => {
                 l.launch(crate::common::kernel::KernelLaunch {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
-                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
-                    args: vec![],
-                    buffers: vec![],
+                    args,
+                    gpu_buffers,
                 })
                 .is_ok()
                     && l.synchronize().is_ok()
@@ -470,7 +506,7 @@ impl GpuVeinBatchSampler {
 
         self.device.copy_to_device(&mut d_pos, positions)?;
 
-        let ok = self.try_launch("vein_batch_f64", n);
+        let ok = self.try_launch("vein_batch_f64", n, vec![], vec![]);
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -482,17 +518,21 @@ impl GpuVeinBatchSampler {
         Ok(())
     }
 
-    fn try_launch(&self, name: &str, n: usize) -> bool {
+    fn try_launch(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<KernelArg<'_>>,
+        gpu_buffers: Vec<GpuBufferRef<'_>>,
+    ) -> bool {
         match self.device.kernel_launcher() {
             Some(l) if l.has_kernel(name) => {
                 l.launch(crate::common::kernel::KernelLaunch {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
-                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
-                    args: vec![],
-                    buffers: vec![],
+                    args,
+                    gpu_buffers,
                 })
                 .is_ok()
                     && l.synchronize().is_ok()

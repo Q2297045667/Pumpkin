@@ -19,8 +19,15 @@ use serde::{Deserialize, Serialize};
 /// surface_acceleration = false
 /// jit_enabled = true
 /// backend = "auto"
+///
+/// [gpu.cudarc]
+/// compile_ptx = "auto"
+/// flags = ["--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true"]
+///
+/// [gpu.device]
+/// strategy = "auto"
 /// ```
-#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Debug)]
 #[serde(default)]
 pub struct GpuConfig {
     /// 是否开启全局 GPU 加速。
@@ -52,16 +59,19 @@ pub struct GpuConfig {
     /// 默认值：`false`
     pub jit_enabled: bool,
 
-    /// 是否启用 `SoA` 数据布局优化。
+    /// JIT 循环展开上限。
+    ///
+    /// 当八度数 ≤ 此值时，JIT 编译器会完全展开循环。
+    /// 超过此值时使用标准循环（避免指令缓存压力）。
+    /// 默认值：`16`
+    pub jit_max_unroll: usize,
+
+    /// 是否启用 `SoA`（Structure of Arrays）数据布局优化。
+    ///
     /// 启用后位置数据以独立 X/Y/Z 数组格式上传，
     /// 改善 GPU 内存合并访问效率。
-    /// 默认值：`false`（保持 `AoS` 交错格式以确保最大兼容性）
+    /// 默认值：`false`
     pub soa_layout: bool,
-
-    /// 是否启用 Local Memory Tiling 优化。
-    /// 对于小网格（点 ≤ 2048），将 `packed_positions` 预加载到 local memory。
-    /// 默认值：`false`（需要 GPU 硬件验证收益后开启）
-    pub local_mem_tiling: bool,
 
     /// 后端选择策略。
     ///
@@ -74,11 +84,9 @@ pub struct GpuConfig {
     pub backend: GpuBackend,
 
     /// `CUDA` 特定配置。
-    /// 仅当 backend 为 `"cuda"` 或 `"auto"`（探测到 `CUDA`）时生效。
     pub cudarc: CudaConfig,
 
     /// `OpenCL` 特定配置。
-    /// 仅当 backend 为 `"opencl"` 或 `"auto"`（探测到 `OpenCL`）时生效。
     pub opencl3: OpenClConfig,
 
     /// 设备选择策略。
@@ -92,6 +100,24 @@ impl GpuConfig {
             && let GpuDeviceSelection::ByName { ref name } = self.device
         {
             assert!(!name.trim().is_empty(), "GPU device name must not be empty");
+        }
+    }
+}
+
+impl Default for GpuConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            noise_acceleration: false,
+            light_acceleration: false,
+            surface_acceleration: false,
+            jit_enabled: false,
+            jit_max_unroll: 16,
+            soa_layout: false,
+            backend: GpuBackend::default(),
+            cudarc: CudaConfig::default(),
+            opencl3: OpenClConfig::default(),
+            device: GpuDeviceSelection::default(),
         }
     }
 }
@@ -154,9 +180,41 @@ pub struct CudaConfig {
 
     /// `NVRTC` 编译标志列表。
     ///
-    /// 控制浮点精度、性能和优化行为。
+    /// 控制浮点精度、性能和优化行为：
+    /// - `--fmad=true/false` — 是否启用融合乘加，`false` 更精确
+    /// - `--ftz=true/false` — 非规格化数刷新为零，`false` 保留精度
+    /// - `--prec-div=true/false` — 除法使用高精度算法，`true` 更精确
+    /// - `--prec-sqrt=true/false` — 平方根使用高精度算法，`true` 更精确
+    /// - `--use_fast_math` — 快捷开关（等价于 `--ftz=true --prec-div=false --prec-sqrt=false --fmad=true`）
+    /// - `--restrict` — 声明所有指针为 `__restrict__`
+    /// - `--maxrregcount=N` — 限制每线程寄存器数
+    /// - `--optimize=0/1/2/3` — 优化级别
+    ///
     /// 默认值：精度优先的保守设置
     pub flags: Vec<String>,
+
+    /// 是否使用 persistent kernel 进行光照传播。
+    ///
+    /// 启用后光照迭代式距离场计算使用 persistent kernel
+    ///（kernel 不退出，用原子标志检测收敛），减少重复启动开销。
+    /// 需要 CUDA cooperative groups 支持。
+    /// 默认值：`false`
+    pub persistent_kernels: bool,
+
+    /// 是否使用 cuRAND 提供真随机生成。
+    ///
+    /// ⚠️ **警告**：cuRAND 的 PRNG 算法与 CPU 的 Xoroshiro128 不同，
+    /// 会产生不同的随机数序列，**破坏地形一致性**。
+    /// 仅在非地形生成场景（如粒子效果、实体 AI）中可用。
+    /// 默认值：`false`
+    pub use_curand: bool,
+
+    /// 零拷贝阈值 (KB)。
+    ///
+    /// 小于此阈值的缓冲区自动使用映射内存（Zero-Copy），
+    /// 避免显式 `cudaMemcpy` 调用。适用于小参数缓冲区（排列表、收敛标志等）。
+    /// 默认值：`4`
+    pub zero_copy_threshold_kb: usize,
 }
 
 impl Default for CudaConfig {
@@ -169,6 +227,9 @@ impl Default for CudaConfig {
                 String::from("--prec-div=true"),
                 String::from("--prec-sqrt=true"),
             ],
+            persistent_kernels: false,
+            use_curand: false,
+            zero_copy_threshold_kb: 4,
         }
     }
 }
@@ -185,15 +246,50 @@ impl Default for CudaConfig {
 pub struct OpenClConfig {
     /// `OpenCL` 编译标志列表。
     ///
-    /// 控制浮点精度和优化。
-    /// 默认值：精度优先的保守设置（仅启用正确舍入的除法/平方根）
+    /// 控制浮点精度和优化：
+    /// - `-cl-fp32-correctly-rounded-divide-sqrt` — 除法/平方根使用正确舍入
+    /// - `-cl-denorms-are-zero` — 非规格化数刷新为零
+    /// - `-cl-no-signed-zeros` — 允许忽略有符号零
+    /// - `-cl-unsafe-math-optimizations` — 允许不安全的数学优化
+    /// - `-cl-finite-math-only` — 假设无 NaN/Inf
+    /// - `-cl-fast-relaxed-math` — 等价于上面两个的组合，性能提升最大
+    /// - `-cl-mad-enable` — 允许融合乘加指令
+    /// - `-cl-std=CL2.0` — OpenCL C 版本
+    /// - `-cl-opt-disable` — 关闭优化（调试用）
+    /// - `-w` / `-Werror` — 警告控制
+    ///
+    /// 默认值：精度优先的保守设置
     pub flags: Vec<String>,
+
+    /// 是否强制使用 persistent kernel 进行光照传播。
+    ///
+    /// ⚠️ OpenCL 对 persistent kernel 支持有限（无全局 barrier），
+    /// 可能无法正确收敛。建议仅在 CUDA 后端使用。
+    /// 默认值：`false`
+    pub persistent_kernels: bool,
+
+    /// 多 CommandQueue 流水线数。
+    ///
+    /// 大于 `1` 时启用多队列流水线：HtoD 传输、kernel 执行、DtoH 传输
+    /// 可在不同队列上重叠执行。仅在连续批量采样时有效。
+    /// 默认值：`1`
+    pub pipeline_queues: usize,
+
+    /// Local Memory Tiling 阈值。
+    ///
+    /// 当含水层网格点数 ≤ 此值时，将 `packed_positions` 预加载到
+    /// `__local` 内存以加速 4-NN 搜索。设为 `0` 禁用 tiling。
+    /// 默认值：`2048`
+    pub local_mem_tile_threshold: usize,
 }
 
 impl Default for OpenClConfig {
     fn default() -> Self {
         Self {
             flags: vec![String::from("-cl-fp32-correctly-rounded-divide-sqrt")],
+            persistent_kernels: false,
+            pipeline_queues: 1,
+            local_mem_tile_threshold: 2048,
         }
     }
 }
@@ -230,7 +326,7 @@ pub enum GpuDeviceSelection {
         name: String,
     },
 
-    /// 优先使用集成显卡（适合低功耗笔记本）。
+    /// 优先使用集成显卡（适合低功耗笔记本或核显闲置时使用）。
     #[serde(rename = "integrated")]
     Integrated,
 }
@@ -256,7 +352,7 @@ mod tests {
         assert!(!config.surface_acceleration);
         assert!(!config.jit_enabled);
         assert!(!config.soa_layout);
-        assert!(!config.local_mem_tiling);
+        assert_eq!(config.jit_max_unroll, 16);
         assert_eq!(config.backend, GpuBackend::Auto);
     }
 
@@ -270,6 +366,9 @@ mod tests {
     fn cuda_config_default_flags() {
         let config = CudaConfig::default();
         assert_eq!(config.compile_ptx, "auto");
+        assert!(!config.persistent_kernels);
+        assert!(!config.use_curand);
+        assert_eq!(config.zero_copy_threshold_kb, 4);
         assert!(config.flags.contains(&String::from("--fmad=false")));
         assert!(config.flags.contains(&String::from("--ftz=false")));
         assert!(config.flags.contains(&String::from("--prec-div=true")));
@@ -279,6 +378,9 @@ mod tests {
     #[test]
     fn opencl_config_default_flags() {
         let config = OpenClConfig::default();
+        assert!(!config.persistent_kernels);
+        assert_eq!(config.pipeline_queues, 1);
+        assert_eq!(config.local_mem_tile_threshold, 2048);
         assert!(
             config
                 .flags
@@ -292,6 +394,7 @@ mod tests {
         let toml_str = toml::to_string(&config).expect("serialize");
         let parsed: GpuConfig = toml::from_str(&toml_str).expect("deserialize");
         assert_eq!(parsed.enabled, config.enabled);
+        assert_eq!(parsed.jit_max_unroll, config.jit_max_unroll);
         assert_eq!(parsed.backend, config.backend);
     }
 
@@ -303,14 +406,22 @@ mod tests {
             light_acceleration: true,
             surface_acceleration: false,
             jit_enabled: true,
+            jit_max_unroll: 8,
             soa_layout: true,
-            local_mem_tiling: false,
             backend: GpuBackend::Cuda,
             cudarc: CudaConfig {
                 compile_ptx: String::from("compute_89"),
                 flags: vec![String::from("--fmad=true"), String::from("--restrict")],
+                persistent_kernels: true,
+                use_curand: false,
+                zero_copy_threshold_kb: 8,
             },
-            opencl3: OpenClConfig::default(),
+            opencl3: OpenClConfig {
+                flags: vec![String::from("-cl-fast-relaxed-math")],
+                persistent_kernels: false,
+                pipeline_queues: 2,
+                local_mem_tile_threshold: 4096,
+            },
             device: GpuDeviceSelection::ByIndex { index: 1 },
         };
         let toml_str = toml::to_string(&config).expect("serialize");
@@ -318,9 +429,13 @@ mod tests {
         assert!(parsed.enabled);
         assert!(parsed.noise_acceleration);
         assert!(parsed.soa_layout);
-        assert!(!parsed.local_mem_tiling);
+        assert_eq!(parsed.jit_max_unroll, 8);
         assert_eq!(parsed.backend, GpuBackend::Cuda);
         assert_eq!(parsed.cudarc.compile_ptx, "compute_89");
+        assert!(parsed.cudarc.persistent_kernels);
+        assert_eq!(parsed.cudarc.zero_copy_threshold_kb, 8);
+        assert_eq!(parsed.opencl3.pipeline_queues, 2);
+        assert_eq!(parsed.opencl3.local_mem_tile_threshold, 4096);
     }
 
     #[test]

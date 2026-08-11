@@ -4,6 +4,7 @@
 
 use crate::GpuDevice;
 use crate::common::DeviceError;
+use crate::common::kernel::{GpuBufferRef, KernelArg};
 use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
 
 #[cfg(feature = "pumpkin-util")]
@@ -89,10 +90,23 @@ impl GpuNoiseSampler {
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
                     args: vec![
-                        crate::common::kernel::KernelArg::I32(n as i32),
-                        crate::common::kernel::KernelArg::I32(config.num_octaves() as i32),
+                        KernelArg::BufferRef(0),
+                        KernelArg::BufferRef(1),
+                        KernelArg::BufferRef(2),
+                        KernelArg::BufferRef(3),
+                        KernelArg::BufferRef(4),
+                        KernelArg::BufferRef(5),
+                        KernelArg::I32(n as i32),
+                        KernelArg::I32(config.num_octaves() as i32),
                     ],
-                    buffers: vec![],
+                    gpu_buffers: vec![
+                        GpuBufferRef::F64(&d_positions),
+                        GpuBufferRef::U8(&d_permutations),
+                        GpuBufferRef::F64(&d_amplitudes),
+                        GpuBufferRef::F64(&d_lacunarities),
+                        GpuBufferRef::F64(&d_origins),
+                        GpuBufferRef::F64(&d_results),
+                    ],
                 })?;
                 launcher.synchronize()?;
                 true

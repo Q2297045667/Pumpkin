@@ -61,6 +61,7 @@ pub mod cpu;
 #[cfg(feature = "pumpkin-util")]
 pub mod jit;
 pub mod light;
+pub mod logging;
 #[cfg(feature = "pumpkin-util")]
 pub mod noise;
 
@@ -100,7 +101,14 @@ impl GpuDevice {
     /// 所有初始化失败都会通过 [`tracing::warn`] 输出日志。
     #[must_use]
     pub fn init() -> Self {
-        Self::init_internal(None, None)
+        let device = Self::init_internal(None, None);
+        device.log_startup();
+        device
+    }
+
+    /// 输出 GPU 启动状态日志。
+    pub fn log_startup(&self) {
+        logging::log_gpu_startup(self.device_type, self.device_name());
     }
 
     /// 使用指定的 GPU 配置初始化设备。
@@ -111,6 +119,10 @@ impl GpuDevice {
     pub fn from_config(config: &pumpkin_config::gpu::GpuConfig) -> Self {
         if !config.enabled {
             tracing::info!("GPU 加速已在配置中禁用，使用 CPU 回退");
+            crate::logging::log_fallback(
+                &crate::logging::FallbackReason::ConfigDisabled,
+                "GpuDevice::from_config",
+            );
             return Self {
                 device_type: DeviceType::Cpu,
                 backend: BackendImpl::Cpu(crate::cpu::CpuBackend::new()),
@@ -136,10 +148,13 @@ impl GpuDevice {
             _ => None,
         };
 
-        Self::init_internal(forced_backend, device_index)
+        let device = Self::init_internal(forced_backend, device_index);
+        device.log_startup();
+        device
     }
 
     /// 内部初始化逻辑。
+    #[allow(clippy::too_many_lines)]
     fn init_internal(forced_backend: Option<DeviceType>, _device_index: Option<usize>) -> Self {
         // 如果强制指定了后端，仅尝试该后端
         if let Some(forced) = forced_backend {
@@ -155,6 +170,10 @@ impl GpuDevice {
                     }
                     Err(e) => {
                         tracing::error!("强制指定的 CUDA 后端不可用 ({e}), 回退到 CPU");
+                        crate::logging::log_fallback(
+                            &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                            "GpuDevice::init_internal::forced_cuda",
+                        );
                     }
                 },
                 #[cfg(feature = "opencl")]
@@ -170,20 +189,40 @@ impl GpuDevice {
                             }
                             Err(e) => {
                                 tracing::error!("强制指定的 OpenCL 后端不可用 ({e}), 回退到 CPU");
+                                crate::logging::log_fallback(
+                                    &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                                    "GpuDevice::init_internal::forced_opencl",
+                                );
                             }
                         }
                     } else {
                         tracing::error!("强制指定 OpenCL 但驱动未安装，回退到 CPU");
+                        crate::logging::log_fallback(
+                            &crate::logging::FallbackReason::DriverNotFound,
+                            "GpuDevice::init_internal::forced_opencl",
+                        );
                     }
                 }
                 // 如果编译时未包含对应后端，但运行时强制指定了，回退 CPU
                 #[cfg(not(feature = "cuda"))]
                 DeviceType::Cuda => {
                     tracing::error!("CUDA 未编译，回退到 CPU");
+                    crate::logging::log_fallback(
+                        &crate::logging::FallbackReason::InitFailed(
+                            "CUDA backend not compiled".into(),
+                        ),
+                        "GpuDevice::init_internal::forced_cuda_not_compiled",
+                    );
                 }
                 #[cfg(not(feature = "opencl"))]
                 DeviceType::OpenCl => {
                     tracing::error!("OpenCL 未编译，回退到 CPU");
+                    crate::logging::log_fallback(
+                        &crate::logging::FallbackReason::InitFailed(
+                            "OpenCL backend not compiled".into(),
+                        ),
+                        "GpuDevice::init_internal::forced_opencl_not_compiled",
+                    );
                 }
                 DeviceType::Cpu => {
                     tracing::info!("GPU 加速已配置为 CPU 模式");
@@ -213,6 +252,10 @@ impl GpuDevice {
                 }
                 Err(e) => {
                     tracing::warn!("CUDA 后端初始化失败 ({e}), 尝试 OpenCL...");
+                    crate::logging::log_fallback(
+                        &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                        "GpuDevice::init_internal::auto_cuda",
+                    );
                 }
             }
         }
@@ -231,14 +274,26 @@ impl GpuDevice {
                     }
                     Err(e) => {
                         tracing::warn!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
+                        crate::logging::log_fallback(
+                            &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                            "GpuDevice::init_internal::auto_opencl",
+                        );
                     }
                 }
             } else {
                 tracing::info!("OpenCL 驱动未安装，跳过 OpenCL 后端");
+                crate::logging::log_fallback(
+                    &crate::logging::FallbackReason::DriverNotFound,
+                    "GpuDevice::init_internal::auto_opencl",
+                );
             }
         }
 
         tracing::info!("GPU 加速未启用，使用 CPU 回退");
+        crate::logging::log_fallback(
+            &crate::logging::FallbackReason::DriverNotFound,
+            "GpuDevice::init_internal::auto",
+        );
         Self {
             device_type: DeviceType::Cpu,
             backend: BackendImpl::Cpu(crate::cpu::CpuBackend::new()),

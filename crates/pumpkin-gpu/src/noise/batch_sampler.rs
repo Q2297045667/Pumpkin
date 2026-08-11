@@ -10,6 +10,7 @@
 
 use crate::GpuDevice;
 use crate::common::DeviceError;
+use crate::common::kernel::GpuBufferRef;
 use crate::common::kernel::KernelArg;
 use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
 
@@ -82,7 +83,24 @@ impl GpuNoiseSampler {
         let ok = self.try_launch(
             "octave_perlin_sample_f64",
             n,
-            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
+                KernelArg::BufferRef(5),
+                KernelArg::I32(n as i32),
+                KernelArg::I32(m as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_perm),
+                GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_lac),
+                GpuBufferRef::F64(&d_org),
+                GpuBufferRef::F64(&d_res),
+            ],
         );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
@@ -155,7 +173,7 @@ impl GpuNoiseSampler {
             }
 
             // 尝试 JIT launch
-            let ok = self.try_launch(&jit_kernel.name, n, vec![KernelArg::I32(n as i32)]);
+            let ok = self.try_launch(&jit_kernel.name, n, vec![KernelArg::I32(n as i32)], vec![]);
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
                 self.device.free(d_pos)?;
@@ -247,9 +265,32 @@ impl GpuNoiseSampler {
             "double_perlin_sample_f64",
             n,
             vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
+                KernelArg::BufferRef(5),
+                KernelArg::BufferRef(6),
+                KernelArg::BufferRef(7),
+                KernelArg::BufferRef(8),
+                KernelArg::F64(amplitude),
+                KernelArg::BufferRef(9),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(m1 as i32),
                 KernelArg::I32(m2 as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_p1),
+                GpuBufferRef::F64(&d_a1),
+                GpuBufferRef::F64(&d_l1),
+                GpuBufferRef::F64(&d_o1),
+                GpuBufferRef::U8(&d_p2),
+                GpuBufferRef::F64(&d_a2),
+                GpuBufferRef::F64(&d_l2),
+                GpuBufferRef::F64(&d_o2),
+                GpuBufferRef::F64(&d_res),
             ],
         );
         if ok {
@@ -315,7 +356,24 @@ impl GpuNoiseSampler {
         let ok = self.try_launch(
             "shift_a_sample_f64",
             n,
-            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
+                KernelArg::BufferRef(5),
+                KernelArg::I32(n as i32),
+                KernelArg::I32(m as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_perm),
+                GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_lac),
+                GpuBufferRef::F64(&d_org),
+                GpuBufferRef::F64(&d_res),
+            ],
         );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
@@ -373,7 +431,24 @@ impl GpuNoiseSampler {
         let ok = self.try_launch(
             "shift_b_sample_f64",
             n,
-            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
+                KernelArg::BufferRef(5),
+                KernelArg::I32(n as i32),
+                KernelArg::I32(m as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_perm),
+                GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_lac),
+                GpuBufferRef::F64(&d_org),
+                GpuBufferRef::F64(&d_res),
+            ],
         );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
@@ -390,7 +465,13 @@ impl GpuNoiseSampler {
     }
 
     /// Helper: try to launch GPU kernel, return true if successful.
-    fn try_launch(&self, name: &str, n: usize, args: Vec<KernelArg<'_>>) -> bool {
+    fn try_launch(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<KernelArg<'_>>,
+        gpu_buffers: Vec<GpuBufferRef<'_>>,
+    ) -> bool {
         match self.device.kernel_launcher() {
             Some(l) if l.has_kernel(name) => {
                 l.launch(crate::common::kernel::KernelLaunch {
@@ -398,7 +479,7 @@ impl GpuNoiseSampler {
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
                     args,
-                    buffers: vec![],
+                    gpu_buffers,
                 })
                 .is_ok()
                     && l.synchronize().is_ok()
@@ -435,7 +516,17 @@ impl GpuNoiseSampler {
         let ok = self.try_launch(
             "trilinear_interpolate_f64",
             n,
-            vec![KernelArg::I32(n as i32)],
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::I32(n as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_c),
+                GpuBufferRef::F64(&d_d),
+                GpuBufferRef::F64(&d_r),
+            ],
         );
         if ok {
             self.device.copy_from_device(&d_r, results)?;
@@ -496,7 +587,24 @@ impl GpuNoiseSampler {
         let ok = self.try_launch(
             "flatcache_precompute_f64",
             n,
-            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
+                KernelArg::BufferRef(5),
+                KernelArg::I32(n as i32),
+                KernelArg::I32(m as i32),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_perm),
+                GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_lac),
+                GpuBufferRef::F64(&d_org),
+                GpuBufferRef::F64(&d_res),
+            ],
         );
         if ok {
             self.device.copy_from_device(&d_res, results)?;

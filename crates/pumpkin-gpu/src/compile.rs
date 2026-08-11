@@ -146,6 +146,13 @@ pub mod cuda_compile {
                     }
                     Err(e) => {
                         tracing::warn!("CUDA NVRTC: failed '{}': {e}", kernel.name);
+                        crate::logging::log_fallback(
+                            &crate::logging::FallbackReason::KernelCompileFailed(format!(
+                                "CUDA NVRTC '{}': {e}",
+                                kernel.name
+                            )),
+                            "cuda_compile::compile_all",
+                        );
                     }
                 }
             }
@@ -163,7 +170,12 @@ pub mod cuda_compile {
         ) -> Result<(), DeviceError> {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, jit_kernel.source);
             let ptx = cudarc::nvrtc::compile_ptx(full_source).map_err(|e| {
-                DeviceError::KernelError(format!("JIT NVRTC '{}': {e:?}", jit_kernel.name))
+                let msg = format!("JIT NVRTC '{}': {e:?}", jit_kernel.name);
+                crate::logging::log_fallback(
+                    &crate::logging::FallbackReason::KernelCompileFailed(msg.clone()),
+                    "cuda_compile::compile_jit_kernel",
+                );
+                DeviceError::KernelError(msg)
             })?;
             let module = ctx.load_module(ptx).map_err(|e| {
                 DeviceError::KernelError(format!("JIT load '{}': {e:?}", jit_kernel.name))
@@ -209,6 +221,12 @@ pub mod cuda_compile {
             let _ = n;
             // CUDA kernel launch 需要 GPU 硬件验证参数类型和内存布局。
             // 连接 NVIDIA GPU 后取消注释以下代码即可启用：
+            crate::logging::log_fallback(
+                &crate::logging::FallbackReason::UnsupportedOperation(
+                    "CUDA kernel launch not yet verified on GPU hardware".into(),
+                ),
+                "cuda_compile::launch",
+            );
             Err(DeviceError::Unsupported(
                 "CUDA kernel launch not yet verified on GPU hardware".into(),
             ))
@@ -267,6 +285,13 @@ pub mod opencl_compile {
                     }
                     Err(e) => {
                         tracing::warn!("OpenCL: failed '{}': {e}", kernel.name);
+                        crate::logging::log_fallback(
+                            &crate::logging::FallbackReason::KernelCompileFailed(format!(
+                                "OpenCL '{}': {e}",
+                                kernel.name
+                            )),
+                            "opencl_compile::compile_all",
+                        );
                     }
                 }
             }

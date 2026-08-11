@@ -4,6 +4,20 @@
 
 use super::error::DeviceError;
 
+/// GPU 缓冲区引用（跨后端抽象）。
+///
+/// 用于在 [`KernelLaunch`] 中传递 GPU buffer 的引用，
+/// 后端实现可根据此引用提取原始句柄（cl_mem / CUdeviceptr）。
+#[derive(Debug, Clone, Copy)]
+pub enum GpuBufferRef<'a> {
+    /// `f64` GPU 缓冲区引用
+    F64(&'a super::buffer::GpuBuffer<f64>),
+    /// `i32` GPU 缓冲区引用
+    I32(&'a super::buffer::GpuBuffer<i32>),
+    /// `u8` GPU 缓冲区引用
+    U8(&'a super::buffer::GpuBuffer<u8>),
+}
+
 /// Kernel 参数类型。
 ///
 /// 表示一个 Kernel 参数，可以是标量或缓冲区引用。
@@ -43,8 +57,8 @@ pub struct KernelLaunch<'a> {
     pub local_work_size: Option<[usize; 3]>,
     /// Kernel 参数列表
     pub args: Vec<KernelArg<'a>>,
-    /// 设备缓冲区列表（Kernel 可以通过 `BufferRef(索引)` 引用这些缓冲区）
-    pub buffers: Vec<&'a [u8]>,
+    /// GPU 缓冲区引用列表（通过 `BufferRef(usize)` 索引引用）
+    pub gpu_buffers: Vec<GpuBufferRef<'a>>,
 }
 
 /// Kernel 启动器 trait。

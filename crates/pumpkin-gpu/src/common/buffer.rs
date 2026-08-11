@@ -1,6 +1,8 @@
 //! 设备端缓冲区抽象。
 
 use super::BackendType;
+#[cfg(feature = "opencl")]
+use opencl3::memory::ClMem;
 
 /// CUDA 设备内存包装。
 ///
@@ -147,6 +149,27 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
     #[must_use]
     pub(crate) fn byte_len(&self) -> usize {
         self.len * size_of::<T>()
+    }
+
+    /// 获取字节大小。
+    #[must_use]
+    pub fn size_bytes(&self) -> usize {
+        self.len * size_of::<T>()
+    }
+
+    /// 获取 OpenCL cl_mem 句柄（仅 OpenCL 后端有效）。
+    #[cfg(feature = "opencl")]
+    #[must_use]
+    pub fn opencl_handle(&self) -> Option<opencl3::types::cl_mem> {
+        match &self.raw {
+            RawBuffer::OpenCl(holder) => {
+                // SAFETY: UnsafeCell provides interior mutability.
+                // We only need read access to the handle for set_arg.
+                let buf = unsafe { &*holder.buffer.get() };
+                Some(buf.get())
+            }
+            _ => None,
+        }
     }
 }
 
