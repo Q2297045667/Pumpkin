@@ -5,6 +5,8 @@ use crate::common::DeviceError;
 #[cfg(feature = "pumpkin-util")]
 use crate::noise::kernels;
 #[cfg(feature = "pumpkin-util")]
+use crate::noise::kernels_cell;
+#[cfg(feature = "pumpkin-util")]
 use crate::noise::kernels_extra;
 #[cfg(feature = "pumpkin-util")]
 use crate::noise::kernels_light;
@@ -49,6 +51,26 @@ pub fn all_kernel_sources() -> Vec<CompiledKernel> {
             CompiledKernel {
                 name: "batch_density_sample_f64".into(),
                 source: kernels::DENSITY_SAMPLE_CL.into(),
+            },
+            CompiledKernel {
+                name: "cell_cache_fill_f64".into(),
+                source: kernels_cell::CELL_CACHE_FILL_CL.into(),
+            },
+            CompiledKernel {
+                name: "interpolator_fill_f64".into(),
+                source: kernels_cell::INTERPOLATOR_FILL_CL.into(),
+            },
+            CompiledKernel {
+                name: "aquifer_batch_f64".into(),
+                source: kernels_cell::AQUIFER_BATCH_CL.into(),
+            },
+            CompiledKernel {
+                name: "beardifier_batch_f64".into(),
+                source: kernels_cell::BEARDIFIER_BATCH_CL.into(),
+            },
+            CompiledKernel {
+                name: "vein_batch_f64".into(),
+                source: kernels_cell::VEIN_BATCH_CL.into(),
             },
             CompiledKernel {
                 name: "trilinear_interpolate_f64".into(),
