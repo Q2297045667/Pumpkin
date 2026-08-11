@@ -15,14 +15,14 @@ use crate::noise::kernels_extra;
 use crate::noise::kernels_light;
 
 /// 编译好的 kernel 元数据。
-pub struct CompiledKernel {
+pub(crate) struct CompiledKernel {
     pub name: String,
     pub source: String,
 }
 
 /// 返回所有已知 kernel 的名称和源码。
 #[must_use]
-pub fn all_kernel_sources() -> Vec<CompiledKernel> {
+pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
     #[cfg(feature = "pumpkin-util")]
     {
         vec![

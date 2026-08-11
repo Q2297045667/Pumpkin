@@ -65,8 +65,9 @@ pub mod logging;
 #[cfg(feature = "pumpkin-util")]
 pub mod noise;
 
-// Re-export backend types for testing/direct access
-pub use cpu::CpuBackend;
+// Re-export backend types for internal use
+#[allow(unused_imports)]
+pub(crate) use cpu::CpuBackend;
 
 #[cfg(feature = "cuda")]
 pub mod cuda;
@@ -406,6 +407,18 @@ impl GpuDevice {
     #[must_use]
     pub fn kernel_launcher(&self) -> Option<&dyn KernelLauncher> {
         self.backend.kernel_launcher()
+    }
+
+    /// 尝试启动 GPU kernel，成功返回 true。
+    /// 代理到 `BackendImpl::try_launch_kernel`。
+    pub(crate) fn try_launch_kernel(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<crate::common::kernel::KernelArg<'_>>,
+        gpu_buffers: Vec<crate::common::kernel::GpuBufferRef<'_>>,
+    ) -> bool {
+        self.backend.try_launch_kernel(name, n, args, gpu_buffers)
     }
 
     /// 编译一个 JIT 特化 kernel。

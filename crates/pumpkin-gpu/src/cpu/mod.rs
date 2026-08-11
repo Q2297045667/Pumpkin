@@ -1,7 +1,5 @@
 //! CPU 回退后端。
 
-mod fallback;
-
 use crate::common::{DeviceError, GpuBuffer, KernelLauncher, buffer::RawBuffer};
 
 /// CPU 回退后端。
@@ -138,12 +136,14 @@ fn get_cpu_name() -> String {
 struct CpuKernelLauncher;
 
 impl KernelLauncher for CpuKernelLauncher {
-    fn launch(&self, launch: crate::common::kernel::KernelLaunch<'_>) -> Result<(), DeviceError> {
-        fallback::dispatch(&launch)
+    fn launch(&self, _launch: crate::common::kernel::KernelLaunch<'_>) -> Result<(), DeviceError> {
+        // CPU 回退不通过 KernelLaunch 路径。
+        // 各采样器模块在检测到 DeviceType::Cpu 后直接调用内置 CPU fallback 函数。
+        Err(DeviceError::Unsupported("CPU backend does not use KernelLaunch".into()))
     }
 
-    fn has_kernel(&self, name: &str) -> bool {
-        fallback::has_kernel(name)
+    fn has_kernel(&self, _name: &str) -> bool {
+        false // CPU 路径不通过 kernel launcher
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {

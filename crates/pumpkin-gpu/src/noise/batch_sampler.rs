@@ -473,23 +473,8 @@ impl GpuNoiseSampler {
         args: Vec<KernelArg<'_>>,
         gpu_buffers: Vec<GpuBufferRef<'_>>,
     ) -> bool {
-        match self.device.kernel_launcher() {
-            Some(l) if l.has_kernel(name) => {
-                l.launch(crate::common::kernel::KernelLaunch {
-                    name,
-                    global_work_size: [n, 1, 1],
-                    local_work_size: Some([256, 1, 1]),
-                    args,
-                    gpu_buffers,
-                })
-                .is_ok()
-                    && l.synchronize().is_ok()
-            }
-            _ => false,
-        }
+        self.device.try_launch_kernel(name, n, args, gpu_buffers)
     }
-
-    // ==== Trilinear Interpolation ====
 
     pub fn batch_trilinear(
         &mut self,

@@ -15,14 +15,14 @@ use std::sync::OnceLock;
 static JIT_MAX_UNROLL: OnceLock<usize> = OnceLock::new();
 
 /// 设置 JIT 循环展开上限（从配置读取）。
-pub fn set_jit_max_unroll(max: usize) {
+pub(crate) fn set_jit_max_unroll(max: usize) {
     let _ = JIT_MAX_UNROLL.set(max);
 }
 
 /// 获取 JIT 循环展开上限。
 /// 如果尚未设置，返回默认值 `16`。
 #[must_use]
-pub fn get_jit_max_unroll() -> usize {
+pub(crate) fn get_jit_max_unroll() -> usize {
     JIT_MAX_UNROLL.get().copied().unwrap_or(16)
 }
 

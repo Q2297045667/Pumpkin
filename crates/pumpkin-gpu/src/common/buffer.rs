@@ -100,7 +100,6 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         self.backend_type
     }
 
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn cpu_data(&self) -> Option<&[T]> {
         match &self.raw {
@@ -112,7 +111,6 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn cpu_data_mut(&mut self) -> Option<&mut Vec<T>> {
         match &mut self.raw {
             RawBuffer::Cpu(v) => Some(v),
@@ -131,24 +129,6 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
             RawBuffer::Cuda(holder) => Ok(&holder.slice),
             _ => Err("不是 CUDA 缓冲区"),
         }
-    }
-
-    #[allow(dead_code)]
-    #[cfg(feature = "opencl")]
-    #[must_use]
-    pub(crate) fn opencl_buffer(
-        &self,
-    ) -> Result<&std::cell::UnsafeCell<opencl3::memory::Buffer<u8>>, &'static str> {
-        match &self.raw {
-            RawBuffer::OpenCl(holder) => Ok(&holder.buffer),
-            _ => Err("不是 OpenCL 缓冲区"),
-        }
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub(crate) fn byte_len(&self) -> usize {
-        self.len * size_of::<T>()
     }
 
     /// 获取字节大小。

@@ -29,17 +29,6 @@ pub(crate) enum BackendImpl {
 }
 
 impl BackendImpl {
-    #[allow(dead_code)]
-    pub(crate) fn backend_type(&self) -> BackendType {
-        match self {
-            Self::Cpu(_) => BackendType::Cpu,
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => BackendType::Cuda,
-            #[cfg(feature = "opencl")]
-            Self::OpenCl(_) => BackendType::OpenCl,
-        }
-    }
-
     pub(crate) fn device_name(&self) -> &str {
         match self {
             Self::Cpu(b) => b.device_name(),
@@ -125,6 +114,31 @@ impl BackendImpl {
             Self::Cuda(b) => b.kernel_launcher(),
             #[cfg(feature = "opencl")]
             Self::OpenCl(b) => b.kernel_launcher(),
+        }
+    }
+
+    /// 尝试启动 GPU kernel，成功返回 true。
+    /// 这是 batch_sampler 和 batch_cell 中 try_launch 实例的共享实现。
+    pub(crate) fn try_launch_kernel(
+        &self,
+        name: &str,
+        n: usize,
+        args: Vec<crate::common::kernel::KernelArg<'_>>,
+        gpu_buffers: Vec<crate::common::kernel::GpuBufferRef<'_>>,
+    ) -> bool {
+        match self.kernel_launcher() {
+            Some(l) if l.has_kernel(name) => {
+                l.launch(crate::common::kernel::KernelLaunch {
+                    name,
+                    global_work_size: [n, 1, 1],
+                    local_work_size: Some([256, 1, 1]),
+                    args,
+                    gpu_buffers,
+                })
+                .is_ok()
+                    && l.synchronize().is_ok()
+            }
+            _ => false,
         }
     }
 
