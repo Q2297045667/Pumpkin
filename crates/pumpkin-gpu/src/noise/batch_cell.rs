@@ -874,7 +874,8 @@ impl GpuVeinBatchSampler {
 // ============================================================================
 
 /// 生成确定性置换表（每个 octave 一个 256 字节表）。
-fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
+// Duplicate of pumpkin-world/src/batch_accel.rs:gen_perm_table — keep in sync
+pub(crate) fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
     let mut perm = [0u8; 256];
     for (i, p) in perm.iter_mut().enumerate() {
         let h = seed

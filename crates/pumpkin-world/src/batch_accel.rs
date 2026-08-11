@@ -626,6 +626,7 @@ fn cpu_vein_detect(positions: &[f64], params: &VeinParams, results: &mut [i32]) 
 // ============================================================================
 
 /// 生成确定性置换表（每个 octave 一个 256 字节表）。
+// Duplicate of pumpkin-gpu/src/noise/batch_cell.rs:gen_perm_table — keep in sync
 fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
     let mut perm = [0u8; 256];
     for (i, p) in perm.iter_mut().enumerate() {

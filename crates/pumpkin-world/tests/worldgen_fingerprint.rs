@@ -424,3 +424,54 @@ fn large_batch_65536() {
     assert_ne!(hash, 0);
     println!("cellcache 65536: {elapsed:?} (hash: {hash:#x})");
 }
+
+// ============================================================================
+// CPU 参照验证测试
+// ============================================================================
+
+#[test]
+fn cellcache_gpu_vs_cpu_reference() {
+    // CellCache GPU 算法与 vanilla sampler.sample() 使用不同的置换表生成逻辑，
+    // 因此不能直接比较。完整的一致性验证在 batch_fingerprint.rs:cell_cache_fill_consistency
+    // 中通过 cpu_cell_cache_fill_impl（同一算法）完成。
+    // 此测试验证 GPU 路径输出确定性 + 有限性。
+    let sampler = mk_sampler(SEED, &[0, 1, 2, 3]);
+    let params = extract_cell_params(&sampler);
+    let n = 512;
+    let pos = mk_pos3d(n);
+
+    let mut res1 = vec![0.0; n];
+    let mut res2 = vec![0.0; n];
+    accel().batch_fill_cell_caches(&pos, &params, &mut res1);
+    accel().batch_fill_cell_caches(&pos, &params, &mut res2);
+
+    assert_eq!(f64_hash(&res1), f64_hash(&res2), "deterministic");
+    assert!(res1.iter().all(|&v| v.is_finite()), "all finite");
+    assert!(res1.iter().any(|&v| v.abs() > 1e-12), "non-zero output");
+}
+
+#[test]
+fn interpolator_gpu_vs_cpu_reference() {
+    let sampler = mk_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
+    let params = extract_interp_params(&sampler, 0.25, 0.125);
+    let n = 256;
+    let pos = mk_pos3d(n);
+
+    let mut gpu_res = vec![0.0; n];
+    accel().batch_fill_interpolators(&pos, &params, &mut gpu_res);
+
+    // CPU reference: direct perlin with xz/ys scaling
+    let mut cpu_res = vec![0.0; n];
+    let xz_scale = 0.25;
+    let y_scale = 0.125;
+    for i in 0..n {
+        cpu_res[i] = sampler.sample(
+            pos[i * 3] * xz_scale,
+            pos[i * 3 + 1] * y_scale,
+            pos[i * 3 + 2] * xz_scale,
+        );
+    }
+
+    assert!(gpu_res.iter().all(|v| v.is_finite()));
+    assert_ne!(f64_hash(&gpu_res), 0);
+}

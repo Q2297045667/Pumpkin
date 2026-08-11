@@ -582,3 +582,104 @@ fn sky_horizontal_18x18x384() {
         "sky_horizontal(18x18x384): cpu={cpu_ms:.1}ms cpu_iters={cpu_iters}, gpu={gpu_ms:.1}ms gpu_iters={gpu_iters}"
     );
 }
+
+// ============================================================================
+// 方块光传播
+// ============================================================================
+
+#[test]
+fn block_light_propagate_consistency() {
+    let width = 4usize;
+    let depth = 4usize;
+    let height = 16usize;
+    let n = width * depth * height;
+    let max_iters = 32;
+
+    let mut s = SEED;
+    let mut cpu_lt = vec![0u8; n];
+    let mut gpu_lt = vec![0u8; n];
+    let mut opacity = vec![0u8; n];
+    let mut neighbors = vec![-1i32; n * 6];
+
+    // Build 3D neighbor list
+    let stride_x = height as i32;
+    let stride_z = (width * height) as i32;
+    for z in 0..depth {
+        for x in 0..width {
+            for y in 0..height {
+                let idx = (z * width * height + x * height + y) as i32;
+                let base = idx as usize * 6;
+                // -Y (down)
+                if y > 0 {
+                    neighbors[base] = idx - 1;
+                }
+                // +Y (up)
+                if y < height - 1 {
+                    neighbors[base + 1] = idx + 1;
+                }
+                // -X (west)
+                if x > 0 {
+                    neighbors[base + 2] = idx - stride_x;
+                }
+                // +X (east)
+                if x < width - 1 {
+                    neighbors[base + 3] = idx + stride_x;
+                }
+                // -Z (north)
+                if z > 0 {
+                    neighbors[base + 4] = idx - stride_z;
+                }
+                // +Z (south)
+                if z < depth - 1 {
+                    neighbors[base + 5] = idx + stride_z;
+                }
+            }
+        }
+    }
+
+    // Set some light sources and opacity
+    for i in 0..n {
+        opacity[i] = (s % 4) as u8;
+        s = s.wrapping_mul(1442695040888963407);
+        let lum = (s % 16) as u8;
+        s = s.wrapping_mul(1442695040888963407);
+        cpu_lt[i] = lum;
+        gpu_lt[i] = lum;
+    }
+
+    // CPU BFS propagation
+    let mut cpu_iters = 0;
+    for _ in 0..max_iters {
+        let mut changed = false;
+        for i in 0..n {
+            let cur = cpu_lt[i];
+            let mut best = cur;
+            for d in 0..6 {
+                let ni = neighbors[i * 6 + d] as usize;
+                if ni < n {
+                    let nl = cpu_lt[ni];
+                    let no = opacity[ni];
+                    let p = if nl > 1 + no { nl - 1 - no } else { 0 };
+                    if p > best {
+                        best = p;
+                    }
+                }
+            }
+            if best > cur {
+                cpu_lt[i] = best;
+                changed = true;
+            }
+        }
+        cpu_iters += 1;
+        if !changed {
+            break;
+        }
+    }
+
+    // GPU iterative propagate
+    let mut accel = mk_light_accel();
+    let gpu_iters = accel.iterative_propagate(&mut gpu_lt, &opacity, &neighbors, n, max_iters);
+
+    assert_eq!(fnv1a_u8(&cpu_lt), fnv1a_u8(&gpu_lt), "block_light values");
+    assert_eq!(cpu_iters, gpu_iters, "block_light iters");
+}

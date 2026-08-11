@@ -673,7 +673,8 @@ impl<'a> ChunkNoiseRouter<'a> {
     /// 回填线程本地噪声缓存。
     ///
     /// 在 GPU 批量计算完成后，对每个 Perlin 噪声采样器，
-    /// 用 CPU 计算所有位置的噪声值并写入线程本地缓存。
+    /// 优先使用 GPU 批量计算所有位置的噪声值并写入线程本地缓存。
+    /// GPU 不可用时回退到 CPU 路径。
     /// 后续 `OctavePerlinNoiseSampler::sample` 调用将命中缓存，
     /// 避免重复计算。
     #[cfg(feature = "gpu")]
@@ -691,7 +692,17 @@ impl<'a> ChunkNoiseRouter<'a> {
             return;
         }
 
-        // 收集所有采样器-位置对的噪声值，合并写入一次缓存
+        // 尝试 GPU 加速批量填充
+        if let Some(mut noise_accel) = crate::gpu::get_noise_accel() {
+            for info in &samplers {
+                if info.sampler_id != 0 {
+                    noise_accel.fill_noise_cache(info.sampler_id, info.sampler, positions);
+                }
+            }
+            return;
+        }
+
+        // CPU 回退
         let mut cache_entries: std::collections::HashMap<(u64, i64, i64, i64), f64> =
             std::collections::HashMap::with_capacity(samplers.len() * n);
 

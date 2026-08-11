@@ -25,16 +25,11 @@ use std::sync::Arc;
 
 /// CUDA 后端实现。
 pub struct CudaBackend {
-    #[allow(dead_code)]
-    pub(crate) ctx: Arc<cudarc::driver::CudaContext>,
     pub(crate) stream: Arc<cudarc::driver::CudaStream>,
     pub(crate) name: String,
     pub(crate) launcher: kernel::CudaKernelLauncher,
     /// 零拷贝阈值（字节）
     zero_copy_threshold_bytes: usize,
-    /// cuRAND 随机数生成（⚠️ 破坏地形一致性）
-    #[allow(dead_code)]
-    use_curand: bool,
 }
 
 // SAFETY: CudaBackend's internal state is Send by cudarc specification.
@@ -75,12 +70,10 @@ impl CudaBackend {
         let mut launcher = kernel::CudaKernelLauncher::new();
         launcher.init(&ctx, stream.clone(), flags, persistent_enabled, compile_ptx);
         Ok(Self {
-            ctx,
             stream,
             name,
             launcher,
             zero_copy_threshold_bytes: zero_copy_threshold_kb.saturating_mul(1024),
-            use_curand,
         })
     }
 

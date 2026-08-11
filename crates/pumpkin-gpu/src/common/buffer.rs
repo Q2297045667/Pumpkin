@@ -94,12 +94,6 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         self.len == 0
     }
 
-    #[allow(dead_code)]
-    #[must_use]
-    pub(crate) const fn backend_type(&self) -> BackendType {
-        self.backend_type
-    }
-
     #[must_use]
     pub(crate) fn cpu_data(&self) -> Option<&[T]> {
         match &self.raw {

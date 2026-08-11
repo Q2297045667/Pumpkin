@@ -87,12 +87,6 @@ impl OpenClKernelLauncher {
         let idx = self.next_queue.fetch_add(1, Ordering::Relaxed) % self.queues.len();
         &self.queues[idx]
     }
-
-    /// 获取指定索引的命令队列。若 `pipeline_queues <= 1` 永远返回 0 号队列。
-    #[allow(dead_code)]
-    fn queue_at(&self, index: usize) -> &CommandQueue {
-        &self.queues[index % self.queues.len()]
-    }
 }
 
 impl Default for OpenClKernelLauncher {
