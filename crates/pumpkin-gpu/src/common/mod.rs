@@ -1,11 +1,13 @@
 //! 平台无关的共享抽象层。
 
 pub mod buffer;
+pub mod buffer_pool;
 pub mod error;
 pub mod kernel;
 pub mod layout;
 
 pub use buffer::GpuBuffer;
+pub use buffer_pool::GpuBufferPool;
 pub use error::DeviceError;
 pub use kernel::KernelLauncher;
 

@@ -56,7 +56,7 @@ impl GpuLightSampler {
                         GpuBufferRef::U8(&d_sl),
                     ],
                 })?;
-                l.synchronize()?;
+                // 隐式同步：copy_from_device 在默认流/有序队列中等待 kernel 完成。
                 self.device.copy_from_device(&d_sl, sky_light)?;
                 self.device.free(d_hm)?;
                 self.device.free(d_op)?;
@@ -117,7 +117,7 @@ impl GpuLightSampler {
                         GpuBufferRef::I32(&d_cnt),
                     ],
                 })?;
-                l.synchronize()?;
+                // 隐式同步：后续 copy_from_device 等待 kernel 完成。
                 self.device.copy_from_device(&d_bl, block_light)?;
                 let mut count = [0i32];
                 self.device.copy_from_device(&d_cnt, &mut count)?;
@@ -197,7 +197,7 @@ impl GpuLightSampler {
                         GpuBufferRef::I32(&d_sync_counter),
                     ],
                 })?;
-                l.synchronize()?;
+                // 隐式同步：copy_from_device 等待 persistent kernel 收敛。
                 self.device.copy_from_device(&d_light, light)?;
                 self.device.free(d_light)?;
                 self.device.free(d_opacity)?;
@@ -237,8 +237,8 @@ impl GpuLightSampler {
                             GpuBufferRef::I32(&d_changed),
                         ],
                     })?;
-                    l.synchronize()?;
                     iterations += 1;
+                    // 隐式同步：copy_from_device(&d_changed) 等待 kernel 完成。
                     let mut c = [0i32];
                     self.device.copy_from_device(&d_changed, &mut c)?;
                     if c[0] == 0 {

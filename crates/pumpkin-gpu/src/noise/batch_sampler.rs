@@ -33,115 +33,13 @@ pub fn use_soa_layout() -> bool {
     SOA_LAYOUT_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// GPU buffer 生命周期管理助手。
-///
-/// 管理一组 GPU buffer 的分配、上传、下载和释放，
-/// 消除了每个方法中重复的逐 buffer 管理代码。
-struct GpuBufferSet {
-    f64_bufs: Vec<GpuBuffer<f64>>,
-    u8_bufs: Vec<GpuBuffer<u8>>,
-}
-
-impl GpuBufferSet {
-    fn new() -> Self {
-        Self {
-            f64_bufs: Vec::new(),
-            u8_bufs: Vec::new(),
-        }
-    }
-
-    /// 分配一个 f64 buffer，返回索引。
-    fn alloc_f64(&mut self, device: &GpuDevice, len: usize) -> Result<usize, DeviceError> {
-        let buf = device.alloc_f64(len)?;
-        let idx = self.f64_bufs.len();
-        self.f64_bufs.push(buf);
-        Ok(idx)
-    }
-
-    /// 分配一个 u8 buffer，返回索引。
-    fn alloc_u8(&mut self, device: &GpuDevice, len: usize) -> Result<usize, DeviceError> {
-        let buf = device.alloc_u8(len)?;
-        let idx = self.u8_bufs.len();
-        self.u8_bufs.push(buf);
-        Ok(idx)
-    }
-
-    /// 按索引获取 f64 buffer 引用。
-    fn f64_ref(&self, idx: usize) -> &GpuBuffer<f64> {
-        &self.f64_bufs[idx]
-    }
-
-    /// 按索引获取 u8 buffer 引用。
-    fn u8_ref(&self, idx: usize) -> &GpuBuffer<u8> {
-        &self.u8_bufs[idx]
-    }
-
-    /// 上传 f64 数据到指定索引的 buffer。
-    fn upload_f64(
-        &mut self,
-        device: &GpuDevice,
-        idx: usize,
-        data: &[f64],
-    ) -> Result<(), DeviceError> {
-        device.copy_to_device(&mut self.f64_bufs[idx], data)
-    }
-
-    /// 上传 u8 数据到指定索引的 buffer。
-    fn upload_u8(
-        &mut self,
-        device: &GpuDevice,
-        idx: usize,
-        data: &[u8],
-    ) -> Result<(), DeviceError> {
-        device.copy_to_device(&mut self.u8_bufs[idx], data)
-    }
-
-    /// 从指定索引的 f64 buffer 下载数据。
-    fn download_f64(
-        &self,
-        device: &GpuDevice,
-        idx: usize,
-        data: &mut [f64],
-    ) -> Result<(), DeviceError> {
-        device.copy_from_device(&self.f64_bufs[idx], data)
-    }
-
-    /// 分配并上传一份完整的八度配置。
-    /// 返回 `(perm, amp, lac, org)` 四个 buffer 的索引。
-    fn load_octave_config(
-        &mut self,
-        device: &GpuDevice,
-        config: &SerializedOctaveConfig,
-    ) -> Result<(usize, usize, usize, usize), DeviceError> {
-        let m = config.num_octaves();
-        let perm = self.alloc_u8(device, m * 256)?;
-        let amp = self.alloc_f64(device, m)?;
-        let lac = self.alloc_f64(device, m)?;
-        let org = self.alloc_f64(device, m * 3)?;
-        self.upload_u8(device, perm, &config.packed_permutations())?;
-        self.upload_f64(device, amp, &config.packed_amplitudes())?;
-        self.upload_f64(device, lac, &config.packed_lacunarities())?;
-        self.upload_f64(device, org, &config.packed_origins())?;
-        Ok((perm, amp, lac, org))
-    }
-
-    /// 一次性释放所有 buffer。
-    fn free_all(self, device: &GpuDevice) -> Result<(), DeviceError> {
-        for buf in self.f64_bufs {
-            device.free(buf)?;
-        }
-        for buf in self.u8_bufs {
-            device.free(buf)?;
-        }
-        Ok(())
-    }
-}
-
 /// GPU 噪声批量采样器。
 pub struct GpuNoiseSampler {
     pub device: GpuDevice,
     pub cache: NoiseCache,
     pub double_cache: NoiseCache,
+    /// 持久化 buffer 池（按长度复用 f64/u8 buffer）。
+    buffer_pool: crate::common::GpuBufferPool,
 }
 
 impl GpuNoiseSampler {
@@ -151,10 +49,40 @@ impl GpuNoiseSampler {
             device,
             cache: NoiseCache::new(),
             double_cache: NoiseCache::new(),
+            buffer_pool: crate::common::GpuBufferPool::new(),
         }
     }
 
     // ========== Octave Perlin ==========
+
+    /// 从池中分配并上传八度配置（perm + amp + lac + org）。
+    fn load_octave_config_pooled(
+        &mut self,
+        config: &SerializedOctaveConfig,
+    ) -> Result<
+        (
+            crate::GpuBuffer<u8>,
+            crate::GpuBuffer<f64>,
+            crate::GpuBuffer<f64>,
+            crate::GpuBuffer<f64>,
+        ),
+        DeviceError,
+    > {
+        let m = config.num_octaves();
+        let mut d_perm = self.buffer_pool.take_u8(&self.device, m * 256)?;
+        let mut d_amp = self.buffer_pool.take_f64(&self.device, m)?;
+        let mut d_lac = self.buffer_pool.take_f64(&self.device, m)?;
+        let mut d_org = self.buffer_pool.take_f64(&self.device, m * 3)?;
+        self.device
+            .copy_to_device(&mut d_perm, &config.packed_permutations())?;
+        self.device
+            .copy_to_device(&mut d_amp, &config.packed_amplitudes())?;
+        self.device
+            .copy_to_device(&mut d_lac, &config.packed_lacunarities())?;
+        self.device
+            .copy_to_device(&mut d_org, &config.packed_origins())?;
+        Ok((d_perm, d_amp, d_lac, d_org))
+    }
 
     #[cfg(feature = "pumpkin-util")]
     pub fn sample_octave_batch(
@@ -183,21 +111,20 @@ impl GpuNoiseSampler {
         drop(guard);
 
         let m = config.num_octaves();
-        let mut bufs = GpuBufferSet::new();
-        let res_idx = bufs.alloc_f64(&self.device, n)?;
-        let (perm_idx, amp_idx, lac_idx, org_idx) =
-            bufs.load_octave_config(&self.device, &config)?;
+        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (mut d_perm, mut d_amp, mut d_lac, mut d_org) =
+            self.load_octave_config_pooled(&config)?;
 
         // SoA 路径：当启用 soa_layout 且数据量足够大时，使用独立 X/Y/Z 数组
         let use_soa = use_soa_layout() && n >= 64;
-        if use_soa {
+        let ok = if use_soa {
             let (x, y, z) = crate::common::layout::aos3d_to_soa(positions);
-            let x_idx = bufs.alloc_f64(&self.device, n)?;
-            let y_idx = bufs.alloc_f64(&self.device, n)?;
-            let z_idx = bufs.alloc_f64(&self.device, n)?;
-            bufs.upload_f64(&self.device, x_idx, &x)?;
-            bufs.upload_f64(&self.device, y_idx, &y)?;
-            bufs.upload_f64(&self.device, z_idx, &z)?;
+            let mut d_x = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_y = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_z = self.buffer_pool.take_f64(&self.device, n)?;
+            self.device.copy_to_device(&mut d_x, &x)?;
+            self.device.copy_to_device(&mut d_y, &y)?;
+            self.device.copy_to_device(&mut d_z, &z)?;
 
             let ok = self.try_launch(
                 "octave_perlin_sample_soa_f64",
@@ -215,25 +142,24 @@ impl GpuNoiseSampler {
                     KernelArg::I32(m as i32),
                 ],
                 vec![
-                    GpuBufferRef::F64(bufs.f64_ref(x_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(y_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(z_idx)),
-                    GpuBufferRef::U8(bufs.u8_ref(perm_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(amp_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(lac_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(org_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(res_idx)),
+                    GpuBufferRef::F64(&d_x),
+                    GpuBufferRef::F64(&d_y),
+                    GpuBufferRef::F64(&d_z),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_amp),
+                    GpuBufferRef::F64(&d_lac),
+                    GpuBufferRef::F64(&d_org),
+                    GpuBufferRef::F64(&d_res),
                 ],
             );
-            if ok {
-                bufs.download_f64(&self.device, res_idx, results)?;
-            } else {
-                cpu_octave_batch(sampler, positions, results);
-            }
+            self.buffer_pool.put_f64(d_x);
+            self.buffer_pool.put_f64(d_y);
+            self.buffer_pool.put_f64(d_z);
+            ok
         } else {
             // 标准 AoS 路径
-            let pos_idx = bufs.alloc_f64(&self.device, n * 3)?;
-            bufs.upload_f64(&self.device, pos_idx, positions)?;
+            let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
+            self.device.copy_to_device(&mut d_pos, positions)?;
 
             let ok = self.try_launch(
                 "octave_perlin_sample_f64",
@@ -249,22 +175,29 @@ impl GpuNoiseSampler {
                     KernelArg::I32(m as i32),
                 ],
                 vec![
-                    GpuBufferRef::F64(bufs.f64_ref(pos_idx)),
-                    GpuBufferRef::U8(bufs.u8_ref(perm_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(amp_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(lac_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(org_idx)),
-                    GpuBufferRef::F64(bufs.f64_ref(res_idx)),
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_amp),
+                    GpuBufferRef::F64(&d_lac),
+                    GpuBufferRef::F64(&d_org),
+                    GpuBufferRef::F64(&d_res),
                 ],
             );
-            if ok {
-                bufs.download_f64(&self.device, res_idx, results)?;
-            } else {
-                cpu_octave_batch(sampler, positions, results);
-            }
+            self.buffer_pool.put_f64(d_pos);
+            ok
+        };
+
+        if ok {
+            self.device.copy_from_device(&d_res, results)?;
+        } else {
+            cpu_octave_batch(sampler, positions, results);
         }
 
-        bufs.free_all(&self.device)?;
+        self.buffer_pool.put_f64(d_res);
+        self.buffer_pool.put_u8(d_perm);
+        self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_lac);
+        self.buffer_pool.put_f64(d_org);
         Ok(())
     }
 
@@ -499,13 +432,12 @@ impl GpuNoiseSampler {
         let m1 = c1.num_octaves();
         let m2 = c2.num_octaves();
 
-        let mut bufs = GpuBufferSet::new();
-        let pos_idx = bufs.alloc_f64(&self.device, n * 3)?;
-        let res_idx = bufs.alloc_f64(&self.device, n)?;
-        let (p1_idx, a1_idx, l1_idx, o1_idx) = bufs.load_octave_config(&self.device, &c1)?;
-        let (p2_idx, a2_idx, l2_idx, o2_idx) = bufs.load_octave_config(&self.device, &c2)?;
+        let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
+        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (mut d_p1, mut d_a1, mut d_l1, mut d_o1) = self.load_octave_config_pooled(&c1)?;
+        let (mut d_p2, mut d_a2, mut d_l2, mut d_o2) = self.load_octave_config_pooled(&c2)?;
 
-        bufs.upload_f64(&self.device, pos_idx, positions)?;
+        self.device.copy_to_device(&mut d_pos, positions)?;
 
         let ok = self.try_launch(
             "double_perlin_sample_f64",
@@ -527,25 +459,34 @@ impl GpuNoiseSampler {
                 KernelArg::I32(m2 as i32),
             ],
             vec![
-                GpuBufferRef::F64(bufs.f64_ref(pos_idx)),
-                GpuBufferRef::U8(bufs.u8_ref(p1_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(a1_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(l1_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(o1_idx)),
-                GpuBufferRef::U8(bufs.u8_ref(p2_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(a2_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(l2_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(o2_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(res_idx)),
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_p1),
+                GpuBufferRef::F64(&d_a1),
+                GpuBufferRef::F64(&d_l1),
+                GpuBufferRef::F64(&d_o1),
+                GpuBufferRef::U8(&d_p2),
+                GpuBufferRef::F64(&d_a2),
+                GpuBufferRef::F64(&d_l2),
+                GpuBufferRef::F64(&d_o2),
+                GpuBufferRef::F64(&d_res),
             ],
         );
         if ok {
-            bufs.download_f64(&self.device, res_idx, results)?;
+            self.device.copy_from_device(&d_res, results)?;
         } else {
             cpu_double_perlin_batch(first, second, amplitude, positions, results);
         }
 
-        bufs.free_all(&self.device)?;
+        self.buffer_pool.put_f64(d_pos);
+        self.buffer_pool.put_f64(d_res);
+        self.buffer_pool.put_u8(d_p1);
+        self.buffer_pool.put_f64(d_a1);
+        self.buffer_pool.put_f64(d_l1);
+        self.buffer_pool.put_f64(d_o1);
+        self.buffer_pool.put_u8(d_p2);
+        self.buffer_pool.put_f64(d_a2);
+        self.buffer_pool.put_f64(d_l2);
+        self.buffer_pool.put_f64(d_o2);
         Ok(())
     }
 
@@ -576,12 +517,11 @@ impl GpuNoiseSampler {
         drop(guard);
         let m = config.num_octaves();
 
-        let mut bufs = GpuBufferSet::new();
-        let pos_idx = bufs.alloc_f64(&self.device, n * 2)?;
-        let res_idx = bufs.alloc_f64(&self.device, n)?;
-        let (perm_idx, amp_idx, lac_idx, org_idx) =
-            bufs.load_octave_config(&self.device, &config)?;
-        bufs.upload_f64(&self.device, pos_idx, xz_positions)?;
+        let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
+        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (mut d_perm, mut d_amp, mut d_lac, mut d_org) =
+            self.load_octave_config_pooled(&config)?;
+        self.device.copy_to_device(&mut d_pos, xz_positions)?;
 
         let ok = self.try_launch(
             "shift_a_sample_f64",
@@ -597,21 +537,26 @@ impl GpuNoiseSampler {
                 KernelArg::I32(m as i32),
             ],
             vec![
-                GpuBufferRef::F64(bufs.f64_ref(pos_idx)),
-                GpuBufferRef::U8(bufs.u8_ref(perm_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(amp_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(lac_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(org_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(res_idx)),
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_perm),
+                GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_lac),
+                GpuBufferRef::F64(&d_org),
+                GpuBufferRef::F64(&d_res),
             ],
         );
         if ok {
-            bufs.download_f64(&self.device, res_idx, results)?;
+            self.device.copy_from_device(&d_res, results)?;
         } else {
             cpu_shift_a_batch(sampler, xz_positions, results);
         }
 
-        bufs.free_all(&self.device)?;
+        self.buffer_pool.put_f64(d_pos);
+        self.buffer_pool.put_f64(d_res);
+        self.buffer_pool.put_u8(d_perm);
+        self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_lac);
+        self.buffer_pool.put_f64(d_org);
         Ok(())
     }
 
@@ -711,12 +656,11 @@ impl GpuNoiseSampler {
         drop(guard);
         let m = config.num_octaves();
 
-        let mut bufs = GpuBufferSet::new();
-        let pos_idx = bufs.alloc_f64(&self.device, n * 2)?;
-        let res_idx = bufs.alloc_f64(&self.device, n)?;
-        let (perm_idx, amp_idx, lac_idx, org_idx) =
-            bufs.load_octave_config(&self.device, &config)?;
-        bufs.upload_f64(&self.device, pos_idx, zx_positions)?;
+        let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
+        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (mut d_perm, mut d_amp, mut d_lac, mut d_org) =
+            self.load_octave_config_pooled(&config)?;
+        self.device.copy_to_device(&mut d_pos, zx_positions)?;
 
         let ok = self.try_launch(
             "shift_b_sample_f64",
@@ -732,21 +676,26 @@ impl GpuNoiseSampler {
                 KernelArg::I32(m as i32),
             ],
             vec![
-                GpuBufferRef::F64(bufs.f64_ref(pos_idx)),
-                GpuBufferRef::U8(bufs.u8_ref(perm_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(amp_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(lac_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(org_idx)),
-                GpuBufferRef::F64(bufs.f64_ref(res_idx)),
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::U8(&d_perm),
+                GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_lac),
+                GpuBufferRef::F64(&d_org),
+                GpuBufferRef::F64(&d_res),
             ],
         );
         if ok {
-            bufs.download_f64(&self.device, res_idx, results)?;
+            self.device.copy_from_device(&d_res, results)?;
         } else {
             cpu_shift_b_batch(sampler, zx_positions, results);
         }
 
-        bufs.free_all(&self.device)?;
+        self.buffer_pool.put_f64(d_pos);
+        self.buffer_pool.put_f64(d_res);
+        self.buffer_pool.put_u8(d_perm);
+        self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_lac);
+        self.buffer_pool.put_f64(d_org);
         Ok(())
     }
 

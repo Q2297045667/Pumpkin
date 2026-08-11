@@ -97,12 +97,8 @@ pub struct VeinParams {
 pub struct GpuCellBatchSampler {
     pub device: GpuDevice,
     pub cache: NoiseCache,
-    /// 持久化 perm buffer 缓存
-    perm_pool: std::collections::HashMap<usize, crate::GpuBuffer<u8>>,
-    /// 持久化 f64 buffer 缓存
-    f64_pool: std::collections::HashMap<usize, crate::GpuBuffer<f64>>,
-    /// 持久化 i32 buffer 缓存
-    i32_pool: std::collections::HashMap<usize, crate::GpuBuffer<i32>>,
+    /// 持久化 buffer 池（按长度复用 f64/u8/i32 buffer）。
+    buffer_pool: crate::common::GpuBufferPool,
 }
 
 impl GpuCellBatchSampler {
@@ -111,52 +107,28 @@ impl GpuCellBatchSampler {
         Self {
             device,
             cache: NoiseCache::default(),
-            perm_pool: std::collections::HashMap::new(),
-            f64_pool: std::collections::HashMap::new(),
-            i32_pool: std::collections::HashMap::new(),
+            buffer_pool: crate::common::GpuBufferPool::new(),
         }
     }
 
     /// 从 u8 buffer 池中分配或复用。
-    fn alloc_u8_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<u8>, DeviceError> {
-        if let Some(buf) = self.perm_pool.remove(&len) {
-            Ok(buf)
-        } else {
-            self.device.alloc_u8(len)
-        }
+    fn take_u8(&mut self, len: usize) -> Result<crate::GpuBuffer<u8>, DeviceError> {
+        self.buffer_pool.take_u8(&self.device, len)
     }
-
-    /// 归还 u8 buffer 到池中。
-    fn free_u8_pooled(&mut self, len: usize, buf: crate::GpuBuffer<u8>) {
-        self.perm_pool.entry(len).or_insert(buf);
+    fn put_u8(&mut self, buf: crate::GpuBuffer<u8>) {
+        self.buffer_pool.put_u8(buf);
     }
-
-    /// 从 f64 buffer 池中分配或复用。
-    fn alloc_f64_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<f64>, DeviceError> {
-        if let Some(buf) = self.f64_pool.remove(&len) {
-            Ok(buf)
-        } else {
-            self.device.alloc_f64(len)
-        }
+    fn take_f64(&mut self, len: usize) -> Result<crate::GpuBuffer<f64>, DeviceError> {
+        self.buffer_pool.take_f64(&self.device, len)
     }
-
-    /// 归还 f64 buffer 到池中。
-    fn free_f64_pooled(&mut self, len: usize, buf: crate::GpuBuffer<f64>) {
-        self.f64_pool.entry(len).or_insert(buf);
+    fn put_f64(&mut self, buf: crate::GpuBuffer<f64>) {
+        self.buffer_pool.put_f64(buf);
     }
-
-    /// 从 i32 buffer 池中分配或复用。
-    fn alloc_i32_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<i32>, DeviceError> {
-        if let Some(buf) = self.i32_pool.remove(&len) {
-            Ok(buf)
-        } else {
-            self.device.alloc_i32(len)
-        }
+    fn take_i32(&mut self, len: usize) -> Result<crate::GpuBuffer<i32>, DeviceError> {
+        self.buffer_pool.take_i32(&self.device, len)
     }
-
-    /// 归还 i32 buffer 到池中。
-    fn free_i32_pooled(&mut self, len: usize, buf: crate::GpuBuffer<i32>) {
-        self.i32_pool.entry(len).or_insert(buf);
+    fn put_i32(&mut self, buf: crate::GpuBuffer<i32>) {
+        self.buffer_pool.put_i32(buf);
     }
 
     /// 批量填充 cell cache — 支持自定义 cell_indices。
@@ -221,9 +193,9 @@ impl GpuCellBatchSampler {
 
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        let mut d_stack = self.alloc_f64_pooled(component_stack.len())?;
-        let mut d_perms = self.alloc_u8_pooled(perms_data.len())?;
-        let mut d_indices = self.alloc_i32_pooled(cell_indices.len())?;
+        let mut d_stack = self.take_f64(component_stack.len())?;
+        let mut d_perms = self.take_u8(perms_data.len())?;
+        let mut d_indices = self.take_i32(cell_indices.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_stack, &component_stack)?;
@@ -259,9 +231,9 @@ impl GpuCellBatchSampler {
         } else {
             self.device.free(d_pos)?;
             self.device.free(d_res)?;
-            self.free_f64_pooled(component_stack.len(), d_stack);
-            self.free_u8_pooled(perms_data.len(), d_perms);
-            self.free_i32_pooled(cell_indices.len(), d_indices);
+            self.put_f64(d_stack);
+            self.put_u8(d_perms);
+            self.put_i32(d_indices);
             return Err(DeviceError::LaunchFailed(
                 "cell cache fill: GPU kernel launch failed".into(),
             ));
@@ -269,9 +241,9 @@ impl GpuCellBatchSampler {
 
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
-        self.free_f64_pooled(component_stack.len(), d_stack);
-        self.free_u8_pooled(perms_data.len(), d_perms);
-        self.free_i32_pooled(cell_indices.len(), d_indices);
+        self.put_f64(d_stack);
+        self.put_u8(d_perms);
+        self.put_i32(d_indices);
         Ok(())
     }
 
@@ -343,8 +315,8 @@ impl GpuCellBatchSampler {
         // GPU 内存分配（pos/res 按需，dag/perms 池化）
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        let mut d_dag = self.alloc_f64_pooled(dag_params.len())?;
-        let mut d_perms = self.alloc_u8_pooled(perms_data.len())?;
+        let mut d_dag = self.take_f64(dag_params.len())?;
+        let mut d_perms = self.take_u8(perms_data.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_dag, &dag_params)?;
@@ -375,8 +347,8 @@ impl GpuCellBatchSampler {
         } else {
             self.device.free(d_pos)?;
             self.device.free(d_res)?;
-            self.free_f64_pooled(dag_params.len(), d_dag);
-            self.free_u8_pooled(perms_data.len(), d_perms);
+            self.put_f64(d_dag);
+            self.put_u8(d_perms);
             return Err(DeviceError::LaunchFailed(
                 "interpolator fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
                     .into(),
@@ -385,8 +357,8 @@ impl GpuCellBatchSampler {
 
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
-        self.free_f64_pooled(dag_params.len(), d_dag);
-        self.free_u8_pooled(perms_data.len(), d_perms);
+        self.put_f64(d_dag);
+        self.put_u8(d_perms);
         Ok(())
     }
 

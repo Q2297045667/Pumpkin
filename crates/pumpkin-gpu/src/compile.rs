@@ -240,20 +240,36 @@ pub mod cuda_compile {
             }
         }
 
-        /// 构建 NVRTC CompileOptions，合并架构目标和用户标志。
+        /// 构建常规 kernel 的 NVRTC CompileOptions。
+        ///
+        /// 仅包含架构目标和用户配置标志（精度优先，默认 `--fmad=false`）。
         fn build_compile_opts(&self, flags: &[String]) -> cudarc::nvrtc::CompileOptions {
             let mut opts = cudarc::nvrtc::CompileOptions::default();
             if let Some(ref arch) = self.compile_ptx_arch {
                 opts.options.push(format!("--gpu-architecture={arch}"));
             }
-            // 内置优化标志：FMA 融合乘加可显著加速噪声计算中的 a*b+c 模式
-            opts.options.push("--fmad=true".into());
-            opts.options.push("--opt-level=3".into());
+            // 无精度损失的通用优化
             opts.options.push("--use_fast_math".into());
             opts.options.push("--restrict".into());
             for flag in flags {
                 opts.options.push(flag.clone());
             }
+            opts
+        }
+
+        /// 构建 JIT 特化 kernel 的 NVRTC CompileOptions。
+        ///
+        /// JIT kernel 八度数 ≤ 16、循环完全展开、常量全部内联，
+        /// FMA 融合乘加和激进优化（`--opt-level=3`）具有确定性。
+        fn build_jit_compile_opts(&self) -> cudarc::nvrtc::CompileOptions {
+            let mut opts = cudarc::nvrtc::CompileOptions::default();
+            if let Some(ref arch) = self.compile_ptx_arch {
+                opts.options.push(format!("--gpu-architecture={arch}"));
+            }
+            opts.options.push("--fmad=true".into());
+            opts.options.push("--opt-level=3".into());
+            opts.options.push("--use_fast_math".into());
+            opts.options.push("--restrict".into());
             opts
         }
 
@@ -297,7 +313,8 @@ pub mod cuda_compile {
             jit_kernel: &crate::jit::JitSpecializedKernel,
         ) -> Result<(), DeviceError> {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, jit_kernel.source);
-            let opts = self.build_compile_opts(&[]);
+            // JIT 特化 kernel：使用激进优化（FMA + O3），不受配置 `--fmad=false` 约束。
+            let opts = self.build_jit_compile_opts();
             let ptx = cudarc::nvrtc::compile_ptx_with_opts(full_source, opts).map_err(|e| {
                 let msg = format!("JIT NVRTC '{}': {e:?}", jit_kernel.name);
                 crate::logging::log_fallback(
