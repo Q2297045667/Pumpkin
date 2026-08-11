@@ -597,7 +597,7 @@ impl GpuBeardifierBatchSampler {
         let mut d_stoj = self.device.alloc_i32(struct_to_junction.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
-        self.device.copy_to_device(&mut d_kernel, &beard_kernel)?;
+        self.device.copy_to_device(&mut d_kernel, beard_kernel)?;
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
         self.device.copy_to_device(&mut d_junct, &junct_flat)?;
         self.device

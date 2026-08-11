@@ -397,8 +397,7 @@ impl<'a> ChunkNoiseGenerator<'a> {
             let hc = self.horizontal_cell_count;
             let ppc = hb * hb * vb; // positions per cell
             // 展平 cell 索引：cy → cx → cz（与 precompute 收集顺序一致）
-            let cell_flat =
-                (cell_y as usize * hc * hc + cell_x as usize * hc + cell_z as usize) as usize;
+            let cell_flat = cell_y as usize * hc * hc + cell_x as usize * hc + cell_z as usize;
             let offset = cell_flat * ppc;
             if offset + ppc <= chunk_cache.len() {
                 let slice = &chunk_cache[offset..offset + ppc];

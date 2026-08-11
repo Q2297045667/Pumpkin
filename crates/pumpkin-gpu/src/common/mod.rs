@@ -155,27 +155,23 @@ impl BackendImpl {
         args: Vec<crate::common::kernel::KernelArg<'_>>,
         gpu_buffers: Vec<crate::common::kernel::GpuBufferRef<'_>>,
     ) -> bool {
-        match self.kernel_launcher() {
-            Some(l) => {
-                // 延迟编译：如果 kernel 尚未编译，尝试按需编译
-                if !l.has_kernel(name) {
-                    self.try_compile_kernel_on_demand(name);
-                }
-                if l.has_kernel(name) {
-                    l.launch(crate::common::kernel::KernelLaunch {
-                        name,
-                        global_work_size: [n, 1, 1],
-                        local_work_size: Some([256, 1, 1]),
-                        args,
-                        gpu_buffers,
-                    })
-                    .is_ok()
-                } else {
-                    false
-                }
+        self.kernel_launcher().is_some_and(|l| {
+            if !l.has_kernel(name) {
+                self.try_compile_kernel_on_demand(name);
             }
-            _ => false,
-        }
+            if l.has_kernel(name) {
+                l.launch(crate::common::kernel::KernelLaunch {
+                    name,
+                    global_work_size: [n, 1, 1],
+                    local_work_size: Some([256, 1, 1]),
+                    args,
+                    gpu_buffers,
+                })
+                .is_ok()
+            } else {
+                false
+            }
+        })
     }
 
     /// 按需编译单个 kernel（延迟加载优化）。

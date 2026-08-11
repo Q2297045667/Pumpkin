@@ -340,10 +340,11 @@ impl<'a> ChunkNoiseRouter<'a> {
 
                             // GPU 批量预计算 FlatCache
                             #[cfg(feature = "gpu")]
-                            let gpu_did_fill = {
-                                let h_end = build_options.horizontal_biome_end as i32;
-                                let n_cols = ((h_end + 1) * (h_end + 1)) as usize;
-                                if let Some(mut accel) = crate::gpu::get_noise_accel() {
+                            let gpu_did_fill = crate::gpu::get_noise_accel()
+                                .as_mut()
+                                .and_then(|accel| {
+                                    let h_end = build_options.horizontal_biome_end as i32;
+                                    let n_cols = ((h_end + 1) * (h_end + 1)) as usize;
                                     let start_bx = biome_coords::to_block(build_options.start_biome_x);
                                     let start_bz = biome_coords::to_block(build_options.start_biome_z);
                                     let mut pos_3d = Vec::with_capacity(n_cols * 3);
@@ -354,27 +355,22 @@ impl<'a> ChunkNoiseRouter<'a> {
                                             pos_3d.push((start_bz + biome_coords::to_block(bz)) as f64);
                                         }
                                     }
-                                    // 尝试从 DAG 提取单 OctavePerlin sampler
-                                    let mut results = vec![0.0f64; n_cols];
                                     let sampler_info = extract_flatcache_sampler(
                                         &component_stack[..=wrapper.input_index],
                                     );
-                                    if let Some(sampler) = sampler_info {
+                                    sampler_info.map(|sampler| {
+                                        let mut results = vec![0.0f64; n_cols];
                                         accel.sample_octave(sampler, &pos_3d, &mut results);
                                         for bi in 0..=build_options.horizontal_biome_end {
                                             for bj in 0..=build_options.horizontal_biome_end {
-                                                let idx = (bi * (build_options.horizontal_biome_end + 1) + bj) as usize;
+                                                let idx = bi * (build_options.horizontal_biome_end + 1) + bj;
                                                 flat_cache.cache[idx] = results[idx];
                                             }
                                         }
                                         true
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            };
+                                    })
+                                })
+                                .unwrap_or(false);
                             #[cfg(not(feature = "gpu"))]
                             let gpu_did_fill = false;
 
@@ -846,7 +842,7 @@ impl<'a> ChunkNoiseRouter<'a> {
         }
     }
 
-    /// 将预计算的 cell 数据批量复制到所有 CellCache 实例。
+    /// 将预计算的 cell 数据批量复制到所有 `CellCache` 实例。
     /// 由 chunk 级批量 GPU 填充后调用，替代逐 cell 的 kernel launch。
     pub fn copy_to_cell_caches(&mut self, data: &[f64]) {
         let indices = &self.cell_indices;
@@ -1162,10 +1158,10 @@ impl<'a> ChunkNoiseRouter<'a> {
     }
 }
 
-/// 尝试从 DAG 组件栈中提取简单的 OctavePerlin sampler 用于 FlatCache GPU 加速。
+/// 尝试从 DAG 组件栈中提取简单的 `OctavePerlinNoiseSampler` 用于 `FlatCache` GPU 加速。
 ///
 /// 如果组件栈解析到单一的 `Noise`、`ShiftA`、`ShiftB` 或 `InterpolatedNoise`
-/// 采样器，返回其 first_sampler。如果 DAG 更复杂（含 Dependent 组件等），
+/// 采样器，返回其 `first_sampler`。如果 DAG 更复杂（含 Dependent 组件等），
 /// 返回 None 让调用方回退到 CPU 路径。
 #[cfg(feature = "gpu")]
 fn extract_flatcache_sampler<'a>(

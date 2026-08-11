@@ -1,0 +1,159 @@
+name: GPU Module CI
+
+on:
+  push:
+    paths:
+      - "crates/pumpkin-gpu/**"
+      - "crates/pumpkin-world/src/gpu.rs"
+      - "crates/pumpkin-world/src/noise_accel.rs"
+      - "crates/pumpkin-world/src/batch_accel.rs"
+      - "crates/pumpkin-world/src/light_accel.rs"
+      - "crates/pumpkin-world/src/lighting/engine.rs"
+      - "crates/pumpkin-world/src/generation/noise/**"
+      - "crates/pumpkin-world/src/generation/proto_chunk.rs"
+      - "crates/pumpkin-world/src/generation/structure/height_sampler.rs"
+      - "crates/pumpkin-world/tests/*gpu*"
+      - "crates/pumpkin-world/tests/batch_fingerprint.rs"
+      - "crates/pumpkin-world/tests/gpu_pipeline_integration.rs"
+      - "crates/pumpkin-world/tests/light_fingerprint.rs"
+      - "crates/pumpkin-config/src/gpu.rs"
+      - "pumpkin.toml"
+      - ".github/workflows/rust_gpu.yml"
+  pull_request:
+    paths:
+      - "crates/pumpkin-gpu/**"
+      - "crates/pumpkin-world/src/gpu.rs"
+      - "crates/pumpkin-world/src/noise_accel.rs"
+      - "crates/pumpkin-world/src/batch_accel.rs"
+      - "crates/pumpkin-world/src/light_accel.rs"
+      - "crates/pumpkin-world/src/lighting/engine.rs"
+      - "crates/pumpkin-world/src/generation/noise/**"
+      - "crates/pumpkin-world/src/generation/proto_chunk.rs"
+      - "crates/pumpkin-world/src/generation/structure/height_sampler.rs"
+      - "crates/pumpkin-world/tests/*gpu*"
+      - "crates/pumpkin-world/tests/batch_fingerprint.rs"
+      - "crates/pumpkin-world/tests/gpu_pipeline_integration.rs"
+      - "crates/pumpkin-world/tests/light_fingerprint.rs"
+      - "crates/pumpkin-config/src/gpu.rs"
+      - "pumpkin.toml"
+      - ".github/workflows/rust_gpu.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  # ============================================================================
+  # 格式化检查
+  # ============================================================================
+  format:
+    name: GPU - Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+
+  # ============================================================================
+  # Clippy (仅 GPU feature)
+  # ============================================================================
+  clippy:
+    name: GPU - Clippy
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (GPU features)
+        run: cargo clippy --features gpu --all-targets
+
+  # ============================================================================
+  # 编译检查 (GPU feature)
+  # ============================================================================
+  check:
+    name: GPU - Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [clippy]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check --features gpu
+        run: cargo check --features gpu
+      - name: cargo check --features gpu --tests
+        run: cargo check --features gpu --tests
+
+  # ============================================================================
+  # GPU 单元测试 (pumpkin-gpu)
+  # ============================================================================
+  test_gpu_crate:
+    name: GPU - Unit Tests
+    runs-on: ${{ matrix.os }}
+    needs: [check]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test pumpkin-gpu (lib)
+        run: cargo test -p pumpkin-gpu --features gpu --lib
+      - name: Test pumpkin-gpu (JIT)
+        run: cargo test -p pumpkin-gpu --features gpu --test jit_tests --test jit_consistency_tests
+
+  # ============================================================================
+  # GPU 集成测试 (pumpkin-world)
+  # ============================================================================
+  test_integration:
+    name: GPU - Integration Tests
+    runs-on: ${{ matrix.os }}
+    needs: [check]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Batch fingerprint
+        run: cargo test -p pumpkin-world --features gpu --test batch_fingerprint
+      - name: Pipeline integration
+        run: cargo test -p pumpkin-world --features gpu --test gpu_pipeline_integration
+      - name: Noise fingerprint
+        run: cargo test -p pumpkin-world --features gpu --test gpu_noise_fingerprint
+      - name: Noise accelerator consistency
+        run: cargo test -p pumpkin-world --features gpu --test noise_accel_consistency
+      - name: Light fingerprint
+        run: cargo test -p pumpkin-world --features gpu --test light_fingerprint
+
+  # ============================================================================
+  # 未使用依赖检查 (仅 GPU 相关 crate)
+  # ============================================================================
+  machete:
+    name: GPU - Unused Deps
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: bnjbvr/cargo-machete@main

@@ -185,7 +185,7 @@ pub fn specialize_double_perlin(
     }
 
     // 第二组八度 (带常量 c 缩放)
-    let _ = writeln!(src, "    double x2 = maintain_precision(x*{c});", c = c);
+    let _ = writeln!(src, "    double x2 = maintain_precision(x*{c});");
     let _ = writeln!(src, "    double y2 = maintain_precision(y*{c});");
     let _ = writeln!(src, "    double z2 = maintain_precision(z*{c});");
     let _ = writeln!(src, "    double sum2 = 0.0;");
@@ -210,7 +210,7 @@ pub fn specialize_double_perlin(
         );
     }
 
-    let _ = writeln!(src, "    res[i] = (sum1 + sum2) * {amp};", amp = amplitude);
+    let _ = writeln!(src, "    res[i] = (sum1 + sum2) * {amplitude};");
     let _ = writeln!(src, "}}");
 
     Some(JitSpecializedKernel { name, source: src })

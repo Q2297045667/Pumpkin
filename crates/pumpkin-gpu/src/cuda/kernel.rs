@@ -70,6 +70,7 @@ impl CudaKernelLauncher {
 
     /// 按需编译单个预注册 kernel（延迟加载 stub）。
     #[allow(unused_variables)]
+    #[allow(clippy::unused_self)]
     pub fn compile_kernel_by_name(&self, name: &str) {
         tracing::debug!(
             "CUDA lazy compile: '{}' (full impl requires source registry)",
