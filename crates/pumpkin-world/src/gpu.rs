@@ -5,7 +5,29 @@
 //!
 //! 当 GPU 不可用或 feature 未启用时，所有操作自动回退到 CPU 路径。
 
+use std::sync::OnceLock;
+
 use pumpkin_config::gpu::GpuConfig;
+
+/// 全局 GPU 配置（由 Server 启动时设置）。
+static GPU_CONFIG: OnceLock<GpuConfig> = OnceLock::new();
+
+/// 在启动阶段注入 GPU 配置，使其对后续所有子系统可用。
+///
+/// # Panics
+///
+/// 如果配置已被设置则 panic（保证只设置一次）。
+pub fn init_gpu_config(config: GpuConfig) {
+    GPU_CONFIG
+        .set(config)
+        .expect("GPU config has already been set");
+}
+
+/// 获取全局 GPU 配置（如果已被初始化）。
+#[must_use]
+pub fn get_gpu_config() -> Option<&'static GpuConfig> {
+    GPU_CONFIG.get()
+}
 
 /// GPU 计算状态。
 #[derive(Debug, Clone, PartialEq, Eq)]

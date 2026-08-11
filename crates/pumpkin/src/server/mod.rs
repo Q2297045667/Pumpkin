@@ -309,6 +309,10 @@ impl Server {
         };
         let server = Arc::new(server);
 
+        // 将 GPU 配置注入到 pumpkin_world 全局状态，供后续 world 加载使用
+        #[cfg(feature = "gpu")]
+        pumpkin_world::gpu::init_gpu_config(server.advanced_config.gpu.clone());
+
         let gen_pool = Arc::new(
             rayon::ThreadPoolBuilder::new()
                 .thread_name(|i| format!("Gen-Pool-{i}"))

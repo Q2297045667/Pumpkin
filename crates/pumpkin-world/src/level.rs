@@ -2,6 +2,8 @@ use crate::chunk::format::linear::LinearV2File;
 use crate::chunk::format::pump::PumpFile;
 use crate::chunk_system::{ChunkListener, ChunkLoading, GenerationSchedule, LevelChannel};
 use crate::generation::generator::WorldGenerator;
+#[cfg(feature = "gpu")]
+use crate::gpu::GpuCompute;
 use crate::lighting::DynamicLightEngine;
 use crate::{
     chunk::{
@@ -115,6 +117,10 @@ pub struct Level {
     pub thread_tracker: Mutex<Vec<thread::JoinHandle<()>>>,
     pub chunk_listener: Arc<ChunkListener>,
     pub gen_pool: Option<Arc<rayon::ThreadPool>>,
+
+    /// GPU 加速计算句柄（仅在 `gpu` feature 启用且配置 enabled=true 时存在）
+    #[cfg(feature = "gpu")]
+    pub gpu_compute: Option<Arc<GpuCompute>>,
 }
 
 pub struct TickData {
@@ -228,6 +234,20 @@ impl Level {
             flat_biome,
         ));
 
+        // 初始化 GPU 加速（如果全局配置已设置且启用）
+        #[cfg(feature = "gpu")]
+        let gpu_compute = crate::gpu::get_gpu_config().and_then(|config| {
+            if config.enabled {
+                let compute = GpuCompute::new(config.clone());
+                if compute.is_gpu_active() {
+                    tracing::info!("GPU 加速已启用");
+                }
+                Some(Arc::new(compute))
+            } else {
+                None
+            }
+        });
+
         let chunk_saver = match &level_config.chunk {
             ChunkConfig::Linear => Arc::new(ChunkSaver::Linear(ChunkFileManager::new(()))),
             ChunkConfig::Anvil(config) => {
@@ -276,6 +296,8 @@ impl Level {
             thread_tracker,
             chunk_listener: listener.clone(),
             gen_pool: gen_pool.clone(),
+            #[cfg(feature = "gpu")]
+            gpu_compute,
         });
 
         // TODO
