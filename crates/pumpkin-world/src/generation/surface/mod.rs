@@ -110,14 +110,17 @@ impl<'a> MaterialRuleContext<'a> {
     }
 
     fn sample_run_depth(&self) -> i32 {
-        let noise = if let Some(ref cache) = self.surface_noise_cache {
-            let local_x = self.block_pos_x & 15;
-            let local_z = self.block_pos_z & 15;
-            cache.surface_at(local_x, local_z)
-        } else {
-            self.surface_noise
-                .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64)
-        };
+        let noise = self.surface_noise_cache.as_ref().map_or_else(
+            || {
+                self.surface_noise
+                    .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64)
+            },
+            |cache| {
+                let local_x = self.block_pos_x & 15;
+                let local_z = self.block_pos_z & 15;
+                cache.surface_at(local_x, local_z)
+            },
+        );
         (noise * 2.75
             + 3.0
             + self
@@ -150,14 +153,20 @@ impl<'a> MaterialRuleContext<'a> {
     pub fn get_secondary_depth(&mut self) -> f64 {
         if self.last_unique_horizontal_pos_value != self.unique_horizontal_pos_value {
             self.last_unique_horizontal_pos_value = self.unique_horizontal_pos_value;
-            self.secondary_depth = if let Some(ref cache) = self.surface_noise_cache {
-                let local_x = self.block_pos_x & 15;
-                let local_z = self.block_pos_z & 15;
-                cache.secondary_at(local_x, local_z)
-            } else {
-                self.secondary_noise
-                    .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64)
-            };
+            self.secondary_depth = self.surface_noise_cache.as_ref().map_or_else(
+                || {
+                    self.secondary_noise.sample(
+                        self.block_pos_x as f64,
+                        0.0,
+                        self.block_pos_z as f64,
+                    )
+                },
+                |cache| {
+                    let local_x = self.block_pos_x & 15;
+                    let local_z = self.block_pos_z & 15;
+                    cache.secondary_at(local_x, local_z)
+                },
+            );
         }
         self.secondary_depth
     }

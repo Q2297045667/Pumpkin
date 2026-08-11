@@ -868,12 +868,6 @@ impl ProtoChunk {
         ore_random_deriver: &XoroshiroSplitter,
         surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
     ) {
-        // GPU 加速接入点：检查批量加速器是否可用。
-        // 噪声批量采样和 aquifer/beardifier/vein 的 GPU 路径
-        // 通过 ChunkNoiseGenerator 内部的批量操作自动触发。
-        #[cfg(feature = "gpu")]
-        let _batch_accel = crate::gpu::get_batch_accel();
-
         let h_count = noise_sampler.horizontal_cell_block_count() as i32;
         let v_count = noise_sampler.vertical_cell_block_count() as i32;
         let horizontal_cells = CHUNK_DIM as i32 / h_count;
@@ -994,9 +988,9 @@ impl ProtoChunk {
 
         // GPU 加速：预计算 256 列的表面噪声缓存
         #[cfg(feature = "gpu")]
-        let surface_noise_cache: Option<crate::generation::surface::CachedSurfaceNoise> = {
-            if let Some(mut accel) = crate::gpu::get_noise_accel() {
-                Some(accel.precompute_surface(
+        let surface_noise_cache: Option<crate::generation::surface::CachedSurfaceNoise> =
+            crate::gpu::get_noise_accel().map(|mut accel| {
+                accel.precompute_surface(
                     terrain_cache.surface_noise.first_sampler(),
                     terrain_cache.surface_noise.second_sampler(),
                     terrain_cache.surface_noise.amplitude(),
@@ -1005,11 +999,8 @@ impl ProtoChunk {
                     terrain_cache.secondary_noise.amplitude(),
                     start_x,
                     start_z,
-                ))
-            } else {
-                None
-            }
-        };
+                )
+            });
         #[cfg(not(feature = "gpu"))]
         let surface_noise_cache: Option<crate::generation::surface::CachedSurfaceNoise> = None;
 

@@ -8,17 +8,24 @@ use super::GRADIENTS;
 // 线程本地噪声缓存，用于 GPU 批量预计算。
 // 当 GPU 加速器可用时，在批量生成开始前填充此缓存，
 // 后续的 `OctavePerlinNoiseSampler::sample` 调用将优先从缓存读取。
+
+#[allow(clippy::doc_markdown)]
+/// 噪声缓存键类型：(`sampler_id`, `x_fixed`, `y_fixed`, `z_fixed`)
+type NoiseCacheKey = (u64, i64, i64, i64);
+#[allow(clippy::doc_markdown)]
+/// 噪声缓存映射类型
+type NoiseCacheMap = std::collections::HashMap<NoiseCacheKey, f64>;
+
 thread_local! {
-    pub(crate) static NOISE_CACHE: std::cell::RefCell<
-        Option<std::collections::HashMap<(u64, i64, i64, i64), f64>>,
-    > = const { std::cell::RefCell::new(None) };
+    pub(crate) static NOISE_CACHE: std::cell::RefCell<Option<NoiseCacheMap>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// 设置线程本地噪声缓存（仅在 GPU 加速批量预计算时调用）。
-/// `sampler_id` 唯一标识一个 OctavePerlinNoiseSampler 实例。
-pub fn set_noise_cache(cache: std::collections::HashMap<(u64, i64, i64, i64), f64>) {
+/// `sampler_id` 唯一标识一个 `OctavePerlinNoiseSampler` 实例。
+pub fn set_noise_cache(cache: impl Into<NoiseCacheMap>) {
     NOISE_CACHE.with(|c| {
-        *c.borrow_mut() = Some(cache);
+        *c.borrow_mut() = Some(cache.into());
     });
 }
 
@@ -514,7 +521,7 @@ impl OctavePerlinNoiseSampler {
 
     /// 设置此采样器的唯一 ID（用于 GPU 噪声缓存查找）。
     #[inline]
-    pub fn set_sampler_id(&mut self, id: u64) {
+    pub const fn set_sampler_id(&mut self, id: u64) {
         self.sampler_id = id;
     }
 
@@ -550,10 +557,10 @@ impl OctavePerlinNoiseSampler {
     #[must_use]
     pub fn sample(&self, x: f64, y: f64, z: f64) -> f64 {
         // GPU 噪声缓存查找：如果缓存中有预计算值，直接返回。
-        if self.sampler_id != 0 {
-            if let Some(cached) = lookup_noise_cache(self.sampler_id, x, y, z) {
-                return cached;
-            }
+        if self.sampler_id != 0
+            && let Some(cached) = lookup_noise_cache(self.sampler_id, x, y, z)
+        {
+            return cached;
         }
         self.samplers
             .iter()

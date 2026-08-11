@@ -274,13 +274,12 @@ impl NoiseAccelerator {
         let mut results = vec![0.0f64; n];
 
         #[cfg(feature = "gpu")]
-        if let Some(ref mut i) = self.inner {
-            if i.sample_octave_batch(sampler, positions, &mut results)
+        if let Some(ref mut i) = self.inner
+            && i.sample_octave_batch(sampler, positions, &mut results)
                 .is_ok()
-            {
-                Self::insert_into_cache(sampler_id, positions, &results);
-                return;
-            }
+        {
+            Self::insert_into_cache(sampler_id, positions, &results);
+            return;
         }
 
         // CPU fallback

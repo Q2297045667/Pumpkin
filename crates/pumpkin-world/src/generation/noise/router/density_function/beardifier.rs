@@ -5,7 +5,9 @@ use crate::generation::noise::router::chunk_noise_router::{
 use pumpkin_util::math::{block_box::BlockBox, vector3::Vector3};
 use std::sync::OnceLock;
 
-use super::{NoiseFunctionComponentRange, StaticIndependentChunkNoiseFunctionComponentImpl};
+use super::{
+    IndexToNoisePos, NoiseFunctionComponentRange, StaticIndependentChunkNoiseFunctionComponentImpl,
+};
 
 const BEARD_KERNEL_RADIUS: i32 = 12;
 const BEARD_KERNEL_SIZE: i32 = 24;
@@ -203,6 +205,70 @@ impl MutableChunkNoiseFunctionComponentImpl for Beardifier {
         _sample_options: &ChunkNoiseFunctionSampleOptions,
     ) -> f64 {
         StaticIndependentChunkNoiseFunctionComponentImpl::sample(self, pos)
+    }
+
+    fn fill(
+        &mut self,
+        component_stack: &mut [ChunkNoiseFunctionComponent],
+        array: &mut [f64],
+        mapper: &impl IndexToNoisePos,
+        sample_options: &mut ChunkNoiseFunctionSampleOptions,
+    ) {
+        #[cfg(feature = "gpu")]
+        {
+            use pumpkin_gpu::noise::batch_cell::{BeardifierJunctionData, BeardifierStructureData};
+
+            if let Some(accel) = crate::gpu::get_batch_accel() {
+                let num_positions = array.len();
+                let mut positions = Vec::with_capacity(num_positions * 3);
+                for i in 0..num_positions {
+                    let pos = mapper.at(i, Some(sample_options));
+                    positions.push(pos.x as f64);
+                    positions.push(pos.y as f64);
+                    positions.push(pos.z as f64);
+                }
+
+                let gpu_structures: Vec<BeardifierStructureData> = self
+                    .structures
+                    .iter()
+                    .map(|s| BeardifierStructureData {
+                        min_x: s.bounding_box.min.x,
+                        min_y: s.bounding_box.min.y,
+                        min_z: s.bounding_box.min.z,
+                        max_x: s.bounding_box.max.x,
+                        max_y: s.bounding_box.max.y,
+                        max_z: s.bounding_box.max.z,
+                        terrain_adaptation: match s.terrain_adaptation {
+                            TerrainAdaptation::None => 0,
+                            TerrainAdaptation::BeardThin => 1,
+                            TerrainAdaptation::BeardBox => 2,
+                            TerrainAdaptation::Bury => 3,
+                            TerrainAdaptation::Encapsulate => 4,
+                        },
+                        ground_level_delta: s.ground_level_delta,
+                    })
+                    .collect();
+
+                let gpu_junctions: Vec<BeardifierJunctionData> = self
+                    .junctions
+                    .iter()
+                    .map(|j| BeardifierJunctionData {
+                        x: j.x,
+                        ground_y: j.ground_y,
+                        z: j.z,
+                    })
+                    .collect();
+
+                accel.batch_beardifier(&positions, &gpu_structures, &gpu_junctions, array);
+                return;
+            }
+        }
+
+        // CPU fallback: per-sample loop (same as the default trait implementation)
+        array.iter_mut().enumerate().for_each(|(index, value)| {
+            let pos = mapper.at(index, Some(sample_options));
+            *value = self.sample(component_stack, &pos, sample_options);
+        });
     }
 }
 

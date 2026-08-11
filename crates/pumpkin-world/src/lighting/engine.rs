@@ -467,13 +467,8 @@ impl LightEngine {
 
         // 尝试 GPU 加速天空光填充；若不可用则回退到 CPU 路径。
         #[cfg(feature = "gpu")]
-        let gpu_did_sky = {
-            if let Some(mut light_accel) = crate::gpu::get_light_accel() {
-                Self::try_gpu_sky_fill(cache, &mut light_accel)
-            } else {
-                false
-            }
-        };
+        let gpu_did_sky = crate::gpu::get_light_accel()
+            .is_some_and(|mut light_accel| Self::try_gpu_sky_fill(cache, &mut light_accel));
         #[cfg(not(feature = "gpu"))]
         let gpu_did_sky = false;
 
@@ -491,7 +486,7 @@ impl LightEngine {
         self.sky_light.clear();
     }
 
-    /// 在 GPU 天空光填充后执行水平传播（替代 convert_light 的第二步）。
+    /// 在 GPU 天空光填充后执行水平传播（替代 `convert_light` 的第二步）。
     fn sky_horizontal_propagate(&mut self, cache: &mut Cache) {
         let center_x = cache.x + (cache.size / 2);
         let center_z = cache.z + (cache.size / 2);

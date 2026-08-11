@@ -105,11 +105,11 @@ impl GpuCellBatchSampler {
     /// 批量填充 cell cache。
     ///
     /// GPU 路径尝试 launch `cell_cache_fill_f64` kernel，
-    /// 失败时回退 CPU。
+    /// 失败时回退到上层 `BatchAccelerator` 的 CPU fallback。
     pub fn batch_fill_cell_caches(
         &mut self,
         positions: &[f64],
-        _sampler_params: &CellFillParams,
+        sampler_params: &CellFillParams,
         results: &mut [f64],
     ) -> Result<(), DeviceError> {
         let n = results.len();
@@ -123,36 +123,115 @@ impl GpuCellBatchSampler {
             return Ok(());
         }
 
-        // GPU 路径：上传数据、启动 kernel、读回结果。
-        // 注意：cell_cache_fill_f64 kernel 需要 component_stack、perms_data、
-        // cell_indices 等额外参数，当前尚未完全接入。
-        // 一旦 GPU 失败（当前必然失败因为参数缺失），回退 CPU。
+        // 提取 cell cache 参数
+        let total_octaves: i32 = sampler_params.num_octaves.iter().sum();
+        if total_octaves == 0 || sampler_params.perlin_configs.is_empty() {
+            return Err(DeviceError::LaunchFailed(
+                "cell cache fill: empty params — use CPU fallback".into(),
+            ));
+        }
+
+        // 用第一个采样器的八度数计算偏移
+        let num_octaves_0 = sampler_params.num_octaves.first().copied().unwrap_or(0) as usize;
+        if num_octaves_0 == 0 {
+            return Err(DeviceError::LaunchFailed(
+                "cell cache fill: sampler has 0 octaves".into(),
+            ));
+        }
+
+        let config_stride = 1 + num_octaves_0 * 5;
+        let expected_len = config_stride * sampler_params.num_octaves.len();
+        if sampler_params.perlin_configs.len() < expected_len {
+            return Err(DeviceError::LaunchFailed(
+                "cell cache fill: perlin_configs too short".into(),
+            ));
+        }
+
+        // 构建 component_stack：展平 perlin_configs
+        let component_stack: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
+
+        // 构建 perms_data
+        let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves as usize * 256);
+        for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
+            for o in 0..no as usize {
+                let perm = gen_perm_table(0x4365_6C6C_u64.wrapping_add(s_idx as u64), o);
+                perms_data.extend_from_slice(&perm);
+            }
+        }
+
+        // cell_indices: 每个位置指向 sampler 0（简化：所有位置使用同一 sampler）
+        let cell_indices: Vec<i32> = vec![0i32; n];
+
+        let amps_offset: i32 = 1;
+        let lacs_offset: i32 = 1 + num_octaves_0 as i32;
+        let orgs_offset: i32 = 1 + (num_octaves_0 * 2) as i32;
+
+        // GPU 内存分配
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        self.device.copy_to_device(&mut d_pos, positions)?;
+        let mut d_stack = self.device.alloc_f64(component_stack.len())?;
+        let mut d_perms = self.device.alloc_u8(perms_data.len())?;
+        let mut d_indices = self.device.alloc_i32(cell_indices.len())?;
 
-        // cell_cache_fill_f64 签名需要 9 个参数，当前未准备好 → 跳过 GPU 尝试
-        // TODO: 接入 component_stack / perms_data / cell_indices 后恢复 GPU 路径
-        let ok = false;
+        self.device.copy_to_device(&mut d_pos, positions)?;
+        self.device.copy_to_device(&mut d_stack, &component_stack)?;
+        self.device.copy_to_device(&mut d_perms, &perms_data)?;
+        self.device.copy_to_device(&mut d_indices, &cell_indices)?;
+
+        let ok = self.try_launch(
+            "cell_cache_fill_f64",
+            n,
+            vec![
+                KernelArg::BufferRef(0), // pos
+                KernelArg::BufferRef(1), // component_stack
+                KernelArg::BufferRef(2), // perms_data
+                KernelArg::BufferRef(3), // cell_indices
+                KernelArg::BufferRef(4), // densities (output)
+                KernelArg::I32(n as i32),
+                KernelArg::I32(config_stride as i32),
+                KernelArg::I32(amps_offset),
+                KernelArg::I32(lacs_offset),
+                KernelArg::I32(orgs_offset),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::F64(&d_stack),
+                GpuBufferRef::U8(&d_perms),
+                GpuBufferRef::I32(&d_indices),
+                GpuBufferRef::F64(&d_res),
+            ],
+        );
+
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
-            cpu_cell_cache_fill(positions, results);
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_stack)?;
+            self.device.free(d_perms)?;
+            self.device.free(d_indices)?;
+            return Err(DeviceError::LaunchFailed(
+                "cell cache fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
+                    .into(),
+            ));
         }
 
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
+        self.device.free(d_stack)?;
+        self.device.free(d_perms)?;
+        self.device.free(d_indices)?;
         Ok(())
     }
 
     /// 批量填充插值器缓冲区。
     ///
     /// GPU 路径尝试 launch `interpolator_fill_f64` kernel，
-    /// 失败时回退 CPU。
+    /// 失败时回退到上层 `BatchAccelerator` 的 CPU fallback。
     pub fn batch_fill_interpolators(
         &mut self,
         positions: &[f64],
-        _sampler_params: &CellFillParams,
+        sampler_params: &CellFillParams,
         results: &mut [f64],
     ) -> Result<(), DeviceError> {
         let n = results.len();
@@ -166,24 +245,80 @@ impl GpuCellBatchSampler {
             return Ok(());
         }
 
-        // GPU 路径：上传数据、启动 kernel、读回结果。
-        // 注意：interpolator_fill_f64 kernel 需要 dag_params、perms_data 等额外参数，
-        // 当前尚未完全接入。一旦 GPU 失败（当前必然失败因为参数缺失），回退 CPU。
+        // 提取插值器参数：使用第一个采样器的配置
+        let total_octaves: i32 = sampler_params.num_octaves.iter().sum();
+        if total_octaves == 0 || sampler_params.perlin_configs.is_empty() {
+            return Err(DeviceError::LaunchFailed(
+                "interpolator fill: empty params — use CPU fallback".into(),
+            ));
+        }
+
+        let expected_len = (total_octaves * 8) as usize;
+        if sampler_params.perlin_configs.len() < expected_len {
+            return Err(DeviceError::LaunchFailed(
+                "interpolator fill: perlin_configs too short".into(),
+            ));
+        }
+
+        // 构建 dag_params：[amp, lac, org_x, org_y, org_z, xz_scale, y_scale, _] per octave
+        let dag_params: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
+
+        // 构建 perms_data：每个 octave 256 字节置换表
+        let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves as usize * 256);
+        for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
+            for o in 0..no as usize {
+                let perm = gen_perm_table(0x496E_7465_7270_u64.wrapping_add(s_idx as u64), o);
+                perms_data.extend_from_slice(&perm);
+            }
+        }
+
+        // GPU 内存分配
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        self.device.copy_to_device(&mut d_pos, positions)?;
+        let mut d_dag = self.device.alloc_f64(dag_params.len())?;
+        let mut d_perms = self.device.alloc_u8(perms_data.len())?;
 
-        // interpolator_fill_f64 签名需要 6 个参数，当前未准备好 → 跳过 GPU 尝试
-        // TODO: 接入 dag_params / perms_data 后恢复 GPU 路径
-        let ok = false;
+        self.device.copy_to_device(&mut d_pos, positions)?;
+        self.device.copy_to_device(&mut d_dag, &dag_params)?;
+        self.device.copy_to_device(&mut d_perms, &perms_data)?;
+
+        // 启动 GPU kernel
+        let ok = self.try_launch(
+            "interpolator_fill_f64",
+            n,
+            vec![
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::I32(n as i32),
+                KernelArg::I32(total_octaves),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::F64(&d_dag),
+                GpuBufferRef::U8(&d_perms),
+                GpuBufferRef::F64(&d_res),
+            ],
+        );
+
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
-            cpu_interpolator_fill(positions, results);
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_dag)?;
+            self.device.free(d_perms)?;
+            return Err(DeviceError::LaunchFailed(
+                "interpolator fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
+                    .into(),
+            ));
         }
 
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
+        self.device.free(d_dag)?;
+        self.device.free(d_perms)?;
         Ok(())
     }
 
@@ -496,27 +631,33 @@ impl GpuVeinBatchSampler {
             return Ok(());
         }
 
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
-        let d_res = self.device.alloc_i32(n)?;
+        let mut _d_pos = self.device.alloc_f64(n * 3)?;
+        let _d_res = self.device.alloc_i32(n)?;
 
-        self.device.copy_to_device(&mut d_pos, positions)?;
+        self.device.copy_to_device(&mut _d_pos, positions)?;
 
         // vein_batch_f64 签名需要 9 个参数（包括 vein_noise_params、
         // perms_data、vein_thresholds、vein_weights 等），当前未准备好 → 跳过 GPU 尝试
         // TODO: 接入完整参数后恢复 GPU 路径
         let ok = false;
         if ok {
-            self.device.copy_from_device(&d_res, results)?;
+            self.device.copy_from_device(&_d_res, results)?;
         } else {
-            cpu_vein_sample(positions, results);
+            self.device.free(_d_pos)?;
+            self.device.free(_d_res)?;
+            return Err(DeviceError::LaunchFailed(
+                "vein sample: GPU path not yet connected — use BatchAccelerator CPU fallback"
+                    .into(),
+            ));
         }
 
-        self.device.free(d_pos)?;
-        self.device.free(d_res)?;
+        self.device.free(_d_pos)?;
+        self.device.free(_d_res)?;
         Ok(())
     }
 
-    #[allow(dead_code)] // TODO: 恢复 launch 后移除
+    // TODO: 恢复 vein GPU 路径后移除此 allow
+    #[allow(dead_code)]
     fn try_launch(
         &self,
         name: &str,
@@ -526,6 +667,23 @@ impl GpuVeinBatchSampler {
     ) -> bool {
         self.device.try_launch_kernel(name, n, args, gpu_buffers)
     }
+}
+
+// ============================================================================
+// 共享 Perlin 置换表工具
+// ============================================================================
+
+/// 生成确定性置换表（每个 octave 一个 256 字节表）。
+fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
+    let mut perm = [0u8; 256];
+    for (i, p) in perm.iter_mut().enumerate() {
+        let h = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(octave as u64)
+            .wrapping_add(i as u64);
+        *p = (h ^ (h >> 24)) as u8;
+    }
+    perm
 }
 
 // ============================================================================
@@ -609,10 +767,9 @@ mod tests {
         };
         let positions = [0.0f64, 0.0, 0.0, 1.0, 1.0, 1.0];
         let mut results = [0.0f64; 2];
-        s.batch_fill_cell_caches(&positions, &params, &mut results)
-            .unwrap();
-        // CPU fallback 返回零
-        assert_eq!(results, [0.0, 0.0]);
+        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
+        let result = s.batch_fill_cell_caches(&positions, &params, &mut results);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -625,9 +782,9 @@ mod tests {
         };
         let positions = [0.0f64, 0.0, 0.0, 1.0, 2.0, 3.0];
         let mut results = [0.0f64; 2];
-        s.batch_fill_interpolators(&positions, &params, &mut results)
-            .unwrap();
-        assert_eq!(results, [0.0, 0.0]);
+        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
+        let result = s.batch_fill_interpolators(&positions, &params, &mut results);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -695,8 +852,8 @@ mod tests {
         };
         let positions = [0.0f64, -30.0, 0.0];
         let mut results = [0i32];
-        s.batch_vein_sample(&positions, &params, &mut results)
-            .unwrap();
-        assert_eq!(results[0], 0);
+        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
+        let result = s.batch_vein_sample(&positions, &params, &mut results);
+        assert!(result.is_err());
     }
 }

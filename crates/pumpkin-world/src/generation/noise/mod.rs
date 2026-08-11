@@ -172,6 +172,11 @@ pub struct ChunkNoiseGenerator<'a> {
     cache_result_unique_id: u64,
 
     pub router: ChunkNoiseRouter<'a>,
+
+    /// GPU 批量加速器 —— 为 Cell Cache、Aquifer、Beardifier、Vein 提供批量采样。
+    /// 仅在 `gpu` feature 启用且 GPU 可用时存在。
+    #[cfg(feature = "gpu")]
+    batch_accel: Option<&'a crate::batch_accel::BatchAccelerator>,
 }
 
 impl<'a> ChunkNoiseGenerator<'a> {
@@ -251,6 +256,9 @@ impl<'a> ChunkNoiseGenerator<'a> {
 
         let router = ChunkNoiseRouter::generate(noise_router_base, &builder_options);
 
+        #[cfg(feature = "gpu")]
+        let batch_accel = crate::gpu::get_batch_accel();
+
         Self {
             state_sampler,
             generation_shape,
@@ -264,6 +272,9 @@ impl<'a> ChunkNoiseGenerator<'a> {
             cache_result_unique_id: 0,
 
             router,
+
+            #[cfg(feature = "gpu")]
+            batch_accel,
         }
     }
 
@@ -394,6 +405,22 @@ impl<'a> ChunkNoiseGenerator<'a> {
         height_estimator: &mut SurfaceHeightEstimateSampler,
     ) -> Option<&'static BlockState> {
         let pos = Vector3::new(start_x + cell_x, start_y + cell_y, start_z + cell_z);
+
+        // GPU 批量预计算：在调用 state_sampler 之前，使用 BatchAccelerator
+        // 预先填充当前位置的 Cell Cache，加速后续噪声采样。
+        #[cfg(feature = "gpu")]
+        if let Some(accel) = self.batch_accel {
+            let positions = [pos.x as f64, pos.y as f64, pos.z as f64];
+            let mut results = [0.0f64; 1];
+            // 构建批量 cell cache 填充参数 —— 当前使用空配置作为集成占位，
+            // 后续 ChunkNoiseRouter 重构后将从组件堆栈中提取真实的 perlin 配置。
+            let params = pumpkin_gpu::noise::batch_cell::CellFillParams {
+                perlin_configs: Vec::new(),
+                num_octaves: Vec::new(),
+                sampler_types: Vec::new(),
+            };
+            accel.batch_fill_cell_caches(&positions, &params, &mut results);
+        }
 
         let options = ChunkNoiseFunctionSampleOptions::new(
             false,

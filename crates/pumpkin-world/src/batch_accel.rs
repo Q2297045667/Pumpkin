@@ -369,22 +369,6 @@ fn cpu_beardifier(
 /// 3. Y 轴边界检查 + 概率判定 → 矿石 / 粗矿 / 围岩 / 无矿脉
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn cpu_vein_detect(positions: &[f64], params: &VeinParams, results: &mut [i32]) {
-    let n = results.len();
-    if n == 0 {
-        return;
-    }
-
-    // 从 VeinParams 解析八度数：每段 noise 的 f64 数量 / 8（每 octave 8 个参数）
-    let octaves_toggle = params.toggle_config.len() / 8;
-    let octaves_ridged = params.ridged_config.len() / 8;
-    let octaves_gap = params.gap_config.len() / 8;
-
-    // 如果没有有效的八度配置，直接返回全零
-    if octaves_toggle == 0 || octaves_ridged == 0 || octaves_gap == 0 {
-        results.fill(0);
-        return;
-    }
-
     // 矿石类型定义（与 OreVeinSampler 对应）
     #[derive(Clone, Copy)]
     struct VeinTypeCpu {
@@ -399,6 +383,21 @@ fn cpu_vein_detect(positions: &[f64], params: &VeinParams, results: &mut [i32]) 
         min_y: -60,
         max_y: -8,
     };
+
+    let n = results.len();
+    if n == 0 {
+        return;
+    }
+
+    // 从 VeinParams 解析八度数
+    let octaves_toggle = params.toggle_config.len() / 8;
+    let octaves_ridged = params.ridged_config.len() / 8;
+    let octaves_gap = params.gap_config.len() / 8;
+
+    if octaves_toggle == 0 || octaves_ridged == 0 || octaves_gap == 0 {
+        results.fill(0);
+        return;
+    }
 
     // 对每个位置执行矿脉判定
     for idx in 0..n {
@@ -534,29 +533,30 @@ fn sample_perlin(perm: &[u8; 256], x: f64, y: f64, z: f64) -> f64 {
     let ba = perm[b & 255] as usize + zi as usize;
     let bb = perm[(b + 1) & 255] as usize + zi as usize;
 
-    fn grad(hash: usize, x: f64, y: f64, z: f64) -> f64 {
-        let h = hash & 15;
-        let u = if h < 8 { x } else { y };
-        let v = if h < 4 {
-            y
-        } else if h == 12 || h == 14 {
-            x
-        } else {
-            z
-        };
-        (if (h & 1) == 0 { u } else { -u }) + (if (h & 2) == 0 { v } else { -v })
-    }
-
-    let g000 = grad(perm[aa & 255] as usize, xf, yf, zf);
-    let g100 = grad(perm[ba & 255] as usize, xf - 1.0, yf, zf);
-    let g010 = grad(perm[ab & 255] as usize, xf, yf - 1.0, zf);
-    let g110 = grad(perm[bb & 255] as usize, xf - 1.0, yf - 1.0, zf);
-    let g001 = grad(perm[(aa + 1) & 255] as usize, xf, yf, zf - 1.0);
-    let g101 = grad(perm[(ba + 1) & 255] as usize, xf - 1.0, yf, zf - 1.0);
-    let g011 = grad(perm[(ab + 1) & 255] as usize, xf, yf - 1.0, zf - 1.0);
-    let g111 = grad(perm[(bb + 1) & 255] as usize, xf - 1.0, yf - 1.0, zf - 1.0);
+    let g000 = grad_perlin(perm[aa & 255] as usize, xf, yf, zf);
+    let g100 = grad_perlin(perm[ba & 255] as usize, xf - 1.0, yf, zf);
+    let g010 = grad_perlin(perm[ab & 255] as usize, xf, yf - 1.0, zf);
+    let g110 = grad_perlin(perm[bb & 255] as usize, xf - 1.0, yf - 1.0, zf);
+    let g001 = grad_perlin(perm[(aa + 1) & 255] as usize, xf, yf, zf - 1.0);
+    let g101 = grad_perlin(perm[(ba + 1) & 255] as usize, xf - 1.0, yf, zf - 1.0);
+    let g011 = grad_perlin(perm[(ab + 1) & 255] as usize, xf, yf - 1.0, zf - 1.0);
+    let g111 = grad_perlin(perm[(bb + 1) & 255] as usize, xf - 1.0, yf - 1.0, zf - 1.0);
 
     pumpkin_util::math::lerp3(g000, g100, g010, g110, g001, g101, g011, g111, u, v, w)
+}
+
+/// Perlin 梯度函数
+fn grad_perlin(hash: usize, x: f64, y: f64, z: f64) -> f64 {
+    let h = hash & 15;
+    let u = if h < 8 { x } else { y };
+    let v = if h < 4 {
+        y
+    } else if h == 12 || h == 14 {
+        x
+    } else {
+        z
+    };
+    (if (h & 1) == 0 { u } else { -u }) + (if (h & 2) == 0 { v } else { -v })
 }
 
 // ============================================================================
@@ -604,7 +604,7 @@ fn cpu_cell_cache_fill_impl(positions: &[f64], params: &CellFillParams, results:
     let mut sampler_perms: Vec<Vec<[u8; 256]>> = Vec::with_capacity(params.num_octaves.len());
     for (s_idx, &no) in params.num_octaves.iter().enumerate() {
         let perms: Vec<[u8; 256]> = (0..no as usize)
-            .map(|o| gen_perm_table(0x43656C6C_u64.wrapping_add(s_idx as u64), o))
+            .map(|o| gen_perm_table(0x4365_6C6Cu64.wrapping_add(s_idx as u64), o))
             .collect();
         sampler_perms.push(perms);
     }
@@ -677,7 +677,7 @@ fn cpu_interpolator_fill_impl(positions: &[f64], params: &CellFillParams, result
     let mut sampler_perms: Vec<Vec<[u8; 256]>> = Vec::with_capacity(params.num_octaves.len());
     for (s_idx, &no) in params.num_octaves.iter().enumerate() {
         let perms: Vec<[u8; 256]> = (0..no as usize)
-            .map(|o| gen_perm_table(0x496E74657270_u64.wrapping_add(s_idx as u64), o))
+            .map(|o| gen_perm_table(0x496E_7465_7270u64.wrapping_add(s_idx as u64), o))
             .collect();
         sampler_perms.push(perms);
     }
