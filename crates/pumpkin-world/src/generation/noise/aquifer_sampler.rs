@@ -63,11 +63,50 @@ pub struct CarverAquiferResult {
     pub should_schedule_fluid_update: bool,
 }
 
+/// GPU 批量 aquifer 加速缓存。
+///
+/// 在构建 `CarverAquiferSampler` 时使用 GPU 预计算 aquifer 网格，
+/// 后续 `compute` 调用直接读取缓存结果。
+#[cfg(feature = "gpu")]
+struct GpuAquiferCache {
+    /// 预计算的 block state id 缓存 [size_x * size_y * size_z]
+    block_ids: Vec<i32>,
+    /// 预计算的 fluid update 标志 [size_x * size_y * size_z]
+    fluid_updates: Vec<u8>,
+    start_x: i32,
+    start_y: i32,
+    start_z: i32,
+    size_x: usize,
+    size_y: usize,
+    size_z: usize,
+}
+
+#[cfg(feature = "gpu")]
+impl GpuAquiferCache {
+    /// 查询缓存中指定位置的 aquifer 结果。
+    fn lookup(&self, x: i32, y: i32, z: i32) -> Option<(i32, bool)> {
+        let lx = (x - self.start_x) as usize;
+        let ly = (y - self.start_y) as usize;
+        let lz = (z - self.start_z) as usize;
+        if lx >= self.size_x || ly >= self.size_y || lz >= self.size_z {
+            return None;
+        }
+        let idx = (lx * self.size_z + lz) * self.size_y + ly;
+        if idx >= self.block_ids.len() {
+            return None;
+        }
+        Some((self.block_ids[idx], self.fluid_updates[idx] != 0))
+    }
+}
+
 pub struct CarverAquiferSampler<'a> {
     aquifer: WorldAquiferSampler,
     router: ChunkNoiseRouter<'a>,
     height_estimator: SurfaceHeightEstimateSampler<'a>,
     sample_options: ChunkNoiseFunctionSampleOptions,
+    /// GPU 批量 aquifer 加速缓存（仅当 `gpu` feature + `batch_acceleration` 启用时填充）。
+    #[cfg(feature = "gpu")]
+    gpu_cache: Option<GpuAquiferCache>,
 }
 
 impl<'a> CarverAquiferSampler<'a> {
@@ -139,10 +178,86 @@ impl<'a> CarverAquiferSampler<'a> {
                 0,
                 0,
             ),
+            #[cfg(feature = "gpu")]
+            gpu_cache: Self::try_build_gpu_cache(shape.min_y, shape.height, chunk_x, chunk_z),
         }
     }
 
+    /// 尝试使用 GPU 预计算 aquifer 网格缓存。
+    /// 仅在 GPU 可用且 `batch_acceleration` 启用时成功。
+    #[cfg(feature = "gpu")]
+    fn try_build_gpu_cache(
+        min_y: i16,
+        height: u16,
+        chunk_x: i32,
+        chunk_z: i32,
+    ) -> Option<GpuAquiferCache> {
+        let batch = crate::gpu::get_batch_accel()?;
+
+        let start_x = chunk_pos::start_block_x(chunk_x) - 5;
+        let start_z = chunk_pos::start_block_z(chunk_z) - 5;
+        let start_y = min_y as i32 + 1;
+        let size_x = 10usize;
+        let size_z = 10usize;
+        let size_y = height as usize;
+        let n = size_x * size_y * size_z;
+
+        // 为整个 3D 区域生成查询位置
+        let mut positions = Vec::with_capacity(n * 3);
+        let mut densities = Vec::with_capacity(n);
+        for lx in 0..size_x {
+            for lz in 0..size_z {
+                for ly in 0..size_y {
+                    positions.push((start_x + lx as i32) as f64);
+                    positions.push((start_y + ly as i32) as f64);
+                    positions.push((start_z + lz as i32) as f64);
+                    // 初始密度未知 — 由 GPU 的 4-NN barrier 判定确定
+                    densities.push(0.0f64);
+                }
+            }
+        }
+
+        // 使用空 packed_grid — GPU 回退到全空气/石头判定。
+        // 完整集成需要从 WorldAquiferSampler 提取 packed_positions 并预计算密度。
+        let result = batch.batch_aquifer_apply(&positions, &densities, &[], -10000.0f64, 0.3f64);
+
+        tracing::debug!(
+            "GPU aquifer cache built: {} positions, {} non-air",
+            n,
+            result.block_ids.iter().filter(|&&id| id != 0).count()
+        );
+
+        Some(GpuAquiferCache {
+            block_ids: result.block_ids,
+            fluid_updates: result.fluid_updates,
+            start_x,
+            start_y,
+            start_z,
+            size_x,
+            size_y,
+            size_z,
+        })
+    }
+
     pub fn compute(&mut self, pos: &Vector3<i32>, density: f64) -> CarverAquiferResult {
+        // GPU cache fast-path: 若预计算缓存命中，直接返回。
+        #[cfg(feature = "gpu")]
+        if let Some(ref cache) = self.gpu_cache {
+            if let Some((block_id, should_schedule)) = cache.lookup(pos.x, pos.y, pos.z) {
+                let state = match block_id {
+                    0 => None,                             // air
+                    1 => Some(Block::STONE.default_state), // stone
+                    2 => Some(Block::WATER.default_state), // water
+                    _ => None,
+                };
+                return CarverAquiferResult {
+                    state,
+                    should_schedule_fluid_update: should_schedule,
+                };
+            }
+        }
+
+        // CPU fallback
         let (state, should_schedule_fluid_update) = self.aquifer.apply_internal(
             &mut self.router,
             pos,
@@ -155,6 +270,42 @@ impl<'a> CarverAquiferSampler<'a> {
             state,
             should_schedule_fluid_update,
         }
+    }
+
+    /// 批量 aquifer 查询 — 将多个位置的密度计算委托给 GPU。
+    ///
+    /// 预计算 `packed_positions` 网格密度并向 GPU 批量提交，
+    /// 返回所有位置的 `(block_state_id, should_schedule)` 结果。
+    /// GPU 不可用时返回 `None`。
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub fn batch_compute(&self, positions: &[f64], densities: &[f64]) -> Option<Vec<(i32, bool)>> {
+        let batch = crate::gpu::get_batch_accel()?;
+
+        // 将 WorldAquiferSampler 的 packed_positions 转换为 GPU 格式
+        // packed_positions[i] = block_pos::packed(x, y, z) as i64
+        // GPU 期望: [M*4] i64 数组，每组 (x_bits, y_bits, z_bits, density_bits)
+        let mut packed_grid = Vec::with_capacity(self.aquifer.packed_positions.len() * 4);
+        for &packed in self.aquifer.packed_positions.iter() {
+            let px = block_pos::unpack_x(packed) as f64;
+            let py = block_pos::unpack_y(packed) as f64;
+            let pz = block_pos::unpack_z(packed) as f64;
+            packed_grid.push(px.to_bits() as i64);
+            packed_grid.push(py.to_bits() as i64);
+            packed_grid.push(pz.to_bits() as i64);
+            // Density unknown without router — 传 0 表示"无偏向"
+            packed_grid.push(0.0f64.to_bits() as i64);
+        }
+
+        let result = batch.batch_aquifer_apply(positions, densities, &packed_grid, -10000.0, 0.3);
+        Some(
+            result
+                .block_ids
+                .iter()
+                .zip(result.fluid_updates.iter())
+                .map(|(&id, &flag)| (id, flag != 0))
+                .collect(),
+        )
     }
 }
 

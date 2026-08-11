@@ -97,10 +97,12 @@ pub struct VeinParams {
 pub struct GpuCellBatchSampler {
     pub device: GpuDevice,
     pub cache: NoiseCache,
-    /// 持久化 perm buffer 缓存 (keyed by total octaves * 256)
+    /// 持久化 perm buffer 缓存
     perm_pool: std::collections::HashMap<usize, crate::GpuBuffer<u8>>,
     /// 持久化 f64 buffer 缓存
-    f64_pool: std::collections::HashMap<usize, Vec<crate::GpuBuffer<f64>>>,
+    f64_pool: std::collections::HashMap<usize, crate::GpuBuffer<f64>>,
+    /// 持久化 i32 buffer 缓存
+    i32_pool: std::collections::HashMap<usize, crate::GpuBuffer<i32>>,
 }
 
 impl GpuCellBatchSampler {
@@ -111,10 +113,11 @@ impl GpuCellBatchSampler {
             cache: NoiseCache::default(),
             perm_pool: std::collections::HashMap::new(),
             f64_pool: std::collections::HashMap::new(),
+            i32_pool: std::collections::HashMap::new(),
         }
     }
 
-    /// 从 buffer 池中分配或复用指定大小的 u8 buffer。
+    /// 从 u8 buffer 池中分配或复用。
     fn alloc_u8_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<u8>, DeviceError> {
         if let Some(buf) = self.perm_pool.remove(&len) {
             Ok(buf)
@@ -123,9 +126,37 @@ impl GpuCellBatchSampler {
         }
     }
 
-    /// 归还 u8 buffer 到池中（下次调用时复用）。
+    /// 归还 u8 buffer 到池中。
     fn free_u8_pooled(&mut self, len: usize, buf: crate::GpuBuffer<u8>) {
         self.perm_pool.entry(len).or_insert(buf);
+    }
+
+    /// 从 f64 buffer 池中分配或复用。
+    fn alloc_f64_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<f64>, DeviceError> {
+        if let Some(buf) = self.f64_pool.remove(&len) {
+            Ok(buf)
+        } else {
+            self.device.alloc_f64(len)
+        }
+    }
+
+    /// 归还 f64 buffer 到池中。
+    fn free_f64_pooled(&mut self, len: usize, buf: crate::GpuBuffer<f64>) {
+        self.f64_pool.entry(len).or_insert(buf);
+    }
+
+    /// 从 i32 buffer 池中分配或复用。
+    fn alloc_i32_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<i32>, DeviceError> {
+        if let Some(buf) = self.i32_pool.remove(&len) {
+            Ok(buf)
+        } else {
+            self.device.alloc_i32(len)
+        }
+    }
+
+    /// 归还 i32 buffer 到池中。
+    fn free_i32_pooled(&mut self, len: usize, buf: crate::GpuBuffer<i32>) {
+        self.i32_pool.entry(len).or_insert(buf);
     }
 
     /// 批量填充 cell cache。
@@ -193,12 +224,12 @@ impl GpuCellBatchSampler {
         let lacs_offset: i32 = 1 + num_octaves_0 as i32;
         let orgs_offset: i32 = 1 + (num_octaves_0 * 2) as i32;
 
-        // GPU 内存分配
+        // GPU 内存分配（pos/res 按需分配，stack/perms/indices 池化复用）
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        let mut d_stack = self.device.alloc_f64(component_stack.len())?;
-        let mut d_perms = self.device.alloc_u8(perms_data.len())?;
-        let mut d_indices = self.device.alloc_i32(cell_indices.len())?;
+        let mut d_stack = self.alloc_f64_pooled(component_stack.len())?;
+        let mut d_perms = self.alloc_u8_pooled(perms_data.len())?;
+        let mut d_indices = self.alloc_i32_pooled(cell_indices.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_stack, &component_stack)?;
@@ -234,9 +265,9 @@ impl GpuCellBatchSampler {
         } else {
             self.device.free(d_pos)?;
             self.device.free(d_res)?;
-            self.device.free(d_stack)?;
-            self.device.free(d_perms)?;
-            self.device.free(d_indices)?;
+            self.free_f64_pooled(component_stack.len(), d_stack);
+            self.free_u8_pooled(perms_data.len(), d_perms);
+            self.free_i32_pooled(cell_indices.len(), d_indices);
             return Err(DeviceError::LaunchFailed(
                 "cell cache fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
                     .into(),
@@ -245,9 +276,9 @@ impl GpuCellBatchSampler {
 
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
-        self.device.free(d_stack)?;
-        self.device.free(d_perms)?;
-        self.device.free(d_indices)?;
+        self.free_f64_pooled(component_stack.len(), d_stack);
+        self.free_u8_pooled(perms_data.len(), d_perms);
+        self.free_i32_pooled(cell_indices.len(), d_indices);
         Ok(())
     }
 
@@ -301,11 +332,11 @@ impl GpuCellBatchSampler {
             }
         }
 
-        // GPU 内存分配
+        // GPU 内存分配（pos/res 按需，dag/perms 池化）
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        let mut d_dag = self.device.alloc_f64(dag_params.len())?;
-        let mut d_perms = self.device.alloc_u8(perms_data.len())?;
+        let mut d_dag = self.alloc_f64_pooled(dag_params.len())?;
+        let mut d_perms = self.alloc_u8_pooled(perms_data.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_dag, &dag_params)?;
@@ -336,8 +367,8 @@ impl GpuCellBatchSampler {
         } else {
             self.device.free(d_pos)?;
             self.device.free(d_res)?;
-            self.device.free(d_dag)?;
-            self.device.free(d_perms)?;
+            self.free_f64_pooled(dag_params.len(), d_dag);
+            self.free_u8_pooled(perms_data.len(), d_perms);
             return Err(DeviceError::LaunchFailed(
                 "interpolator fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
                     .into(),
@@ -346,8 +377,8 @@ impl GpuCellBatchSampler {
 
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
-        self.device.free(d_dag)?;
-        self.device.free(d_perms)?;
+        self.free_f64_pooled(dag_params.len(), d_dag);
+        self.free_u8_pooled(perms_data.len(), d_perms);
         Ok(())
     }
 
@@ -545,12 +576,17 @@ fn get_beard_kernel_gpu() -> &'static [f64] {
 /// 对批量位置计算结构/连接点造成的地形适应（beard）贡献。
 pub struct GpuBeardifierBatchSampler {
     pub device: GpuDevice,
+    /// 持久化 beard kernel GPU buffer（108KB，首次上传后复用）
+    beard_kernel_buf: Option<crate::GpuBuffer<f64>>,
 }
 
 impl GpuBeardifierBatchSampler {
     #[must_use]
     pub fn new(device: GpuDevice) -> Self {
-        Self { device }
+        Self {
+            device,
+            beard_kernel_buf: None,
+        }
     }
 
     /// 批量 Beardifier 计算。
@@ -580,8 +616,17 @@ impl GpuBeardifierBatchSampler {
             ));
         }
 
-        // 构建预计算的 beard kernel (24³三线性采样核) — 全局缓存复用。
+        // 构建预计算的 beard kernel (24³三线性采样核) — GPU 持久化缓存
         let beard_kernel = get_beard_kernel_gpu();
+        if self.beard_kernel_buf.is_none() {
+            let mut buf = self.device.alloc_f64(KERNEL_VOLUME)?;
+            self.device.copy_to_device(&mut buf, beard_kernel)?;
+            self.beard_kernel_buf = Some(buf);
+        }
+        // SAFETY: `beard_kernel_buf` was set to `Some` immediately above if it was `None`.
+        let d_kernel = self.beard_kernel_buf.as_ref().ok_or_else(|| {
+            DeviceError::LaunchFailed("beardifier: kernel buffer not initialized".into())
+        })?;
 
         // 扁平化结构数据（9 doubles per structure）
         let struct_flat: Vec<f64> = structures
@@ -609,16 +654,14 @@ impl GpuBeardifierBatchSampler {
         // structure_to_junction — kernel 声明但未使用，传递零填充占位数组
         let struct_to_junction: Vec<i32> = vec![0i32; structures.len()];
 
-        // GPU 内存分配
+        // GPU 内存分配（kernel 已缓存，其余按需）
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-        let mut d_kernel = self.device.alloc_f64(KERNEL_VOLUME)?;
         let mut d_struct = self.device.alloc_f64(struct_flat.len())?;
         let mut d_junct = self.device.alloc_f64(junct_flat.len())?;
         let mut d_stoj = self.device.alloc_i32(struct_to_junction.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
-        self.device.copy_to_device(&mut d_kernel, beard_kernel)?;
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
         self.device.copy_to_device(&mut d_junct, &junct_flat)?;
         self.device
@@ -642,7 +685,7 @@ impl GpuBeardifierBatchSampler {
             ],
             vec![
                 GpuBufferRef::F64(&d_pos),
-                GpuBufferRef::F64(&d_kernel),
+                GpuBufferRef::F64(d_kernel),
                 GpuBufferRef::F64(&d_struct),
                 GpuBufferRef::F64(&d_junct),
                 GpuBufferRef::I32(&d_stoj),
@@ -652,23 +695,21 @@ impl GpuBeardifierBatchSampler {
 
         if ok {
             self.device.copy_from_device(&d_res, results)?;
+        } else {
             self.device.free(d_pos)?;
             self.device.free(d_res)?;
-            self.device.free(d_kernel)?;
             self.device.free(d_struct)?;
             self.device.free(d_junct)?;
             self.device.free(d_stoj)?;
-            return Ok(());
+            return Err(DeviceError::LaunchFailed("beardifier batch failed".into()));
         }
 
-        // GPU launch 失败，清理资源并返回错误
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
-        self.device.free(d_kernel)?;
         self.device.free(d_struct)?;
         self.device.free(d_junct)?;
         self.device.free(d_stoj)?;
-        Err(DeviceError::LaunchFailed("beardifier batch failed".into()))
+        Ok(())
     }
 
     fn try_launch(

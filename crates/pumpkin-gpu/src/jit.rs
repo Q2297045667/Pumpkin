@@ -215,3 +215,79 @@ pub fn specialize_double_perlin(
 
     Some(JitSpecializedKernel { name, source: src })
 }
+
+/// 生成 ShiftA/ShiftB 的 JIT 特化 kernel。
+///
+/// 输入为 2D (xz 或 zx)，八度参数硬编码为常量，y 固定为 0。
+/// ShiftA: `sample(x * 0.25, 0.0, z * 0.25) * 4.0`
+/// ShiftB: `sample(z * 0.25, 0.0, x * 0.25) * 4.0`
+#[must_use]
+pub fn specialize_shift(
+    shift_type: &str,
+    config: &SerializedOctaveConfig,
+    max_unroll: usize,
+) -> Option<JitSpecializedKernel> {
+    let m = config.num_octaves();
+    if m > max_unroll {
+        return None;
+    }
+
+    let amps = config.packed_amplitudes();
+    let lacs = config.packed_lacunarities();
+    let orgs = config.packed_origins();
+
+    let name = format!("{shift_type}_sample_f64_jit_m{m}");
+    let mut src = String::new();
+
+    let _ = writeln!(src, "// JIT specialized: {shift_type}_sample_f64");
+    let _ = writeln!(src, "// num_octaves = {m}");
+    let _ = writeln!(src, "#pragma OPENCL EXTENSION cl_khr_f64 : enable");
+    let _ = writeln!(src);
+
+    let _ = writeln!(src, "__kernel void {name}(");
+    let _ = writeln!(src, "    __global const double* pos,");
+    let _ = writeln!(src, "    __global const uchar* perms,");
+    let _ = writeln!(src, "    __global double* res,");
+    let _ = writeln!(src, "    int N");
+    let _ = writeln!(src, ") {{");
+    let _ = writeln!(src, "    int i = get_global_id(0); if (i >= N) return;");
+
+    if shift_type == "shift_a" {
+        let _ = writeln!(
+            src,
+            "    double x = pos[i*2] * 0.25, z = pos[i*2+1] * 0.25;"
+        );
+    } else {
+        let _ = writeln!(
+            src,
+            "    double z = pos[i*2] * 0.25, x = pos[i*2+1] * 0.25;"
+        );
+    }
+    let _ = writeln!(src, "    double sum = 0.0;");
+
+    for o in 0..m {
+        let _ = writeln!(
+            src,
+            "    sum += {amp} * sample_no_fade_core(perms + {o}*256,",
+            amp = amps[o],
+            o = o
+        );
+        let _ = writeln!(
+            src,
+            "        {ox}, {oy}, {oz},",
+            ox = orgs[o * 3],
+            oy = orgs[o * 3 + 1],
+            oz = orgs[o * 3 + 2]
+        );
+        let _ = writeln!(
+            src,
+            "        maintain_precision(x*{lac}), 0.0, maintain_precision(z*{lac}));",
+            lac = lacs[o]
+        );
+    }
+
+    let _ = writeln!(src, "    res[i] = sum * 4.0;");
+    let _ = writeln!(src, "}}");
+
+    Some(JitSpecializedKernel { name, source: src })
+}

@@ -20,29 +20,3 @@ pub fn aos3d_to_soa(interleaved: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     }
     (x, y, z)
 }
-
-/// 将 2D AoS 交错格式转换为 SoA 独立数组。
-#[must_use]
-pub fn aos2d_to_soa(interleaved: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    let n = interleaved.len() / 2;
-    let mut a = Vec::with_capacity(n);
-    let mut b = Vec::with_capacity(n);
-    for i in 0..n {
-        a.push(interleaved[i * 2]);
-        b.push(interleaved[i * 2 + 1]);
-    }
-    (a, b)
-}
-
-/// 将 SoA 独立数组转换回 3D AoS 交错格式。
-#[must_use]
-pub fn soa_to_aos3d(x: &[f64], y: &[f64], z: &[f64]) -> Vec<f64> {
-    let n = x.len().min(y.len()).min(z.len());
-    let mut interleaved = Vec::with_capacity(n * 3);
-    for i in 0..n {
-        interleaved.push(x[i]);
-        interleaved.push(y[i]);
-        interleaved.push(z[i]);
-    }
-    interleaved
-}

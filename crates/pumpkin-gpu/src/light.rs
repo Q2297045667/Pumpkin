@@ -288,4 +288,83 @@ impl GpuLightSampler {
         }
         Ok(iterations)
     }
+
+    /// GPU 天空光水平传播 + 向下级联。
+    ///
+    /// 在垂直填充后调用，使用 `sky_light_horizontal_propagate_u8` kernel
+    /// 迭代执行水平传播（4 方向衰减 1）和向下级联（15 透过空气保持 15），
+    /// 直至收敛（changed 标志为 0）或达到最大迭代次数。
+    ///
+    /// # 参数
+    /// - `width`, `depth`: X/Z 维度（18 用于 16×16 区块 + 2 边界）
+    /// - `height`: Y 维度
+    /// - `max_iters`: 最大迭代次数（典型值 32）
+    ///
+    /// # 返回
+    /// 实际执行迭代次数。
+    #[allow(clippy::too_many_lines)]
+    pub fn sky_horizontal_propagate(
+        &mut self,
+        sky_light: &mut [u8],
+        opacity: &[u8],
+        width: usize,
+        depth: usize,
+        height: usize,
+        max_iters: usize,
+    ) -> Result<usize, DeviceError> {
+        let n_total = width * depth * height;
+        if n_total == 0 {
+            return Ok(0);
+        }
+
+        if let Some(l) = self.device.kernel_launcher() {
+            if l.has_kernel("sky_light_horizontal_propagate_u8") {
+                let mut d_light = self.device.alloc_u8(n_total)?;
+                let mut d_opacity = self.device.alloc_u8(n_total)?;
+                let mut d_changed = self.device.alloc_i32(1)?;
+
+                self.device.copy_to_device(&mut d_light, sky_light)?;
+                self.device.copy_to_device(&mut d_opacity, opacity)?;
+
+                let mut iterations = 0;
+                for _ in 0..max_iters {
+                    self.device.copy_to_device(&mut d_changed, &[0i32])?;
+                    l.launch(crate::common::kernel::KernelLaunch {
+                        name: "sky_light_horizontal_propagate_u8",
+                        global_work_size: [width, depth, 1],
+                        local_work_size: Some([16, 16, 1]),
+                        args: vec![
+                            KernelArg::BufferRef(0), // sky_light
+                            KernelArg::BufferRef(1), // opacity
+                            KernelArg::BufferRef(2), // changed
+                            KernelArg::I32(width as i32),
+                            KernelArg::I32(depth as i32),
+                            KernelArg::I32(height as i32),
+                        ],
+                        gpu_buffers: vec![
+                            GpuBufferRef::U8(&d_light),
+                            GpuBufferRef::U8(&d_opacity),
+                            GpuBufferRef::I32(&d_changed),
+                        ],
+                    })?;
+                    iterations += 1;
+                    let mut c = [0i32];
+                    self.device.copy_from_device(&d_changed, &mut c)?;
+                    if c[0] == 0 {
+                        break;
+                    }
+                }
+
+                self.device.copy_from_device(&d_light, sky_light)?;
+                self.device.free(d_light)?;
+                self.device.free(d_opacity)?;
+                self.device.free(d_changed)?;
+                return Ok(iterations);
+            }
+        }
+
+        Err(DeviceError::Unsupported(
+            "GPU sky light horizontal propagate unavailable".into(),
+        ))
+    }
 }

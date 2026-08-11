@@ -15,14 +15,27 @@ use pumpkin_gpu::{
     },
 };
 
-/// 批量加速器 — 为 Cell Cache、Aquifer、Beardifier、Vein 提供 GPU 批量采样，
-/// GPU 不可用时自动回退到 CPU。
+/// 批量加速器 — 为 Cell Cache、Aquifer、Beardifier、Vein 提供 GPU 批量采样。
 pub struct BatchAccelerator {
     config: GpuConfig,
-    /// 缓存的 GPU 设备（懒初始化一次，避免每次调用都重建设备）。
-    /// 通过 Mutex 包装以提供 Sync（GPU 设备本身非线程安全）。
+    /// 缓存的 GPU 设备（懒初始化），通过 Mutex 包装以提供 Sync。
     #[cfg(feature = "gpu")]
     cached_device: std::sync::Mutex<Option<GpuDevice>>,
+    /// 持久化 Cell Cache 采样器（复用 NoiseCache + buffer 池）。
+    #[cfg(feature = "gpu")]
+    cell_sampler: std::sync::Mutex<Option<GpuCellBatchSampler>>,
+    /// 持久化 Noise 采样器。
+    #[cfg(feature = "gpu")]
+    noise_sampler: std::sync::Mutex<Option<GpuNoiseSampler>>,
+    /// 持久化 Beardifier 采样器（含 beard kernel GPU buffer）。
+    #[cfg(feature = "gpu")]
+    beardifier_sampler: std::sync::Mutex<Option<GpuBeardifierBatchSampler>>,
+    /// 持久化 Vein 采样器。
+    #[cfg(feature = "gpu")]
+    vein_sampler: std::sync::Mutex<Option<GpuVeinBatchSampler>>,
+    /// 持久化 Aquifer 采样器。
+    #[cfg(feature = "gpu")]
+    aquifer_sampler: std::sync::Mutex<Option<GpuAquiferBatchSampler>>,
 }
 
 impl BatchAccelerator {
@@ -37,6 +50,16 @@ impl BatchAccelerator {
             config: config.clone(),
             #[cfg(feature = "gpu")]
             cached_device: std::sync::Mutex::new(None),
+            #[cfg(feature = "gpu")]
+            cell_sampler: std::sync::Mutex::new(None),
+            #[cfg(feature = "gpu")]
+            noise_sampler: std::sync::Mutex::new(None),
+            #[cfg(feature = "gpu")]
+            beardifier_sampler: std::sync::Mutex::new(None),
+            #[cfg(feature = "gpu")]
+            vein_sampler: std::sync::Mutex::new(None),
+            #[cfg(feature = "gpu")]
+            aquifer_sampler: std::sync::Mutex::new(None),
         }
     }
 
@@ -52,28 +75,94 @@ impl BatchAccelerator {
                 || self.config.jit_enabled)
     }
 
-    /// 临时取出 GPU 设备执行操作，完成后归还。
-    /// 保证即使闭包 panic 也不会丢失设备（当 Mutex 未被污染时）。
+    /// 懒初始化或获取设备（持久化复用）。
     #[cfg(feature = "gpu")]
-    fn with_gpu<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(GpuDevice) -> (GpuDevice, R),
-    {
+    fn ensure_device(&self) -> Option<GpuDevice> {
         let mut guard = self.cached_device.lock().ok()?;
         if guard.is_none() && self.is_active() {
             let device = GpuDevice::from_config(&self.config);
             if device.device_type() != pumpkin_gpu::DeviceType::Cpu {
+                // 需要给每个 sampler 独立设备实例，因此每次调用都新建
+                // GpuDevice 内部使用 Arc 共享资源，轻量
+                let device2 = GpuDevice::from_config(&self.config);
                 *guard = Some(device);
+                return Some(device2);
             }
         }
-        let dev = guard.take()?;
-        drop(guard);
-        let (dev, result) = f(dev);
-        // 归还设备（忽略 Mutex 污染的情况）
-        if let Ok(mut g) = self.cached_device.lock() {
-            *g = Some(dev);
+        guard.as_ref().and_then(|_| {
+            let d = GpuDevice::from_config(&self.config);
+            (d.device_type() != pumpkin_gpu::DeviceType::Cpu).then_some(d)
+        })
+    }
+
+    /// 懒初始化 Cell Cache 采样器并执行操作。
+    #[cfg(feature = "gpu")]
+    fn with_cell_sampler<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut GpuCellBatchSampler) -> R,
+    {
+        let mut guard = self.cell_sampler.lock().ok()?;
+        if guard.is_none() {
+            let device = self.ensure_device()?;
+            *guard = Some(GpuCellBatchSampler::new(device));
         }
-        Some(result)
+        guard.as_mut().map(f)
+    }
+
+    /// 懒初始化 Noise 采样器并执行操作。
+    #[cfg(feature = "gpu")]
+    fn with_noise_sampler<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut GpuNoiseSampler) -> R,
+    {
+        let mut guard = self.noise_sampler.lock().ok()?;
+        if guard.is_none() {
+            let device = self.ensure_device()?;
+            *guard = Some(GpuNoiseSampler::new(device));
+        }
+        guard.as_mut().map(f)
+    }
+
+    /// 懒初始化 Beardifier 采样器并执行操作。
+    #[cfg(feature = "gpu")]
+    fn with_beardifier_sampler<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut GpuBeardifierBatchSampler) -> R,
+    {
+        let mut guard = self.beardifier_sampler.lock().ok()?;
+        if guard.is_none() {
+            let device = self.ensure_device()?;
+            *guard = Some(GpuBeardifierBatchSampler::new(device));
+        }
+        guard.as_mut().map(f)
+    }
+
+    /// 懒初始化 Vein 采样器并执行操作。
+    #[cfg(feature = "gpu")]
+    fn with_vein_sampler<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut GpuVeinBatchSampler) -> R,
+    {
+        let mut guard = self.vein_sampler.lock().ok()?;
+        if guard.is_none() {
+            let device = self.ensure_device()?;
+            *guard = Some(GpuVeinBatchSampler::new(device));
+        }
+        guard.as_mut().map(f)
+    }
+
+    /// 懒初始化 Aquifer 采样器并执行操作。
+    #[cfg(feature = "gpu")]
+    fn with_aquifer_sampler<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut GpuAquiferBatchSampler) -> R,
+    {
+        let mut guard = self.aquifer_sampler.lock().ok()?;
+        if guard.is_none() {
+            let device = self.ensure_device()?;
+            *guard = Some(GpuAquiferBatchSampler::new(device));
+        }
+        guard.as_mut().map(f)
     }
 
     // --------------------------------------------------------------------------
@@ -91,15 +180,11 @@ impl BatchAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if self
-            .with_gpu(|device| {
-                let mut sampler = GpuCellBatchSampler::new(device);
-                let ok = sampler
-                    .batch_fill_cell_caches(positions, params, results)
-                    .is_ok();
-                (sampler.device, ok)
-            })
-            .unwrap_or(false)
+        if self.with_cell_sampler(|sampler| {
+            sampler
+                .batch_fill_cell_caches(positions, params, results)
+                .is_ok()
+        }) == Some(true)
         {
             return;
         }
@@ -119,15 +204,11 @@ impl BatchAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if self
-            .with_gpu(|device| {
-                let mut sampler = GpuCellBatchSampler::new(device);
-                let ok = sampler
-                    .batch_fill_interpolators(positions, params, results)
-                    .is_ok();
-                (sampler.device, ok)
-            })
-            .unwrap_or(false)
+        if self.with_cell_sampler(|sampler| {
+            sampler
+                .batch_fill_interpolators(positions, params, results)
+                .is_ok()
+        }) == Some(true)
         {
             return;
         }
@@ -155,18 +236,15 @@ impl BatchAccelerator {
     ) -> AquiferBatchResult {
         #[cfg(feature = "gpu")]
         {
-            let gpu_result = self.with_gpu(|device| {
-                let mut sampler = GpuAquiferBatchSampler::new(device);
-                let r = sampler.batch_aquifer_apply(
+            if let Some(Ok(aquifer_result)) = self.with_aquifer_sampler(|sampler| {
+                sampler.batch_aquifer_apply(
                     positions,
                     densities,
                     packed_grid,
                     fluid_level,
                     barrier_scale,
-                );
-                (sampler.device, r)
-            });
-            if let Some(Ok(aquifer_result)) = gpu_result {
+                )
+            }) {
                 return aquifer_result;
             }
         }
@@ -196,15 +274,11 @@ impl BatchAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if self
-            .with_gpu(|device| {
-                let mut sampler = GpuBeardifierBatchSampler::new(device);
-                let ok = sampler
-                    .batch_beardifier(positions, structures, junctions, results)
-                    .is_ok();
-                (sampler.device, ok)
-            })
-            .unwrap_or(false)
+        if self.with_beardifier_sampler(|sampler| {
+            sampler
+                .batch_beardifier(positions, structures, junctions, results)
+                .is_ok()
+        }) == Some(true)
         {
             return;
         }
@@ -222,15 +296,11 @@ impl BatchAccelerator {
     /// 失败或不可用时回退到默认值（无矿脉）。
     pub fn batch_vein_sample(&self, positions: &[f64], params: &VeinParams, results: &mut [i32]) {
         #[cfg(feature = "gpu")]
-        if self
-            .with_gpu(|device| {
-                let mut sampler = GpuVeinBatchSampler::new(device);
-                let ok = sampler
-                    .batch_vein_sample(positions, params, results)
-                    .is_ok();
-                (sampler.device, ok)
-            })
-            .unwrap_or(false)
+        if self.with_vein_sampler(|sampler| {
+            sampler
+                .batch_vein_sample(positions, params, results)
+                .is_ok()
+        }) == Some(true)
         {
             return;
         }
@@ -251,12 +321,8 @@ impl BatchAccelerator {
     pub fn batch_trilinear(&self, corners: &[f64], deltas: &[f64], results: &mut [f64]) {
         #[cfg(feature = "gpu")]
         if self
-            .with_gpu(|device| {
-                let mut sampler = GpuNoiseSampler::new(device);
-                let ok = sampler.batch_trilinear(corners, deltas, results).is_ok();
-                (sampler.device, ok)
-            })
-            .unwrap_or(false)
+            .with_noise_sampler(|sampler| sampler.batch_trilinear(corners, deltas, results).is_ok())
+            == Some(true)
         {
             return;
         }
@@ -809,14 +875,13 @@ fn cpu_trilinear_impl(corners: &[f64], deltas: &[f64], results: &mut [f64]) {
         let dx = deltas[i * 3];
         let dy = deltas[i * 3 + 1];
         let dz = deltas[i * 3 + 2];
-        // Standard trilinear interpolation:
-        // lerp along X → lerp along Y → lerp along Z
-        let c00 = corners[b] * (1.0 - dx) + corners[b + 1] * dx;
-        let c01 = corners[b + 2] * (1.0 - dx) + corners[b + 3] * dx;
-        let c10 = corners[b + 4] * (1.0 - dx) + corners[b + 5] * dx;
-        let c11 = corners[b + 6] * (1.0 - dx) + corners[b + 7] * dx;
-        let c0 = c00 * (1.0 - dy) + c01 * dy;
-        let c1 = c10 * (1.0 - dy) + c11 * dy;
-        results[i] = c0 * (1.0 - dz) + c1 * dz;
+        results[i] = corners[b] * (1.0 - dx) * (1.0 - dy) * (1.0 - dz)
+            + corners[b + 1] * dx * (1.0 - dy) * (1.0 - dz)
+            + corners[b + 2] * (1.0 - dx) * dy * (1.0 - dz)
+            + corners[b + 3] * dx * dy * (1.0 - dz)
+            + corners[b + 4] * (1.0 - dx) * (1.0 - dy) * dz
+            + corners[b + 5] * dx * (1.0 - dy) * dz
+            + corners[b + 6] * (1.0 - dx) * dy * dz
+            + corners[b + 7] * dx * dy * dz;
     }
 }

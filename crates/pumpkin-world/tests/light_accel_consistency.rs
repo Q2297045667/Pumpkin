@@ -330,3 +330,258 @@ fn bench_sky_fill() {
         cpu_ms / gpu_ms.max(1e-9)
     );
 }
+
+// ============================================================================
+// 天空光水平传播
+// ============================================================================
+
+fn cpu_sky_horizontal(
+    sky_light: &mut [u8],
+    opacity: &[u8],
+    width: usize,
+    depth: usize,
+    height: usize,
+    max_iters: usize,
+) -> usize {
+    let stride_x = height;
+    let stride_z = width * height;
+    let mut iterations = 0;
+    for _ in 0..max_iters {
+        let mut changed = false;
+        for z in 0..depth {
+            for x in 0..width {
+                for y in (0..height).rev() {
+                    let idx = z * stride_z + x * stride_x + y;
+                    let cur = sky_light[idx];
+                    let mut best = cur;
+                    if x > 0 {
+                        let nl = sky_light[idx - stride_x];
+                        if nl > 1 && nl - 1 > best {
+                            best = nl - 1;
+                        }
+                    }
+                    if x < width - 1 {
+                        let nl = sky_light[idx + stride_x];
+                        if nl > 1 && nl - 1 > best {
+                            best = nl - 1;
+                        }
+                    }
+                    if z > 0 {
+                        let nl = sky_light[idx - stride_z];
+                        if nl > 1 && nl - 1 > best {
+                            best = nl - 1;
+                        }
+                    }
+                    if z < depth - 1 {
+                        let nl = sky_light[idx + stride_z];
+                        if nl > 1 && nl - 1 > best {
+                            best = nl - 1;
+                        }
+                    }
+                    if y < height - 1 {
+                        let above = sky_light[idx + 1];
+                        if above == 15 && opacity[idx] == 0 && 15 > best {
+                            best = 15;
+                        }
+                    }
+                    if best > cur {
+                        sky_light[idx] = best;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        iterations += 1;
+        if !changed {
+            break;
+        }
+    }
+    iterations
+}
+
+#[test]
+fn sky_horizontal_small_grid() {
+    // 2x2 grid, 8 height: one tall column casts light to adjacent short column
+    let width = 2usize;
+    let depth = 2usize;
+    let height = 8usize;
+    let n = width * depth * height; // 32
+
+    // Tall column at (0,0) top=4, short at (1,0) top=2
+    let mut cpu_lt = vec![0u8; n];
+    let mut gpu_lt = vec![0u8; n];
+    let opacity = vec![0u8; n]; // all air
+
+    // Initial vertical fill (simplified: all air, light 15 above top_y)
+    let hm = [4i32, 2i32, 4i32, 4i32]; // 2x2: (0,0)=4, (1,0)=2, (0,1)=4, (1,1)=4
+    for z in 0..depth {
+        for x in 0..width {
+            let col = z * width + x;
+            let top = hm[col];
+            for y in 0..height {
+                let idx = z * (width * height) + x * height + y;
+                if (y as i32) > top {
+                    cpu_lt[idx] = 15;
+                    gpu_lt[idx] = 15;
+                }
+            }
+            let mut l: u8 = 15;
+            for y in (0..=top).rev() {
+                let idx = z * (width * height) + x * height + (y as usize);
+                cpu_lt[idx] = l;
+                gpu_lt[idx] = l;
+                l = l.saturating_sub(1); // air attenuation
+            }
+        }
+    }
+
+    let cpu_iters = cpu_sky_horizontal(&mut cpu_lt, &opacity, width, depth, height, 32);
+
+    let mut accel = mk_light_accel();
+    let gpu_iters = accel.sky_horizontal_propagate(&mut gpu_lt, &opacity, width, depth, height, 32);
+
+    assert_eq!(
+        fnv1a_u8(&cpu_lt),
+        fnv1a_u8(&gpu_lt),
+        "sky_horizontal_small values mismatch"
+    );
+    assert_eq!(cpu_iters, gpu_iters, "sky_horizontal_small iters mismatch");
+}
+
+#[test]
+fn sky_horizontal_flat_equal() {
+    // All columns same height = no horizontal propagation
+    let width = 4usize;
+    let depth = 4usize;
+    let height = 16usize;
+    let n = width * depth * height;
+
+    let mut cpu_lt = vec![15u8; n]; // all sky
+    let mut gpu_lt = cpu_lt.clone();
+    let opacity = vec![0u8; n];
+
+    let cpu_iters = cpu_sky_horizontal(&mut cpu_lt, &opacity, width, depth, height, 32);
+    let mut accel = mk_light_accel();
+    let gpu_iters = accel.sky_horizontal_propagate(&mut gpu_lt, &opacity, width, depth, height, 32);
+
+    assert_eq!(
+        fnv1a_u8(&cpu_lt),
+        fnv1a_u8(&gpu_lt),
+        "sky_horizontal_flat values mismatch"
+    );
+    // Should converge immediately (1 iteration = 1 pass that found no changes)
+    assert_eq!(cpu_iters, gpu_iters, "iters");
+    assert_eq!(cpu_iters, 1, "flat equal should converge in 1 iter");
+}
+
+#[test]
+fn sky_horizontal_chequerboard() {
+    // Chequerboard pattern: alternating tall/short columns
+    let width = 4usize;
+    let depth = 4usize;
+    let height = 64usize;
+    let n = width * depth * height;
+
+    let mut cpu_lt = vec![0u8; n];
+    let mut gpu_lt = vec![0u8; n];
+    let mut opacity = vec![0u8; n];
+
+    // Generate checkerboard heightmap and initial vertical fill
+    let mut s = SEED;
+    for z in 0..depth {
+        for x in 0..width {
+            let col = z * width + x;
+            let top = if (x + z) % 2 == 0 { 48i32 } else { 32i32 };
+            for y in 0..height {
+                let idx = z * (width * height) + x * height + y;
+                // Add some opacity to make it interesting
+                opacity[idx] = (s % 4) as u8;
+                s = s.wrapping_mul(1442695040888963407);
+                if (y as i32) > top {
+                    cpu_lt[idx] = 15;
+                    gpu_lt[idx] = 15;
+                }
+            }
+            // Vertical fill (top-down with opacity)
+            let mut l: i32 = 15;
+            for y in (0..=top).rev() {
+                let idx = z * (width * height) + x * height + (y as usize);
+                let op = opacity[idx] as i32;
+                l = (l - op).max(0);
+                cpu_lt[idx] = l as u8;
+                gpu_lt[idx] = l as u8;
+            }
+        }
+    }
+
+    let cpu_iters = cpu_sky_horizontal(&mut cpu_lt, &opacity, width, depth, height, 32);
+    let mut accel = mk_light_accel();
+    let gpu_iters = accel.sky_horizontal_propagate(&mut gpu_lt, &opacity, width, depth, height, 32);
+
+    assert_eq!(
+        fnv1a_u8(&cpu_lt),
+        fnv1a_u8(&gpu_lt),
+        "sky_horizontal_chequer values mismatch"
+    );
+    assert_eq!(cpu_iters, gpu_iters, "iters");
+}
+
+#[test]
+fn sky_horizontal_18x18x384() {
+    // Full chunk-sized test: 18x18 columns, 384 height
+    // Matches the dimensions used in LightEngine::sky_horizontal_propagate
+    let width = 18usize;
+    let depth = 18usize;
+    let height = 384usize;
+    let n = width * depth * height;
+
+    let mut s = SEED;
+    let mut cpu_lt = vec![0u8; n];
+    let mut gpu_lt = vec![0u8; n];
+    let mut opacity = vec![0u8; n];
+
+    for z in 0..depth {
+        for x in 0..width {
+            let col = z * width + x;
+            let top = ((s as i32).rem_euclid(128) + 48).clamp(0, (height - 1) as i32);
+            s = s.wrapping_mul(1442695040888963407);
+            for y in 0..height {
+                let idx = z * (width * height) + x * height + y;
+                opacity[idx] = (s % 6) as u8;
+                s = s.wrapping_mul(1442695040888963407);
+                if (y as i32) > top {
+                    cpu_lt[idx] = 15;
+                    gpu_lt[idx] = 15;
+                }
+            }
+            let mut l: i32 = 15;
+            for y in (0..=top).rev() {
+                let idx = z * (width * height) + x * height + (y as usize);
+                let op = opacity[idx] as i32;
+                l = (l - op).max(0);
+                cpu_lt[idx] = l as u8;
+                gpu_lt[idx] = l as u8;
+            }
+        }
+    }
+
+    let t0 = std::time::Instant::now();
+    let cpu_iters = cpu_sky_horizontal(&mut cpu_lt, &opacity, width, depth, height, 32);
+    let cpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+    let t1 = std::time::Instant::now();
+    let mut accel = mk_light_accel();
+    let gpu_iters = accel.sky_horizontal_propagate(&mut gpu_lt, &opacity, width, depth, height, 32);
+    let gpu_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+    assert_eq!(
+        fnv1a_u8(&cpu_lt),
+        fnv1a_u8(&gpu_lt),
+        "sky_horizontal_18x18x384 values mismatch"
+    );
+    assert_eq!(cpu_iters, gpu_iters, "iters");
+
+    println!(
+        "sky_horizontal(18x18x384): cpu={cpu_ms:.1}ms cpu_iters={cpu_iters}, gpu={gpu_ms:.1}ms gpu_iters={gpu_iters}"
+    );
+}

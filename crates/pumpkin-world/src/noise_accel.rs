@@ -106,6 +106,9 @@ impl NoiseAccelerator {
     pub fn sample_shift_a(&mut self, s: &OctavePerlinNoiseSampler, xz: &[f64], res: &mut [f64]) {
         #[cfg(feature = "gpu")]
         if let Some(ref mut i) = self.inner {
+            if i.sample_shift_a_jit(s, xz, res).is_ok() {
+                return;
+            }
             if i.sample_shift_a_batch(s, xz, res).is_ok() {
                 return;
             }
@@ -123,6 +126,9 @@ impl NoiseAccelerator {
     pub fn sample_shift_b(&mut self, s: &OctavePerlinNoiseSampler, zx: &[f64], res: &mut [f64]) {
         #[cfg(feature = "gpu")]
         if let Some(ref mut i) = self.inner {
+            if i.sample_shift_b_jit(s, zx, res).is_ok() {
+                return;
+            }
             if i.sample_shift_b_batch(s, zx, res).is_ok() {
                 return;
             }

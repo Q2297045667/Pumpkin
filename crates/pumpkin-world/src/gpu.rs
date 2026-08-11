@@ -75,7 +75,7 @@ pub fn get_batch_accel() -> Option<&'static crate::batch_accel::BatchAccelerator
 
 /// 获取全局噪声加速器引用（需持有 Mutex 锁）。
 #[must_use]
-#[allow(dead_code, clippy::expect_used)]
+#[allow(clippy::expect_used)]
 pub fn get_noise_accel()
 -> Option<std::sync::MutexGuard<'static, crate::noise_accel::NoiseAccelerator>> {
     NOISE_ACCEL

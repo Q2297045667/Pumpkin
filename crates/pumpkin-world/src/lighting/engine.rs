@@ -449,9 +449,10 @@ impl LightEngine {
 
     /// 初始化光照（天空光 + 方块光）。
     ///
-    /// GPU 加速：当 `gpu` feature 启用且光照加速器就绪时，
-    /// 天空光的初始填充使用 GPU 批量路径（256 列并行衰减计算），
-    /// 仅保留水平传播在 CPU 端完成。GPU 不可用时自动回退 CPU 路径。
+    /// GPU 加速（需 `gpu` feature + `light_acceleration = true`）：
+    /// 1. 天空光垂直填充 → `sky_light_fill_u8` kernel（256 列并行）
+    /// 2. 天空光水平传播 → `sky_light_horizontal_propagate_u8` kernel
+    /// 3. GPU 不可用时自动回退 CPU 路径。
     pub fn initialize_light(&mut self, cache: &mut Cache, config: &LightingEngineConfig) {
         if *config != LightingEngineConfig::Default {
             return;
@@ -473,8 +474,18 @@ impl LightEngine {
         let gpu_did_sky = false;
 
         if gpu_did_sky {
-            // GPU 已完成天空光填充；执行水平传播。
-            Self::sky_horizontal_propagate(self, cache);
+            // 尝试 GPU 水平传播；不可用时回退 CPU。
+            #[cfg(feature = "gpu")]
+            let gpu_did_horiz = crate::gpu::get_light_accel().is_some_and(|mut light_accel| {
+                Self::try_gpu_sky_horizontal(cache, &mut light_accel)
+            });
+            #[cfg(not(feature = "gpu"))]
+            let gpu_did_horiz = false;
+
+            if !gpu_did_horiz {
+                // CPU 回退：源检测 + BFS 水平传播
+                Self::sky_horizontal_propagate(self, cache);
+            }
         } else {
             // CPU 路径：完整天空光初始化。
             self.sky_light.convert_light(cache);
@@ -483,7 +494,6 @@ impl LightEngine {
         self.block_light.propagate_light(cache);
 
         // GPU 加速方块光传播（实验性）：在 CPU 完成基本传播后尝试 GPU 优化。
-        // GPU 路径通过 batch_block_scan + iterative_propagate 加速光源扫描和 BFS。
         #[cfg(feature = "gpu")]
         if let Some(mut light_accel) = crate::gpu::get_light_accel() {
             Self::try_gpu_block_propagate(cache, &mut light_accel);
@@ -648,6 +658,76 @@ impl LightEngine {
                 true
             }
         }
+    }
+
+    /// 尝试使用 GPU 加速器执行天空光水平传播 + 向下级联。
+    /// 返回 `true` 表示 GPU 路径成功执行。
+    #[cfg(feature = "gpu")]
+    fn try_gpu_sky_horizontal(
+        cache: &mut Cache,
+        light_accel: &mut crate::light_accel::LightAccelerator,
+    ) -> bool {
+        let center_x = cache.x + (cache.size / 2);
+        let center_z = cache.z + (cache.size / 2);
+        let start_x = center_x * 16 - 1;
+        let start_z = center_z * 16 - 1;
+        let width = 18usize;
+        let depth = 18usize;
+        let height = cache.height() as usize;
+        let bottom_y = cache.bottom_y() as i32;
+        let n_total = width * depth * height;
+
+        let mut sky_light_data = vec![0u8; n_total];
+        let mut opacity_data = vec![0u8; n_total];
+
+        // Extract sky light and opacity for 18×18 area (center 16×16 + 1 border)
+        for lz in 0..depth {
+            for lx in 0..width {
+                let world_x = start_x + lx as i32;
+                let world_z = start_z + lz as i32;
+                let col_idx = lz * width + lx;
+                let col_base = col_idx * height;
+                for ly in 0..height {
+                    let world_y = bottom_y + ly as i32;
+                    let idx = col_base + ly;
+                    let pos = BlockPos(Vector3::new(world_x, world_y, world_z));
+                    sky_light_data[idx] = get_sky_light(cache, pos);
+                    let state = cache.get_block_state(&pos.0);
+                    opacity_data[idx] = state.to_state().opacity;
+                }
+            }
+        }
+
+        let max_iters = 32;
+        light_accel.sky_horizontal_propagate(
+            &mut sky_light_data,
+            &opacity_data,
+            width,
+            depth,
+            height,
+            max_iters,
+        );
+
+        // Write results back
+        for lz in 0..depth {
+            for lx in 0..width {
+                let world_x = start_x + lx as i32;
+                let world_z = start_z + lz as i32;
+                let col_idx = lz * width + lx;
+                let col_base = col_idx * height;
+                for ly in 0..height {
+                    let world_y = bottom_y + ly as i32;
+                    let idx = col_base + ly;
+                    let new_val = sky_light_data[idx];
+                    if new_val > 0 {
+                        let pos = BlockPos(Vector3::new(world_x, world_y, world_z));
+                        set_sky_light(cache, pos, new_val);
+                    }
+                }
+            }
+        }
+
+        true
     }
 
     pub fn update_block_light(

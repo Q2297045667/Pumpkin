@@ -119,6 +119,10 @@ pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
                 name: "light_propagate_u8".into(),
                 source: kernels_light::LIGHT_PROPAGATE_CL.into(),
             },
+            CompiledKernel {
+                name: "sky_light_horizontal_propagate_u8".into(),
+                source: kernels_light::SKY_LIGHT_HORIZONTAL_CL.into(),
+            },
         ]
     }
     #[cfg(not(feature = "pumpkin-util"))]
@@ -202,6 +206,10 @@ pub(crate) fn all_cuda_kernel_sources() -> Vec<CompiledKernel> {
                 name: "light_propagate_u8_persistent".into(),
                 source: kernels_light::LIGHT_PROPAGATE_PERSISTENT_CU.into(),
             },
+            CompiledKernel {
+                name: "sky_light_horizontal_propagate_u8".into(),
+                source: kernels_light::SKY_LIGHT_HORIZONTAL_CU.into(),
+            },
         ]
     }
     #[cfg(not(feature = "pumpkin-util"))]
@@ -241,6 +249,8 @@ pub mod cuda_compile {
             // 内置优化标志：FMA 融合乘加可显著加速噪声计算中的 a*b+c 模式
             opts.options.push("--fmad=true".into());
             opts.options.push("--opt-level=3".into());
+            opts.options.push("--use_fast_math".into());
+            opts.options.push("--restrict".into());
             for flag in flags {
                 opts.options.push(flag.clone());
             }

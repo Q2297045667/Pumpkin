@@ -615,6 +615,77 @@ impl GpuNoiseSampler {
         Ok(())
     }
 
+    /// 使用 JIT 特化 kernel 进行 ShiftA 批量采样。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn sample_shift_a_jit(
+        &mut self,
+        sampler: &OctavePerlinNoiseSampler,
+        xz_positions: &[f64],
+        results: &mut [f64],
+    ) -> Result<(), DeviceError> {
+        let n = results.len();
+        if n == 0 {
+            return Ok(());
+        }
+        assert_eq!(xz_positions.len(), n * 2);
+        if self.device.device_type() == crate::DeviceType::Cpu {
+            cpu_shift_a_batch(sampler, xz_positions, results);
+            return Ok(());
+        }
+        let key = std::ptr::from_ref(sampler) as u64;
+        let guard = self.cache.get_or_insert(key, sampler);
+        let config = guard
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
+        drop(guard);
+
+        let max_unroll = crate::jit::get_jit_max_unroll();
+        if let Some(jit_kernel) = crate::jit::specialize_shift("shift_a", &config, max_unroll) {
+            let m = config.num_octaves();
+            let mut d_pos = self.device.alloc_f64(n * 2)?;
+            let d_res = self.device.alloc_f64(n)?;
+            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            self.device.copy_to_device(&mut d_pos, xz_positions)?;
+            self.device
+                .copy_to_device(&mut d_perm, &config.packed_permutations())?;
+
+            if !self
+                .device
+                .kernel_launcher()
+                .is_some_and(|l| l.has_kernel(&jit_kernel.name))
+            {
+                let _ = self.device.compile_jit_kernel(&jit_kernel);
+            }
+            let ok = self.try_launch(
+                &jit_kernel.name,
+                n,
+                vec![
+                    KernelArg::BufferRef(0),
+                    KernelArg::BufferRef(1),
+                    KernelArg::BufferRef(2),
+                    KernelArg::I32(n as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+                self.device.free(d_pos)?;
+                self.device.free(d_res)?;
+                self.device.free(d_perm)?;
+                return Ok(());
+            }
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_perm)?;
+        }
+        self.sample_shift_a_batch(sampler, xz_positions, results)
+    }
+
     #[cfg(feature = "pumpkin-util")]
     pub fn sample_shift_b_batch(
         &mut self,
@@ -677,6 +748,77 @@ impl GpuNoiseSampler {
 
         bufs.free_all(&self.device)?;
         Ok(())
+    }
+
+    /// 使用 JIT 特化 kernel 进行 ShiftB 批量采样。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn sample_shift_b_jit(
+        &mut self,
+        sampler: &OctavePerlinNoiseSampler,
+        zx_positions: &[f64],
+        results: &mut [f64],
+    ) -> Result<(), DeviceError> {
+        let n = results.len();
+        if n == 0 {
+            return Ok(());
+        }
+        assert_eq!(zx_positions.len(), n * 2);
+        if self.device.device_type() == crate::DeviceType::Cpu {
+            cpu_shift_b_batch(sampler, zx_positions, results);
+            return Ok(());
+        }
+        let key = std::ptr::from_ref(sampler) as u64;
+        let guard = self.cache.get_or_insert(key, sampler);
+        let config = guard
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
+        drop(guard);
+
+        let max_unroll = crate::jit::get_jit_max_unroll();
+        if let Some(jit_kernel) = crate::jit::specialize_shift("shift_b", &config, max_unroll) {
+            let m = config.num_octaves();
+            let mut d_pos = self.device.alloc_f64(n * 2)?;
+            let d_res = self.device.alloc_f64(n)?;
+            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            self.device.copy_to_device(&mut d_pos, zx_positions)?;
+            self.device
+                .copy_to_device(&mut d_perm, &config.packed_permutations())?;
+
+            if !self
+                .device
+                .kernel_launcher()
+                .is_some_and(|l| l.has_kernel(&jit_kernel.name))
+            {
+                let _ = self.device.compile_jit_kernel(&jit_kernel);
+            }
+            let ok = self.try_launch(
+                &jit_kernel.name,
+                n,
+                vec![
+                    KernelArg::BufferRef(0),
+                    KernelArg::BufferRef(1),
+                    KernelArg::BufferRef(2),
+                    KernelArg::I32(n as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+                self.device.free(d_pos)?;
+                self.device.free(d_res)?;
+                self.device.free(d_perm)?;
+                return Ok(());
+            }
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_perm)?;
+        }
+        self.sample_shift_b_batch(sampler, zx_positions, results)
     }
 
     /// Helper: try to launch GPU kernel, return true if successful.

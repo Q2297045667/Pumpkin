@@ -149,4 +149,96 @@ impl LightAccelerator {
         }
         it
     }
+
+    /// GPU 天空光水平传播 + 向下级联（CPU fallback included）。
+    ///
+    /// 在垂直填充后调用，迭代执行水平传播（4 方向衰减 1）
+    /// 和向下级联（15 透过空气保持 15），直至收敛。
+    ///
+    /// 返回实际执行迭代次数。
+    #[allow(clippy::too_many_lines)]
+    pub fn sky_horizontal_propagate(
+        &mut self,
+        sky_light: &mut [u8],
+        opacity: &[u8],
+        width: usize,
+        depth: usize,
+        height: usize,
+        max_iters: usize,
+    ) -> usize {
+        #[cfg(feature = "gpu")]
+        if let Some(ref mut s) = self.inner {
+            if let Ok(it) =
+                s.sky_horizontal_propagate(sky_light, opacity, width, depth, height, max_iters)
+            {
+                return it;
+            }
+            pumpkin_gpu::logging::log_fallback(
+                &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                    "GPU sky horizontal propagate failed".into(),
+                ),
+                "light_accel::sky_horizontal_propagate",
+            );
+        }
+        // CPU fallback: iterative 2D horizontal BFS + downward cascade
+        let stride_x = height;
+        let stride_z = width * height;
+        let mut iterations = 0;
+        for _ in 0..max_iters {
+            let mut changed = false;
+            for z in 0..depth {
+                for x in 0..width {
+                    for y in (0..height).rev() {
+                        let idx = z * stride_z + x * stride_x + y;
+                        let cur = sky_light[idx];
+                        let mut best = cur;
+
+                        // Horizontal: 4 neighbors
+                        if x > 0 {
+                            let nl = sky_light[idx - stride_x];
+                            if nl > 1 && nl - 1 > best {
+                                best = nl - 1;
+                            }
+                        }
+                        if x < width - 1 {
+                            let nl = sky_light[idx + stride_x];
+                            if nl > 1 && nl - 1 > best {
+                                best = nl - 1;
+                            }
+                        }
+                        if z > 0 {
+                            let nl = sky_light[idx - stride_z];
+                            if nl > 1 && nl - 1 > best {
+                                best = nl - 1;
+                            }
+                        }
+                        if z < depth - 1 {
+                            let nl = sky_light[idx + stride_z];
+                            if nl > 1 && nl - 1 > best {
+                                best = nl - 1;
+                            }
+                        }
+
+                        // Downward cascade: light 15 through air
+                        if y < height - 1 {
+                            let above = sky_light[idx + 1];
+                            if above == 15 && opacity[idx] == 0 && 15 > best {
+                                best = 15;
+                            }
+                        }
+
+                        if best > cur {
+                            sky_light[idx] = best;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            iterations += 1;
+            if !changed {
+                break;
+            }
+        }
+        iterations
+    }
 }
