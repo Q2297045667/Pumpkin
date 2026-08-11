@@ -5,10 +5,13 @@ use pumpkin_config::gpu::GpuConfig;
 #[cfg(feature = "gpu")]
 use pumpkin_gpu::{
     GpuDevice,
-    noise::batch_cell::{
-        AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData, CellFillParams,
-        GpuAquiferBatchSampler, GpuBeardifierBatchSampler, GpuCellBatchSampler,
-        GpuVeinBatchSampler, VeinParams,
+    noise::{
+        GpuNoiseSampler,
+        batch_cell::{
+            AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData, CellFillParams,
+            GpuAquiferBatchSampler, GpuBeardifierBatchSampler, GpuCellBatchSampler,
+            GpuVeinBatchSampler, VeinParams,
+        },
     },
 };
 
@@ -204,6 +207,28 @@ impl BatchAccelerator {
         tracing::debug!("GPU vein sample failed — using CPU fallback");
         cpu_vein_detect(positions, params, results);
     }
+
+    // --------------------------------------------------------------------------
+    // Trilinear Interpolation
+    // --------------------------------------------------------------------------
+
+    /// 批量三线性插值。
+    ///
+    /// 对 n 组 8 角点 + 3 delta 执行三线性插值。
+    /// GPU 路径通过 `trilinear_interpolate_f64` kernel 并行计算，
+    /// 失败或不可用时回退到 CPU 路径。
+    pub fn batch_trilinear(&self, corners: &[f64], deltas: &[f64], results: &mut [f64]) {
+        #[cfg(feature = "gpu")]
+        if let Some(device) = self.make_device() {
+            let mut sampler = GpuNoiseSampler::new(device);
+            if sampler.batch_trilinear(corners, deltas, results).is_ok() {
+                return;
+            }
+        }
+        // CPU fallback: 标准三线性插值
+        tracing::debug!("GPU trilinear failed — using CPU fallback");
+        cpu_trilinear_impl(corners, deltas, results);
+    }
 }
 
 // ============================================================================
@@ -316,12 +341,12 @@ fn cpu_beardifier(
 
         // 结构贡献：距离反比衰减
         for s in structures {
-            let cx = f64::from(s.min_x + s.max_x) * 0.5;
-            let cy = f64::from(s.min_y + s.max_y) * 0.5;
-            let cz = f64::from(s.min_z + s.max_z) * 0.5;
-            let rx = f64::from(s.max_x - s.min_x).abs() * 0.5 + 1.0;
-            let ry = f64::from(s.max_y - s.min_y).abs() * 0.5 + 1.0;
-            let rz = f64::from(s.max_z - s.min_z).abs() * 0.5 + 1.0;
+            let cx = s.center_x;
+            let cy = s.center_y;
+            let cz = s.center_z;
+            let rx = s.radius_x + 1.0;
+            let ry = s.radius_y + 1.0;
+            let rz = s.radius_z + 1.0;
 
             if rx <= 0.0 || ry <= 0.0 || rz <= 0.0 {
                 continue;
@@ -335,8 +360,8 @@ fn cpu_beardifier(
             // 仅包围盒内（归一化距离 < 1）才贡献
             if dist_sq < 1.0 {
                 let contrib = (1.0 - dist_sq.sqrt()).max(0.0);
-                let y_factor = if s.ground_level_delta > 0 {
-                    ((y - f64::from(s.min_y)) / f64::from(s.ground_level_delta)).clamp(0.0, 1.0)
+                let y_factor = if s.ground_delta_y > 0.0 {
+                    ((y - s.min_y) / s.ground_delta_y).clamp(0.0, 1.0)
                 } else {
                     1.0
                 };
@@ -732,5 +757,31 @@ fn cpu_interpolator_fill_impl(positions: &[f64], params: &CellFillParams, result
             }
         }
         results[idx] = sum;
+    }
+}
+
+// ============================================================================
+// Trilinear CPU fallback
+// ============================================================================
+
+/// CPU fallback: 标准三线性插值（与 GPU `trilinear_interpolate_f64` kernel 等价）。
+///
+/// 对 n 组 8 角点 + 3 delta 执行标准三线性插值。
+fn cpu_trilinear_impl(corners: &[f64], deltas: &[f64], results: &mut [f64]) {
+    let n = results.len();
+    for i in 0..n {
+        let b = i * 8;
+        let dx = deltas[i * 3];
+        let dy = deltas[i * 3 + 1];
+        let dz = deltas[i * 3 + 2];
+        // Standard trilinear interpolation:
+        // lerp along X → lerp along Y → lerp along Z
+        let c00 = corners[b] * (1.0 - dx) + corners[b + 1] * dx;
+        let c01 = corners[b + 2] * (1.0 - dx) + corners[b + 3] * dx;
+        let c10 = corners[b + 4] * (1.0 - dx) + corners[b + 5] * dx;
+        let c11 = corners[b + 6] * (1.0 - dx) + corners[b + 7] * dx;
+        let c0 = c00 * (1.0 - dy) + c01 * dy;
+        let c1 = c10 * (1.0 - dy) + c11 * dy;
+        results[i] = c0 * (1.0 - dz) + c1 * dz;
     }
 }

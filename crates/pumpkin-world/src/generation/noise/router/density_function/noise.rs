@@ -18,8 +18,8 @@ use crate::generation::{
 use super::{NoiseFunctionComponentRange, StaticIndependentChunkNoiseFunctionComponentImpl};
 
 pub struct Noise {
-    sampler: DoublePerlinNoiseSampler,
-    data: &'static NoiseData,
+    pub(crate) sampler: DoublePerlinNoiseSampler,
+    pub(crate) data: &'static NoiseData,
 }
 
 impl Noise {
@@ -56,7 +56,7 @@ fn shift_sample_3d(sampler: &DoublePerlinNoiseSampler, x: f64, y: f64, z: f64) -
 }
 
 pub struct ShiftA {
-    sampler: DoublePerlinNoiseSampler,
+    pub(crate) sampler: DoublePerlinNoiseSampler,
 }
 
 impl ShiftA {
@@ -84,7 +84,7 @@ impl StaticIndependentChunkNoiseFunctionComponentImpl for ShiftA {
 }
 
 pub struct ShiftB {
-    sampler: DoublePerlinNoiseSampler,
+    pub(crate) sampler: DoublePerlinNoiseSampler,
 }
 
 impl ShiftB {
@@ -115,8 +115,8 @@ pub struct ShiftedNoise {
     pub(crate) input_x_index: usize,
     pub(crate) input_y_index: usize,
     pub(crate) input_z_index: usize,
-    sampler: DoublePerlinNoiseSampler,
-    data: &'static ShiftedNoiseData,
+    pub(crate) sampler: DoublePerlinNoiseSampler,
+    pub(crate) data: &'static ShiftedNoiseData,
 }
 
 impl ShiftedNoise {
@@ -194,10 +194,10 @@ impl ShiftedNoise {
 }
 
 pub struct InterpolatedNoiseSampler {
-    lower_noise: OctavePerlinNoiseSampler,
-    upper_noise: OctavePerlinNoiseSampler,
-    noise: OctavePerlinNoiseSampler,
-    data: &'static InterpolatedNoiseSamplerData,
+    pub(crate) lower_noise: OctavePerlinNoiseSampler,
+    pub(crate) upper_noise: OctavePerlinNoiseSampler,
+    pub(crate) noise: OctavePerlinNoiseSampler,
+    pub(crate) data: &'static InterpolatedNoiseSamplerData,
     fractions: [f64; 16],
     max_value: f64,
     y_multiplier: f64,

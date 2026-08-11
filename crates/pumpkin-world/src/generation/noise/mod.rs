@@ -352,6 +352,16 @@ impl<'a> ChunkNoiseGenerator<'a> {
         self.router.interpolate_z(delta);
     }
 
+    /// GPU-accelerated combined trilinear interpolation.
+    ///
+    /// Replaces `interpolate_y` → `interpolate_x` → `interpolate_z` with a single
+    /// GPU batch call. Falls back to the sequential CPU path when GPU is unavailable.
+    #[inline]
+    pub fn interpolate_xyz(&mut self, delta_y: f64, delta_x: f64, delta_z: f64) {
+        self.cache_result_unique_id += 1;
+        self.router.interpolate_xyz(delta_y, delta_x, delta_z);
+    }
+
     #[inline]
     pub fn swap_buffers(&mut self) {
         self.router.swap_buffers();
@@ -406,20 +416,16 @@ impl<'a> ChunkNoiseGenerator<'a> {
     ) -> Option<&'static BlockState> {
         let pos = Vector3::new(start_x + cell_x, start_y + cell_y, start_z + cell_z);
 
-        // GPU 批量预计算：在调用 state_sampler 之前，使用 BatchAccelerator
-        // 预先填充当前位置的 Cell Cache，加速后续噪声采样。
+        // GPU 矿脉预计算：为当前位置预先计算矿脉噪声。
+        // Cell Cache 和 Interpolator 填充已通过 `fill_cell_caches` /
+        // `fill_interpolator_buffers` 中的 GPU 批量路径处理，
+        // 此处仅保留矿脉路径。
         #[cfg(feature = "gpu")]
         if let Some(accel) = self.batch_accel {
             let positions = [pos.x as f64, pos.y as f64, pos.z as f64];
-            let mut results = [0.0f64; 1];
-            // 构建批量 cell cache 填充参数 —— 当前使用空配置作为集成占位，
-            // 后续 ChunkNoiseRouter 重构后将从组件堆栈中提取真实的 perlin 配置。
-            let params = pumpkin_gpu::noise::batch_cell::CellFillParams {
-                perlin_configs: Vec::new(),
-                num_octaves: Vec::new(),
-                sampler_types: Vec::new(),
-            };
-            accel.batch_fill_cell_caches(&positions, &params, &mut results);
+            let vein_params = self.router.build_vein_params();
+            let mut vein_results = [0i32; 1];
+            accel.batch_vein_sample(&positions, &vein_params, &mut vein_results);
         }
 
         let options = ChunkNoiseFunctionSampleOptions::new(

@@ -2,7 +2,7 @@ extern "C" __global__ void sky_light_fill_u8(
     const int* heightmap,
     const unsigned char* opacity,
     unsigned char* sky_light,
-    int N, int max_height, int bottom_y
+    int N, int max_height
 ) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (col >= N) return;

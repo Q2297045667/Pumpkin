@@ -29,6 +29,8 @@ use pumpkin_world::batch_accel::BatchAccelerator;
 use pumpkin_gpu::noise::batch_cell::{
     AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData, CellFillParams, VeinParams,
 };
+use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
+use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};
 
 const SEED: u64 = 138_782_381_985_206;
 
@@ -189,12 +191,12 @@ fn cpu_beardifier_ref(
 
         // 结构贡献：距离反比衰减
         for s in structures {
-            let cx = f64::from(s.min_x + s.max_x) * 0.5;
-            let cy = f64::from(s.min_y + s.max_y) * 0.5;
-            let cz = f64::from(s.min_z + s.max_z) * 0.5;
-            let rx = f64::from(s.max_x - s.min_x).abs() * 0.5 + 1.0;
-            let ry = f64::from(s.max_y - s.min_y).abs() * 0.5 + 1.0;
-            let rz = f64::from(s.max_z - s.min_z).abs() * 0.5 + 1.0;
+            let cx = s.center_x;
+            let cy = s.center_y;
+            let cz = s.center_z;
+            let rx = s.radius_x + 1.0;
+            let ry = s.radius_y + 1.0;
+            let rz = s.radius_z + 1.0;
 
             if rx <= 0.0 || ry <= 0.0 || rz <= 0.0 {
                 continue;
@@ -208,8 +210,8 @@ fn cpu_beardifier_ref(
             // 仅包围盒内（归一化距离 < 1）才贡献
             if dist_sq < 1.0 {
                 let contrib = (1.0 - dist_sq.sqrt()).max(0.0);
-                let y_factor = if s.ground_level_delta > 0 {
-                    ((y - f64::from(s.min_y)) / f64::from(s.ground_level_delta)).clamp(0.0, 1.0)
+                let y_factor = if s.ground_delta_y > 0.0 {
+                    ((y - s.min_y) / s.ground_delta_y).clamp(0.0, 1.0)
                 } else {
                     1.0
                 };
@@ -244,26 +246,34 @@ fn cell_cache_fill_consistency() {
     let n = 1024;
     let positions = make_positions_3d(n, SEED);
 
+    // 使用真实 perlin 配置（从 OctavePerlinNoiseSampler 提取）
+    let sampler = make_test_sampler(SEED, &[0, 1, 2, 3]);
+    let (perlin_configs, num_octaves) = extract_cell_params_from_sampler(&sampler);
+
     let params = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![3, 3],
-        sampler_types: vec![0, 0], // 0 = Noise
+        perlin_configs: perlin_configs.clone(),
+        num_octaves: num_octaves.clone(),
+        sampler_types: vec![0],
     };
 
-    // CPU 路径：零填充
-    let mut cpu_results = vec![0.0f64; n];
-    // 零填充已是默认，显式确认
-    cpu_results.fill(0.0);
+    // 两次 GPU 调用应产生完全相同的结果（确定性验证）
+    let mut run1 = vec![0.0f64; n];
+    let mut run2 = vec![0.0f64; n];
+    make_accel().batch_fill_cell_caches(&positions, &params, &mut run1);
+    make_accel().batch_fill_cell_caches(&positions, &params, &mut run2);
 
-    // GPU 路径
-    let mut gpu_results = vec![0.0f64; n];
-    make_accel().batch_fill_cell_caches(&positions, &params, &mut gpu_results);
-
-    let cpu_hash = fnv1a_f64(&cpu_results);
-    let gpu_hash = fnv1a_f64(&gpu_results);
+    let hash1 = fnv1a_f64(&run1);
+    let hash2 = fnv1a_f64(&run2);
     assert_eq!(
-        cpu_hash, gpu_hash,
-        "cell_cache_fill_consistency: CPU={cpu_hash:#x} GPU={gpu_hash:#x}"
+        hash1, hash2,
+        "cell_cache_fill: deterministic output expected, got {hash1:#x} vs {hash2:#x}"
+    );
+
+    // 非零配置应产生非零输出（验证 GPU 确实在执行计算）
+    let non_zero = run1.iter().any(|&v| v.abs() > 1e-12);
+    assert!(
+        non_zero,
+        "cell_cache_fill with real configs should produce non-zero output"
     );
 }
 
@@ -273,25 +283,32 @@ fn interpolator_fill_consistency() {
     let n = 1024;
     let positions = make_positions_3d(n, SEED);
 
+    let sampler = make_test_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
+    let (perlin_configs, num_octaves) = extract_interp_params_from_sampler(&sampler, 0.25, 0.125);
+
     let params = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![3, 3],
-        sampler_types: vec![0, 0],
+        perlin_configs: perlin_configs.clone(),
+        num_octaves: num_octaves.clone(),
+        sampler_types: vec![0],
     };
 
-    // CPU 路径：零填充
-    let mut cpu_results = vec![0.0f64; n];
-    cpu_results.fill(0.0);
+    // 两次 GPU 调用应产生完全相同的结果（确定性验证）
+    let mut run1 = vec![0.0f64; n];
+    let mut run2 = vec![0.0f64; n];
+    make_accel().batch_fill_interpolators(&positions, &params, &mut run1);
+    make_accel().batch_fill_interpolators(&positions, &params, &mut run2);
 
-    // GPU 路径
-    let mut gpu_results = vec![0.0f64; n];
-    make_accel().batch_fill_interpolators(&positions, &params, &mut gpu_results);
-
-    let cpu_hash = fnv1a_f64(&cpu_results);
-    let gpu_hash = fnv1a_f64(&gpu_results);
+    let hash1 = fnv1a_f64(&run1);
+    let hash2 = fnv1a_f64(&run2);
     assert_eq!(
-        cpu_hash, gpu_hash,
-        "interpolator_fill_consistency: CPU={cpu_hash:#x} GPU={gpu_hash:#x}"
+        hash1, hash2,
+        "interpolator_fill: deterministic output expected, got {hash1:#x} vs {hash2:#x}"
+    );
+
+    let non_zero = run1.iter().any(|&v| v.abs() > 1e-12);
+    assert!(
+        non_zero,
+        "interpolator_fill with real configs should produce non-zero output"
     );
 }
 
@@ -384,34 +401,37 @@ fn beardifier_consistency() {
     // 创建 3 个结构数据（不同的 bbox + terrain_adaptation）
     let structures = vec![
         BeardifierStructureData {
-            min_x: -32,
-            min_y: -64,
-            min_z: -32,
-            max_x: 32,
-            max_y: 0,
-            max_z: 32,
-            terrain_adaptation: 2, // BeardBox
-            ground_level_delta: 8,
+            center_x: 0.0,
+            center_y: -32.0,
+            center_z: 0.0,
+            radius_x: 32.0,
+            radius_y: 32.0,
+            radius_z: 32.0,
+            min_y: -64.0,
+            ground_delta_y: 8.0,
+            max_y: 0.0,
         },
         BeardifierStructureData {
-            min_x: 48,
-            min_y: -48,
-            min_z: 48,
-            max_x: 80,
-            max_y: 16,
-            max_z: 80,
-            terrain_adaptation: 1, // BeardThin
-            ground_level_delta: 0,
+            center_x: 64.0,
+            center_y: -16.0,
+            center_z: 64.0,
+            radius_x: 16.0,
+            radius_y: 32.0,
+            radius_z: 16.0,
+            min_y: -48.0,
+            ground_delta_y: 0.0,
+            max_y: 16.0,
         },
         BeardifierStructureData {
-            min_x: -80,
-            min_y: -32,
-            min_z: 64,
-            max_x: -48,
-            max_y: 32,
-            max_z: 96,
-            terrain_adaptation: 4, // Encapsulate
-            ground_level_delta: 16,
+            center_x: -64.0,
+            center_y: 0.0,
+            center_z: 80.0,
+            radius_x: 16.0,
+            radius_y: 32.0,
+            radius_z: 16.0,
+            min_y: -32.0,
+            ground_delta_y: 16.0,
+            max_y: 32.0,
         },
     ];
 
@@ -585,24 +605,26 @@ fn all_batch_types() {
     let pos_beard = make_positions_3d(n_beard, SEED.wrapping_add(13));
     let structures = vec![
         BeardifierStructureData {
-            min_x: -16,
-            min_y: -32,
-            min_z: -16,
-            max_x: 16,
-            max_y: 0,
-            max_z: 16,
-            terrain_adaptation: 2,
-            ground_level_delta: 8,
+            center_x: 0.0,
+            center_y: -16.0,
+            center_z: 0.0,
+            radius_x: 16.0,
+            radius_y: 16.0,
+            radius_z: 16.0,
+            min_y: -32.0,
+            ground_delta_y: 8.0,
+            max_y: 0.0,
         },
         BeardifierStructureData {
-            min_x: 32,
-            min_y: -16,
-            min_z: 32,
-            max_x: 64,
-            max_y: 16,
-            max_z: 64,
-            terrain_adaptation: 1,
-            ground_level_delta: 0,
+            center_x: 48.0,
+            center_y: 0.0,
+            center_z: 48.0,
+            radius_x: 16.0,
+            radius_y: 16.0,
+            radius_z: 16.0,
+            min_y: -16.0,
+            ground_delta_y: 0.0,
+            max_y: 16.0,
         },
     ];
     let junctions = vec![BeardifierJunctionData {
@@ -753,4 +775,60 @@ fn perf_batch_cell() {
         gpu_ms < 1000.0,
         "GPU cell cache fill should complete within 1s per iteration (took {gpu_ms:.1}ms)"
     );
+}
+
+// ============================================================================
+// 测试辅助函数：perlin 配置提取
+// ============================================================================
+
+/// 创建一个测试用的 `OctavePerlinNoiseSampler`。
+fn make_test_sampler(seed: u64, octaves: &[i32]) -> OctavePerlinNoiseSampler {
+    let r = Xoroshiro::from_seed(seed);
+    let (start, amplitudes) = OctavePerlinNoiseSampler::calculate_amplitudes(octaves);
+    let mut g = RandomGenerator::Xoroshiro(r);
+    OctavePerlinNoiseSampler::new(&mut g, start, &amplitudes, false)
+}
+
+/// 从 `OctavePerlinNoiseSampler` 提取 cell cache 编码的 perlin 配置。
+///
+/// 编码格式：`[num_octaves, amps[0..n], lacs[0..n], orgs[0..3n]]`
+fn extract_cell_params_from_sampler(sampler: &OctavePerlinNoiseSampler) -> (Vec<f64>, Vec<i32>) {
+    let num_octaves = sampler.samplers.len() as i32;
+    let mut config = Vec::with_capacity(1 + num_octaves as usize * 5);
+    config.push(num_octaves as f64);
+    for sd in sampler.samplers.iter() {
+        config.push(sd.amplitude * sd.persistence);
+    }
+    for sd in sampler.samplers.iter() {
+        config.push(sd.lacunarity);
+    }
+    for sd in sampler.samplers.iter() {
+        config.push(sd.sampler.x_origin());
+        config.push(sd.sampler.y_origin());
+        config.push(sd.sampler.z_origin());
+    }
+    (config, vec![num_octaves])
+}
+
+/// 从 `OctavePerlinNoiseSampler` 提取插值器编码的 perlin 配置。
+///
+/// 编码格式：每八度 8 个 f64 `[amp, lac, orgx, orgy, orgz, xz_scale, y_scale, 0.0]`
+fn extract_interp_params_from_sampler(
+    sampler: &OctavePerlinNoiseSampler,
+    xz_scale: f64,
+    y_scale: f64,
+) -> (Vec<f64>, Vec<i32>) {
+    let num_octaves = sampler.samplers.len() as i32;
+    let mut config = Vec::with_capacity(num_octaves as usize * 8);
+    for sd in sampler.samplers.iter() {
+        config.push(sd.amplitude * sd.persistence);
+        config.push(sd.lacunarity);
+        config.push(sd.sampler.x_origin());
+        config.push(sd.sampler.y_origin());
+        config.push(sd.sampler.z_origin());
+        config.push(xz_scale);
+        config.push(y_scale);
+        config.push(0.0); // reserved
+    }
+    (config, vec![num_octaves])
 }

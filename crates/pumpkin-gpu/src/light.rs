@@ -211,14 +211,14 @@ impl GpuLightSampler {
                 let mut d_light = self.device.alloc_u8(n)?;
                 let mut d_opacity = self.device.alloc_u8(n)?;
                 let mut d_neighbors = self.device.alloc_i32(n * 6)?;
-                let mut d_changed = self.device.alloc_u8(1)?;
+                let mut d_changed = self.device.alloc_i32(1)?;
                 self.device.copy_to_device(&mut d_light, light)?;
                 self.device.copy_to_device(&mut d_opacity, opacity)?;
                 self.device.copy_to_device(&mut d_neighbors, neighbors)?;
 
                 let mut iterations = 0;
                 for _ in 0..max_iters {
-                    self.device.copy_to_device(&mut d_changed, &[0u8])?;
+                    self.device.copy_to_device(&mut d_changed, &[0i32])?;
                     l.launch(crate::common::kernel::KernelLaunch {
                         name: "light_propagate_u8",
                         global_work_size: [n, 1, 1],
@@ -234,12 +234,12 @@ impl GpuLightSampler {
                             GpuBufferRef::U8(&d_light),
                             GpuBufferRef::U8(&d_opacity),
                             GpuBufferRef::I32(&d_neighbors),
-                            GpuBufferRef::U8(&d_changed),
+                            GpuBufferRef::I32(&d_changed),
                         ],
                     })?;
                     l.synchronize()?;
                     iterations += 1;
-                    let mut c = [0u8];
+                    let mut c = [0i32];
                     self.device.copy_from_device(&d_changed, &mut c)?;
                     if c[0] == 0 {
                         break;

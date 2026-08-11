@@ -2,7 +2,7 @@ extern "C" __global__ void light_propagate_u8(
     unsigned char* light,
     const unsigned char* opacity,
     const int* neighbors,
-    unsigned char* changed,
+    int* changed,
     int N
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -19,6 +19,6 @@ extern "C" __global__ void light_propagate_u8(
     }
     if (best > cur) {
         light[i] = best;
-        *changed = 1;
+        atomicOr(changed, 1);
     }
 }

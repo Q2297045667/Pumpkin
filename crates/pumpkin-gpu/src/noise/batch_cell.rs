@@ -37,6 +37,7 @@ pub fn get_aquifer_tile_threshold() -> usize {
 // ============================================================================
 
 /// Cell 填充参数
+#[derive(Clone)]
 pub struct CellFillParams {
     /// 扁平化的 perlin 配置（用于采样器）
     pub perlin_configs: Vec<f64>,
@@ -54,17 +55,21 @@ pub struct AquiferBatchResult {
     pub fluid_updates: Vec<u8>,
 }
 
-/// 结构数据（可序列化到 GPU）
+/// 结构数据（可序列化到 GPU）。
+///
+/// 编码为 9 个 f64 值，与 `beardifier_batch_f64` kernel 的 structures 布局一致：
+///   `[center_x, center_y, center_z, radius_x, radius_y, radius_z,
+///     min_y, ground_delta_y, max_y]`
 pub struct BeardifierStructureData {
-    pub min_x: i32,
-    pub min_y: i32,
-    pub min_z: i32,
-    pub max_x: i32,
-    pub max_y: i32,
-    pub max_z: i32,
-    /// 0=None, 1=BeardThin, 2=BeardBox, 3=Bury, 4=Encapsulate
-    pub terrain_adaptation: i32,
-    pub ground_level_delta: i32,
+    pub center_x: f64,
+    pub center_y: f64,
+    pub center_z: f64,
+    pub radius_x: f64,
+    pub radius_y: f64,
+    pub radius_z: f64,
+    pub min_y: f64,
+    pub ground_delta_y: f64,
+    pub max_y: f64,
 }
 
 /// 连接点数据
@@ -323,7 +328,6 @@ impl GpuCellBatchSampler {
     }
 
     /// Helper: try to launch GPU kernel, return true if successful.
-    #[allow(dead_code)] // TODO: 恢复后移除
     fn try_launch(
         &self,
         name: &str,
@@ -524,19 +528,41 @@ impl GpuBeardifierBatchSampler {
             ));
         }
 
-        // 将结构/连接点展平为 f64 数组
+        const KERNEL_SIZE: usize = 24;
+        const KERNEL_VOLUME: usize = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE; // 13824
+
+        // 构建预计算的 beard kernel (24³三线性采样核)。
+        // 指数衰减：exp(-dist² / 16)
+        let mut beard_kernel = [0.0f64; KERNEL_VOLUME];
+        let ksh = KERNEL_SIZE as f64 * 0.5;
+        for zi in 0..KERNEL_SIZE {
+            for xi in 0..KERNEL_SIZE {
+                for yi in 0..KERNEL_SIZE {
+                    let dx = xi as f64 - ksh;
+                    let dy = yi as f64 - ksh + 0.5;
+                    let dz = zi as f64 - ksh;
+                    let dist_sq = dx * dx + dy * dy + dz * dz;
+                    // Rust kernel: [z][x][y], GPU kernel: [x][y][z] — 在此处转置
+                    beard_kernel[xi * KERNEL_SIZE * KERNEL_SIZE + yi * KERNEL_SIZE + zi] =
+                        (-dist_sq / 16.0).exp();
+                }
+            }
+        }
+
+        // 扁平化结构数据（9 doubles per structure）
         let struct_flat: Vec<f64> = structures
             .iter()
             .flat_map(|s| {
                 vec![
-                    f64::from(s.min_x),
-                    f64::from(s.min_y),
-                    f64::from(s.min_z),
-                    f64::from(s.max_x),
-                    f64::from(s.max_y),
-                    f64::from(s.max_z),
-                    f64::from(s.terrain_adaptation),
-                    f64::from(s.ground_level_delta),
+                    s.center_x,
+                    s.center_y,
+                    s.center_z,
+                    s.radius_x,
+                    s.radius_y,
+                    s.radius_z,
+                    s.min_y,
+                    s.ground_delta_y,
+                    s.max_y,
                 ]
             })
             .collect();
@@ -546,37 +572,71 @@ impl GpuBeardifierBatchSampler {
             .flat_map(|j| vec![f64::from(j.x), f64::from(j.ground_y), f64::from(j.z)])
             .collect();
 
+        // structure_to_junction — kernel 声明但未使用，传递零填充占位数组
+        let struct_to_junction: Vec<i32> = vec![0i32; structures.len()];
+
+        // GPU 内存分配
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
+        let mut d_kernel = self.device.alloc_f64(KERNEL_VOLUME)?;
         let mut d_struct = self.device.alloc_f64(struct_flat.len())?;
         let mut d_junct = self.device.alloc_f64(junct_flat.len())?;
+        let mut d_stoj = self.device.alloc_i32(struct_to_junction.len())?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
+        self.device.copy_to_device(&mut d_kernel, &beard_kernel)?;
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
         self.device.copy_to_device(&mut d_junct, &junct_flat)?;
+        self.device
+            .copy_to_device(&mut d_stoj, &struct_to_junction)?;
 
-        // beardifier_batch_f64 签名需要 11 个参数（包括 beard_kernel、
-        // structure_to_junction 等），当前未准备好 → 跳过 GPU 尝试
-        // TODO: 接入完整参数后恢复 GPU 路径
-        let ok = false;
+        let ok = self.try_launch(
+            "beardifier_batch_f64",
+            n,
+            vec![
+                KernelArg::BufferRef(0), // pos
+                KernelArg::BufferRef(1), // beard_kernel
+                KernelArg::BufferRef(2), // structures
+                KernelArg::BufferRef(3), // junctions
+                KernelArg::BufferRef(4), // structure_to_junction
+                KernelArg::BufferRef(5), // beard_values (output)
+                KernelArg::I32(n as i32),
+                KernelArg::I32(structures.len() as i32),
+                KernelArg::I32(junctions.len() as i32),
+                KernelArg::I32(KERNEL_SIZE as i32),
+                KernelArg::F64(1.0 / KERNEL_SIZE as f64),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::F64(&d_kernel),
+                GpuBufferRef::F64(&d_struct),
+                GpuBufferRef::F64(&d_junct),
+                GpuBufferRef::I32(&d_stoj),
+                GpuBufferRef::F64(&d_res),
+            ],
+        );
+
         if ok {
             self.device.copy_from_device(&d_res, results)?;
             self.device.free(d_pos)?;
             self.device.free(d_res)?;
+            self.device.free(d_kernel)?;
             self.device.free(d_struct)?;
             self.device.free(d_junct)?;
+            self.device.free(d_stoj)?;
             return Ok(());
         }
 
         // GPU launch 失败，清理资源并返回错误
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
+        self.device.free(d_kernel)?;
         self.device.free(d_struct)?;
         self.device.free(d_junct)?;
+        self.device.free(d_stoj)?;
         Err(DeviceError::LaunchFailed("beardifier batch failed".into()))
     }
 
-    #[allow(dead_code)] // TODO: 恢复 launch 后移除
     fn try_launch(
         &self,
         name: &str,
@@ -617,7 +677,7 @@ impl GpuVeinBatchSampler {
     pub fn batch_vein_sample(
         &mut self,
         positions: &[f64],
-        _vein_params: &VeinParams,
+        vein_params: &VeinParams,
         results: &mut [i32],
     ) -> Result<(), DeviceError> {
         let n = results.len();
@@ -631,33 +691,115 @@ impl GpuVeinBatchSampler {
             return Ok(());
         }
 
-        let mut _d_pos = self.device.alloc_f64(n * 3)?;
-        let _d_res = self.device.alloc_i32(n)?;
-
-        self.device.copy_to_device(&mut _d_pos, positions)?;
-
-        // vein_batch_f64 签名需要 9 个参数（包括 vein_noise_params、
-        // perms_data、vein_thresholds、vein_weights 等），当前未准备好 → 跳过 GPU 尝试
-        // TODO: 接入完整参数后恢复 GPU 路径
-        let ok = false;
-        if ok {
-            self.device.copy_from_device(&_d_res, results)?;
-        } else {
-            self.device.free(_d_pos)?;
-            self.device.free(_d_res)?;
+        let octaves_per_vein = (vein_params.toggle_config.len() / 8) as i32;
+        if octaves_per_vein == 0 {
             return Err(DeviceError::LaunchFailed(
-                "vein sample: GPU path not yet connected — use BatchAccelerator CPU fallback"
-                    .into(),
+                "vein sample: empty toggle_config".into(),
             ));
         }
 
-        self.device.free(_d_pos)?;
-        self.device.free(_d_res)?;
-        Ok(())
+        let num_veins: i32 = 1; // Minecraft 使用单一矿脉噪声集
+        let total_octaves = (num_veins * 3 * octaves_per_vein) as usize;
+        let expected_toggle = (octaves_per_vein * 8) as usize;
+
+        if vein_params.toggle_config.len() < expected_toggle
+            || vein_params.ridged_config.len() < expected_toggle
+            || vein_params.gap_config.len() < expected_toggle
+        {
+            return Err(DeviceError::LaunchFailed(
+                "vein sample: configs too short".into(),
+            ));
+        }
+
+        // 展平矿脉噪声参数：toggle + ridged + gap，每段 8 doubles/octave
+        let mut vein_noise_flat = Vec::with_capacity(total_octaves * 8);
+        vein_noise_flat.extend_from_slice(&vein_params.toggle_config[..expected_toggle]);
+        vein_noise_flat.extend_from_slice(&vein_params.ridged_config[..expected_toggle]);
+        vein_noise_flat.extend_from_slice(&vein_params.gap_config[..expected_toggle]);
+
+        // 构建 perms_data：每个 octave 256 字节
+        let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves * 256);
+        for v in 0..num_veins as usize {
+            for _seg in 0..3usize {
+                for o in 0..octaves_per_vein as usize {
+                    let perm = gen_perm_table(
+                        0x7665_696E5F6Eu64
+                            .wrapping_add(v as u64)
+                            .wrapping_add(o as u64),
+                        o,
+                    );
+                    perms_data.extend_from_slice(&perm);
+                }
+            }
+        }
+
+        // 阈值和权重（与 OreveinSampler / cpu_vein_detect 一致）
+        let vein_thresholds: Vec<f64> = vec![
+            0.0,  // toggle threshold (> 0 → Copper, < 0 → Iron)
+            0.0,  // ridged threshold (must be < 0)
+            -0.3, // gap threshold (must be > -0.3)
+        ];
+        let vein_weights: Vec<f64> = vec![1.0];
+
+        // GPU 内存分配
+        let mut d_pos = self.device.alloc_f64(n * 3)?;
+        let d_res = self.device.alloc_i32(n)?;
+        let mut d_noise = self.device.alloc_f64(vein_noise_flat.len())?;
+        let mut d_perms = self.device.alloc_u8(perms_data.len())?;
+        let mut d_thresh = self.device.alloc_f64(vein_thresholds.len())?;
+        let mut d_weights = self.device.alloc_f64(vein_weights.len())?;
+
+        self.device.copy_to_device(&mut d_pos, positions)?;
+        self.device.copy_to_device(&mut d_noise, &vein_noise_flat)?;
+        self.device.copy_to_device(&mut d_perms, &perms_data)?;
+        self.device
+            .copy_to_device(&mut d_thresh, &vein_thresholds)?;
+        self.device.copy_to_device(&mut d_weights, &vein_weights)?;
+
+        let ok = self.try_launch(
+            "vein_batch_f64",
+            n,
+            vec![
+                KernelArg::BufferRef(0), // pos
+                KernelArg::BufferRef(1), // vein_noise_params
+                KernelArg::BufferRef(2), // perms_data
+                KernelArg::BufferRef(3), // vein_thresholds
+                KernelArg::BufferRef(4), // vein_weights
+                KernelArg::BufferRef(5), // vein_types (output)
+                KernelArg::I32(n as i32),
+                KernelArg::I32(num_veins),
+                KernelArg::I32(octaves_per_vein),
+            ],
+            vec![
+                GpuBufferRef::F64(&d_pos),
+                GpuBufferRef::F64(&d_noise),
+                GpuBufferRef::U8(&d_perms),
+                GpuBufferRef::F64(&d_thresh),
+                GpuBufferRef::F64(&d_weights),
+                GpuBufferRef::I32(&d_res),
+            ],
+        );
+
+        if ok {
+            self.device.copy_from_device(&d_res, results)?;
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_noise)?;
+            self.device.free(d_perms)?;
+            self.device.free(d_thresh)?;
+            self.device.free(d_weights)?;
+            return Ok(());
+        }
+
+        self.device.free(d_pos)?;
+        self.device.free(d_res)?;
+        self.device.free(d_noise)?;
+        self.device.free(d_perms)?;
+        self.device.free(d_thresh)?;
+        self.device.free(d_weights)?;
+        Err(DeviceError::LaunchFailed("vein batch failed".into()))
     }
 
-    // TODO: 恢复 vein GPU 路径后移除此 allow
-    #[allow(dead_code)]
     fn try_launch(
         &self,
         name: &str,
@@ -821,14 +963,15 @@ mod tests {
     fn beardifier_gpu_unavailable_returns_error() {
         let mut s = GpuBeardifierBatchSampler::new(mk_device());
         let structures = [BeardifierStructureData {
-            min_x: -5,
-            min_y: 60,
-            min_z: -5,
-            max_x: 5,
-            max_y: 70,
-            max_z: 5,
-            terrain_adaptation: 2, // BeardBox
-            ground_level_delta: 5,
+            center_x: 0.0,
+            center_y: 65.0,
+            center_z: 0.0,
+            radius_x: 5.0,
+            radius_y: 5.0,
+            radius_z: 5.0,
+            min_y: 60.0,
+            ground_delta_y: 5.0,
+            max_y: 70.0,
         }];
         let junctions = [BeardifierJunctionData {
             x: 0,

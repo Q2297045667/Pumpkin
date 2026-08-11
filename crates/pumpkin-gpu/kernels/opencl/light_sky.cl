@@ -2,7 +2,7 @@ __kernel void sky_light_fill_u8(
     __global const int* heightmap,
     __global const uchar* opacity,
     __global uchar* sky_light,
-    int N, int max_height, int bottom_y
+    int N, int max_height
 ) {
     int col = get_global_id(0);
     if (col >= N) return;

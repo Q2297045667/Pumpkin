@@ -201,9 +201,9 @@ pub struct DensityInterpolator {
     pub(crate) start_buffer: Box<[f64]>,
     pub(crate) end_buffer: Box<[f64]>,
 
-    first_pass: [f64; 8],
-    second_pass: [f64; 4],
-    third_pass: [f64; 2],
+    pub(crate) first_pass: [f64; 8],
+    pub(crate) second_pass: [f64; 4],
+    pub(crate) third_pass: [f64; 2],
     pub(crate) result: f64,
 
     pub(crate) vertical_cell_count: usize,

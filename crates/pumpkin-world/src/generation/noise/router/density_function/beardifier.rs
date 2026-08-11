@@ -12,10 +12,12 @@ use super::{
 const BEARD_KERNEL_RADIUS: i32 = 12;
 const BEARD_KERNEL_SIZE: i32 = 24;
 
-static BEARD_KERNEL: OnceLock<[f64; 13824]> = OnceLock::new();
+pub(crate) static BEARD_KERNEL: OnceLock<[f64; 13824]> = OnceLock::new();
 
 #[expect(clippy::large_stack_arrays)]
-fn get_beard_kernel() -> &'static [f64; 13824] {
+/// 返回或初始化预计算的 24×24×24 beard kernel 表。
+/// GPU beardifier kernel 需要此表进行三线性采样。
+pub(crate) fn get_beard_kernel() -> &'static [f64; 13824] {
     BEARD_KERNEL.get_or_init(|| {
         let mut kernel = [0.0; 13824];
         for zi in 0..BEARD_KERNEL_SIZE {
@@ -231,21 +233,19 @@ impl MutableChunkNoiseFunctionComponentImpl for Beardifier {
                 let gpu_structures: Vec<BeardifierStructureData> = self
                     .structures
                     .iter()
-                    .map(|s| BeardifierStructureData {
-                        min_x: s.bounding_box.min.x,
-                        min_y: s.bounding_box.min.y,
-                        min_z: s.bounding_box.min.z,
-                        max_x: s.bounding_box.max.x,
-                        max_y: s.bounding_box.max.y,
-                        max_z: s.bounding_box.max.z,
-                        terrain_adaptation: match s.terrain_adaptation {
-                            TerrainAdaptation::None => 0,
-                            TerrainAdaptation::BeardThin => 1,
-                            TerrainAdaptation::BeardBox => 2,
-                            TerrainAdaptation::Bury => 3,
-                            TerrainAdaptation::Encapsulate => 4,
-                        },
-                        ground_level_delta: s.ground_level_delta,
+                    .map(|s| {
+                        let bb = &s.bounding_box;
+                        BeardifierStructureData {
+                            center_x: (f64::from(bb.min.x) + f64::from(bb.max.x)) * 0.5,
+                            center_y: (f64::from(bb.min.y) + f64::from(bb.max.y)) * 0.5,
+                            center_z: (f64::from(bb.min.z) + f64::from(bb.max.z)) * 0.5,
+                            radius_x: (f64::from(bb.max.x) - f64::from(bb.min.x)).abs() * 0.5,
+                            radius_y: (f64::from(bb.max.y) - f64::from(bb.min.y)).abs() * 0.5,
+                            radius_z: (f64::from(bb.max.z) - f64::from(bb.min.z)).abs() * 0.5,
+                            min_y: f64::from(bb.min.y),
+                            ground_delta_y: f64::from(s.ground_level_delta),
+                            max_y: f64::from(bb.max.y),
+                        }
                     })
                     .collect();
 

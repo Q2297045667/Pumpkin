@@ -2,7 +2,7 @@ __kernel void light_propagate_u8(
     __global uchar* light,
     __global const uchar* opacity,
     __global const int* neighbors,
-    __global uchar* changed,
+    __global int* changed,
     int N
 ) {
     int i = get_global_id(0);
@@ -19,6 +19,6 @@ __kernel void light_propagate_u8(
     }
     if (best > cur) {
         light[i] = best;
-        *changed = 1;
+        atomic_or(changed, 1);
     }
 }

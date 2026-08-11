@@ -482,6 +482,13 @@ impl LightEngine {
 
         self.block_light.propagate_light(cache);
 
+        // GPU 加速方块光传播（实验性）：在 CPU 完成基本传播后尝试 GPU 优化。
+        // GPU 路径通过 batch_block_scan + iterative_propagate 加速光源扫描和 BFS。
+        #[cfg(feature = "gpu")]
+        if let Some(mut light_accel) = crate::gpu::get_light_accel() {
+            Self::try_gpu_block_propagate(cache, &mut light_accel);
+        }
+
         self.block_light.clear();
         self.sky_light.clear();
     }
@@ -687,6 +694,129 @@ impl LightEngine {
         if !self.sky_light.queue.is_empty() {
             self.sky_light.propagate(cache);
             self.sky_light.visited.clear();
+        }
+    }
+
+    /// GPU 加速方块光传播（实验性）。
+    ///
+    /// 尝试通过 `batch_block_scan` + `iterative_propagate` 加速光源扫描和 BFS
+    /// 传播。适用于整块重新计算场景，GPU 不可用时自动回退。
+    #[cfg(feature = "gpu")]
+    fn try_gpu_block_propagate(
+        cache: &mut Cache,
+        light_accel: &mut crate::light_accel::LightAccelerator,
+    ) {
+        let center_x = cache.x + (cache.size / 2);
+        let center_z = cache.z + (cache.size / 2);
+        let start_x = center_x * 16 - 1;
+        let start_z = center_z * 16 - 1;
+        let end_x = start_x + 18;
+        let end_z = start_z + 18;
+        let min_y = cache.bottom_y() as i32;
+        let max_y = min_y + cache.height() as i32;
+        let height = (max_y - min_y) as usize;
+        let width = 18usize;
+        let area = width * width * height;
+
+        if area == 0 {
+            return;
+        }
+
+        // 展平 3D 区域为 1D 数组（GPU kernel 所需格式）
+        let mut luminances = vec![0u8; area];
+        let mut opacities = vec![0u8; area];
+        let mut bl = vec![0u8; area];
+
+        for y_idx in 0..height {
+            let y = min_y + y_idx as i32;
+            for z_idx in 0..width {
+                let z = start_z + z_idx as i32;
+                for x_idx in 0..width {
+                    let x = start_x + x_idx as i32;
+                    let idx = (y_idx * width + z_idx) * width + x_idx;
+                    let pos_vec = Vector3::new(x, y, z);
+                    let state = cache.get_block_state(&pos_vec);
+                    luminances[idx] = state.to_state().luminance;
+                    opacities[idx] = state.to_state().opacity;
+                }
+            }
+        }
+
+        // GPU 批量方块光扫描
+        let sources = light_accel.batch_block_scan(&luminances, &mut bl, area);
+
+        if sources.is_empty() {
+            return; // 无光源，跳过
+        }
+
+        // 构建 6-邻接索引数组（-1 表示越界）
+        let w = width as i32;
+        let h = height as i32;
+        let mut neighbors = vec![-1i32; area * 6];
+        for y_idx in 0..height {
+            let yi = y_idx as i32;
+            for z_idx in 0..width {
+                let zi = z_idx as i32;
+                for x_idx in 0..width {
+                    let xi = x_idx as i32;
+                    let idx = (y_idx * width + z_idx) * width + x_idx;
+                    let base = idx * 6;
+                    // +Y (up)
+                    neighbors[base] = if yi + 1 < h {
+                        ((yi + 1) * w + zi) * w + xi
+                    } else {
+                        -1
+                    };
+                    // -Y (down)
+                    neighbors[base + 1] = if yi > 0 {
+                        ((yi - 1) * w + zi) * w + xi
+                    } else {
+                        -1
+                    };
+                    // +Z (south)
+                    neighbors[base + 2] = if zi + 1 < w {
+                        (yi * w + zi + 1) * w + xi
+                    } else {
+                        -1
+                    };
+                    // -Z (north)
+                    neighbors[base + 3] = if zi > 0 {
+                        (yi * w + zi - 1) * w + xi
+                    } else {
+                        -1
+                    };
+                    // +X (east)
+                    neighbors[base + 4] = if xi + 1 < w {
+                        (yi * w + zi) * w + xi + 1
+                    } else {
+                        -1
+                    };
+                    // -X (west)
+                    neighbors[base + 5] = if xi > 0 {
+                        (yi * w + zi) * w + xi - 1
+                    } else {
+                        -1
+                    };
+                }
+            }
+        }
+
+        // GPU 迭代距离场传播
+        let max_iters = height + width; // 保守上限
+        light_accel.iterative_propagate(&mut bl, &opacities, &neighbors, area, max_iters);
+
+        // 将 GPU 结果写回缓存
+        for y_idx in 0..height {
+            let y = min_y + y_idx as i32;
+            for z_idx in 0..width {
+                let z = start_z + z_idx as i32;
+                for x_idx in 0..width {
+                    let x = start_x + x_idx as i32;
+                    let idx = (y_idx * width + z_idx) * width + x_idx;
+                    let pos = BlockPos(Vector3::new(x, y, z));
+                    set_block_light(cache, pos, bl[idx]);
+                }
+            }
         }
     }
 }
