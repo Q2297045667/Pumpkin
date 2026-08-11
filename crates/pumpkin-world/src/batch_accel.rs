@@ -79,10 +79,10 @@ impl BatchAccelerator {
                 return;
             }
         }
-        // CPU fallback: 零填充（Cell Cache 的 CPU 回退为 DAG 占位）
-        // TODO: 后续接入完整 DAG 求值引擎后替换
-        tracing::debug!("GPU cell cache fill failed — using CPU zero-fill fallback");
-        results.fill(0.0);
+        // CPU fallback: 基于 perlin_configs 中的噪声配置计算 cell cache 密度值。
+        // 当 perlin_configs 为空或八度数为 0 时，视为未配置，返回零。
+        tracing::debug!("GPU cell cache fill failed — using CPU fallback");
+        cpu_cell_cache_fill_impl(positions, params, results);
     }
 
     /// 批量填充插值器缓冲区。
@@ -105,10 +105,10 @@ impl BatchAccelerator {
                 return;
             }
         }
-        // CPU fallback: 零填充（Interpolator 的 CPU 回退为 DAG 占位）
-        // TODO: 后续接入完整 DAG 求值引擎后替换
-        tracing::debug!("GPU interpolator fill failed — using CPU zero-fill fallback");
-        results.fill(0.0);
+        // CPU fallback: 基于 perlin_configs 中的噪声配置计算插值器密度值。
+        // 当 perlin_configs 为空或八度数为 0 时，视为未配置，返回零。
+        tracing::debug!("GPU interpolator fill failed — using CPU fallback");
+        cpu_interpolator_fill_impl(positions, params, results);
     }
 
     // --------------------------------------------------------------------------
@@ -358,5 +358,379 @@ fn cpu_beardifier(
         }
 
         results[i] = beard;
+    }
+}
+
+/// CPU 矿脉检测回退：使用 toggle/ridged/gap 三重 perlin 噪声进行矿脉判定。
+///
+/// 算法与 GPU kernel `vein_batch_f64` 一致，参考 `OreVeinSampler::sample` 逻辑：
+/// 1. 对每个位置计算三段 perlin 噪声
+/// 2. 根据 toggle 符号选择矿脉类型（铜/铁）
+/// 3. Y 轴边界检查 + 概率判定 → 矿石 / 粗矿 / 围岩 / 无矿脉
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn cpu_vein_detect(positions: &[f64], params: &VeinParams, results: &mut [i32]) {
+    let n = results.len();
+    if n == 0 {
+        return;
+    }
+
+    // 从 VeinParams 解析八度数：每段 noise 的 f64 数量 / 8（每 octave 8 个参数）
+    let octaves_toggle = params.toggle_config.len() / 8;
+    let octaves_ridged = params.ridged_config.len() / 8;
+    let octaves_gap = params.gap_config.len() / 8;
+
+    // 如果没有有效的八度配置，直接返回全零
+    if octaves_toggle == 0 || octaves_ridged == 0 || octaves_gap == 0 {
+        results.fill(0);
+        return;
+    }
+
+    // 矿石类型定义（与 OreVeinSampler 对应）
+    #[derive(Clone, Copy)]
+    struct VeinTypeCpu {
+        min_y: i32,
+        max_y: i32,
+    }
+    const COPPER: VeinTypeCpu = VeinTypeCpu {
+        min_y: 0,
+        max_y: 50,
+    };
+    const IRON: VeinTypeCpu = VeinTypeCpu {
+        min_y: -60,
+        max_y: -8,
+    };
+
+    // 对每个位置执行矿脉判定
+    for idx in 0..n {
+        let x = positions[idx * 3];
+        let y = positions[idx * 3 + 1];
+        let z = positions[idx * 3 + 2];
+
+        // 1. 计算 toggle 噪声
+        let mut toggle = 0.0f64;
+        for o in 0..octaves_toggle {
+            let po = o * 8;
+            let amp = params.toggle_config[po];
+            let lac = params.toggle_config[po + 1];
+            let org_x = params.toggle_config[po + 2];
+            let org_y = params.toggle_config[po + 3];
+            let org_z = params.toggle_config[po + 4];
+            let perm = gen_perm_table(0x546F67676C65, o); // "Toggle" seed
+            toggle += amp * sample_perlin(&perm, org_x + x * lac, org_y + y * lac, org_z + z * lac);
+        }
+
+        // 2. 根据 toggle 符号选择矿脉类型
+        let vein_type: VeinTypeCpu = if toggle > 0.0 { COPPER } else { IRON };
+        let block_y = y as i32;
+        let max_to_y = vein_type.max_y - block_y;
+        let y_to_min = block_y - vein_type.min_y;
+
+        // Y 轴边界检查
+        if max_to_y < 0 || y_to_min < 0 {
+            results[idx] = 0;
+            continue;
+        }
+
+        // 边界衰减
+        let closest_to_bound = max_to_y.min(y_to_min) as f64;
+        let mapped_diff = pumpkin_util::math::clamped_map(closest_to_bound, 0.0, 20.0, -0.2, 0.0);
+        let abs_toggle = toggle.abs();
+
+        if abs_toggle + mapped_diff < 0.4 {
+            results[idx] = 0;
+            continue;
+        }
+
+        // 3. 计算 ridged 噪声
+        let mut ridged = 0.0f64;
+        for o in 0..octaves_ridged {
+            let po = o * 8;
+            let amp = params.ridged_config[po];
+            let lac = params.ridged_config[po + 1];
+            let org_x = params.ridged_config[po + 2];
+            let org_y = params.ridged_config[po + 3];
+            let org_z = params.ridged_config[po + 4];
+            let perm = gen_perm_table(0x526964676564, o); // "Ridged" seed
+            let sample = sample_perlin(&perm, org_x + x * lac, org_y + y * lac, org_z + z * lac);
+            ridged += amp * (1.0 - sample.abs());
+        }
+
+        // ridged 检查（对应 random.next_f32() <= 0.7 && ridged < 0）
+        if ridged >= 0.0 {
+            results[idx] = 0;
+            continue;
+        }
+
+        // 4. 计算 gap 噪声
+        let mut gap = 0.0f64;
+        for o in 0..octaves_gap {
+            let po = o * 8;
+            let amp = params.gap_config[po];
+            let lac = params.gap_config[po + 1];
+            let org_x = params.gap_config[po + 2];
+            let org_y = params.gap_config[po + 3];
+            let org_z = params.gap_config[po + 4];
+            let perm = gen_perm_table(0x476170, o); // "Gap" seed
+            gap += amp * sample_perlin(&perm, org_x + x * lac, org_y + y * lac, org_z + z * lac);
+        }
+
+        // 概率判定
+        let clamped_sample = pumpkin_util::math::clamped_map(abs_toggle, 0.4, 0.6, 0.1, 0.3);
+        let pseudo_rand = ((x * 12.9898 + y * 78.233 + z * 45.164).sin() * 43758.5453)
+            .fract()
+            .abs();
+
+        if pseudo_rand < clamped_sample && gap > -0.3 {
+            // 矿石 / 粗矿判定
+            let pseudo_rand2 = ((x * 39.346 + y * 11.745 + z * 92.11).sin() * 37523.422)
+                .fract()
+                .abs();
+            if pseudo_rand2 < 0.02 {
+                results[idx] = 2; // 粗矿
+            } else {
+                results[idx] = 1; // 矿石
+            }
+        } else {
+            results[idx] = 3; // 围岩
+        }
+    }
+}
+
+// ============================================================================
+// 共享 Perlin 噪声工具
+// ============================================================================
+
+/// 生成确定性置换表（每个 octave 一个 256 字节表）。
+fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
+    let mut perm = [0u8; 256];
+    for (i, p) in perm.iter_mut().enumerate() {
+        let h = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(octave as u64)
+            .wrapping_add(i as u64);
+        *p = (h ^ (h >> 24)) as u8;
+    }
+    perm
+}
+
+/// 简化版 3D Perlin 噪声采样器（梯度哈希 + 三线性插值）。
+fn sample_perlin(perm: &[u8; 256], x: f64, y: f64, z: f64) -> f64 {
+    let xi = (x.floor() as i32) & 255;
+    let yi = (y.floor() as i32) & 255;
+    let zi = (z.floor() as i32) & 255;
+
+    let xf = x - x.floor();
+    let yf = y - y.floor();
+    let zf = z - z.floor();
+
+    let u = xf * xf * xf * (xf * (xf * 6.0 - 15.0) + 10.0);
+    let v = yf * yf * yf * (yf * (yf * 6.0 - 15.0) + 10.0);
+    let w = zf * zf * zf * (zf * (zf * 6.0 - 15.0) + 10.0);
+
+    let a = perm[xi as usize] as usize + yi as usize;
+    let aa = perm[a & 255] as usize + zi as usize;
+    let ab = perm[(a + 1) & 255] as usize + zi as usize;
+    let b = perm[(xi + 1) as usize & 255] as usize + yi as usize;
+    let ba = perm[b & 255] as usize + zi as usize;
+    let bb = perm[(b + 1) & 255] as usize + zi as usize;
+
+    fn grad(hash: usize, x: f64, y: f64, z: f64) -> f64 {
+        let h = hash & 15;
+        let u = if h < 8 { x } else { y };
+        let v = if h < 4 {
+            y
+        } else if h == 12 || h == 14 {
+            x
+        } else {
+            z
+        };
+        (if (h & 1) == 0 { u } else { -u }) + (if (h & 2) == 0 { v } else { -v })
+    }
+
+    let g000 = grad(perm[aa & 255] as usize, xf, yf, zf);
+    let g100 = grad(perm[ba & 255] as usize, xf - 1.0, yf, zf);
+    let g010 = grad(perm[ab & 255] as usize, xf, yf - 1.0, zf);
+    let g110 = grad(perm[bb & 255] as usize, xf - 1.0, yf - 1.0, zf);
+    let g001 = grad(perm[(aa + 1) & 255] as usize, xf, yf, zf - 1.0);
+    let g101 = grad(perm[(ba + 1) & 255] as usize, xf - 1.0, yf, zf - 1.0);
+    let g011 = grad(perm[(ab + 1) & 255] as usize, xf, yf - 1.0, zf - 1.0);
+    let g111 = grad(perm[(bb + 1) & 255] as usize, xf - 1.0, yf - 1.0, zf - 1.0);
+
+    pumpkin_util::math::lerp3(g000, g100, g010, g110, g001, g101, g011, g111, u, v, w)
+}
+
+// ============================================================================
+// Cell Cache / Interpolator CPU fallback 实现
+// ============================================================================
+
+/// CPU fallback for cell cache fill.
+///
+/// Parses `CellFillParams` and evaluates perlin noise for each position.
+/// Encoding of perlin_configs:
+///   For sampler s at offset base_s (cumulative sum of sizes):
+///     - 1 f64: num_octaves
+///     - num_octaves f64: amplitudes
+///     - num_octaves f64: lacunarities
+///     - num_octaves × 3 f64: origins (x, y, z per octave)
+///   Total per sampler: 1 + num_octaves * 5 f64 values.
+fn cpu_cell_cache_fill_impl(positions: &[f64], params: &CellFillParams, results: &mut [f64]) {
+    let n = results.len();
+    if n == 0 {
+        return;
+    }
+
+    let total_octaves: i32 = params.num_octaves.iter().sum();
+    let expected_config_len = params.num_octaves.len() + (total_octaves * 5) as usize;
+
+    // 配置数据不足 → 零填充
+    if params.perlin_configs.is_empty()
+        || total_octaves == 0
+        || params.perlin_configs.len() < expected_config_len
+    {
+        results.fill(0.0);
+        return;
+    }
+
+    // 构建采样器偏移表
+    let mut sampler_offsets: Vec<usize> = Vec::with_capacity(params.num_octaves.len());
+    let mut offset = 0usize;
+    for &no in &params.num_octaves {
+        sampler_offsets.push(offset);
+        let size = 1 + (no * 5) as usize; // 1 num_octaves + 5 per octave
+        offset += size;
+    }
+
+    // 为每个采样器生成置换表
+    let mut sampler_perms: Vec<Vec<[u8; 256]>> = Vec::with_capacity(params.num_octaves.len());
+    for (s_idx, &no) in params.num_octaves.iter().enumerate() {
+        let perms: Vec<[u8; 256]> = (0..no as usize)
+            .map(|o| gen_perm_table(0x43656C6C_u64.wrapping_add(s_idx as u64), o))
+            .collect();
+        sampler_perms.push(perms);
+    }
+
+    for idx in 0..n {
+        let x = positions[idx * 3];
+        let y = positions[idx * 3 + 1];
+        let z = positions[idx * 3 + 2];
+
+        // 使用第一个采样器（与 GPU kernel 的 cell_indices[0] 行为一致）
+        let s_idx = 0usize;
+        if s_idx >= sampler_offsets.len() {
+            results[idx] = 0.0;
+            continue;
+        }
+
+        let base = sampler_offsets[s_idx];
+        let num_octaves = params.perlin_configs[base] as i32;
+        if num_octaves <= 0 {
+            results[idx] = 0.0;
+            continue;
+        }
+
+        let amps_start = base + 1;
+        let lacs_start = amps_start + num_octaves as usize;
+        let orgs_start = lacs_start + num_octaves as usize;
+
+        let mut sum = 0.0f64;
+        for o in 0..num_octaves as usize {
+            let amp = params.perlin_configs[amps_start + o];
+            let lac = params.perlin_configs[lacs_start + o];
+            let org_x = params.perlin_configs[orgs_start + o * 3];
+            let org_y = params.perlin_configs[orgs_start + o * 3 + 1];
+            let org_z = params.perlin_configs[orgs_start + o * 3 + 2];
+
+            if o < sampler_perms[s_idx].len() {
+                let perm = &sampler_perms[s_idx][o];
+                sum += amp * sample_perlin(perm, org_x + x * lac, org_y + y * lac, org_z + z * lac);
+            }
+        }
+        results[idx] = sum;
+    }
+}
+
+/// CPU fallback for interpolator fill.
+///
+/// Parses `CellFillParams` and evaluates perlin noise for each position.
+/// Encoding of perlin_configs (8 doubles per octave):
+///   [amp, lac, org_x, org_y, org_z, xz_scale, y_scale, _reserved]
+/// Concatenated for all octaves of all samplers.
+fn cpu_interpolator_fill_impl(positions: &[f64], params: &CellFillParams, results: &mut [f64]) {
+    let n = results.len();
+    if n == 0 {
+        return;
+    }
+
+    let total_octaves: i32 = params.num_octaves.iter().sum();
+    let expected_config_len = (total_octaves * 8) as usize;
+
+    // 配置数据不足 → 零填充
+    if params.perlin_configs.is_empty()
+        || total_octaves == 0
+        || params.perlin_configs.len() < expected_config_len
+    {
+        results.fill(0.0);
+        return;
+    }
+
+    // 为每个采样器生成置换表
+    let mut sampler_perms: Vec<Vec<[u8; 256]>> = Vec::with_capacity(params.num_octaves.len());
+    for (s_idx, &no) in params.num_octaves.iter().enumerate() {
+        let perms: Vec<[u8; 256]> = (0..no as usize)
+            .map(|o| gen_perm_table(0x496E74657270_u64.wrapping_add(s_idx as u64), o))
+            .collect();
+        sampler_perms.push(perms);
+    }
+
+    // 计算每个采样器的起始偏移
+    let mut sampler_offsets: Vec<usize> = Vec::with_capacity(params.num_octaves.len());
+    let mut offset = 0usize;
+    for &no in &params.num_octaves {
+        sampler_offsets.push(offset);
+        offset += (no * 8) as usize;
+    }
+
+    for idx in 0..n {
+        let x = positions[idx * 3];
+        let y = positions[idx * 3 + 1];
+        let z = positions[idx * 3 + 2];
+
+        // 使用第一个采样器
+        let s_idx = 0usize;
+        if s_idx >= sampler_offsets.len() {
+            results[idx] = 0.0;
+            continue;
+        }
+
+        let base = sampler_offsets[s_idx];
+        let num_octaves = params.num_octaves[s_idx] as usize;
+        if num_octaves == 0 {
+            results[idx] = 0.0;
+            continue;
+        }
+
+        let mut sum = 0.0f64;
+        for o in 0..num_octaves {
+            let bo = base + o * 8;
+            let amp = params.perlin_configs[bo];
+            let lac = params.perlin_configs[bo + 1];
+            let org_x = params.perlin_configs[bo + 2];
+            let org_y = params.perlin_configs[bo + 3];
+            let org_z = params.perlin_configs[bo + 4];
+            let xz_scale = params.perlin_configs[bo + 5];
+            let y_scale = params.perlin_configs[bo + 6];
+
+            if o < sampler_perms[s_idx].len() {
+                let perm = &sampler_perms[s_idx][o];
+                sum += amp
+                    * sample_perlin(
+                        perm,
+                        org_x + x * xz_scale * lac,
+                        org_y + y * y_scale * lac,
+                        org_z + z * xz_scale * lac,
+                    );
+            }
+        }
+        results[idx] = sum;
     }
 }
