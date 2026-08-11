@@ -11,7 +11,6 @@
 
 use crate::GpuDevice;
 use crate::common::DeviceError;
-use crate::common::GpuBuffer;
 use crate::common::kernel::GpuBufferRef;
 use crate::common::kernel::KernelArg;
 use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
@@ -111,8 +110,8 @@ impl GpuNoiseSampler {
         drop(guard);
 
         let m = config.num_octaves();
-        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (mut d_perm, mut d_amp, mut d_lac, mut d_org) =
+        let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (d_perm, d_amp, d_lac, d_org) =
             self.load_octave_config_pooled(&config)?;
 
         // SoA 路径：当启用 soa_layout 且数据量足够大时，使用独立 X/Y/Z 数组
@@ -433,9 +432,9 @@ impl GpuNoiseSampler {
         let m2 = c2.num_octaves();
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
-        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (mut d_p1, mut d_a1, mut d_l1, mut d_o1) = self.load_octave_config_pooled(&c1)?;
-        let (mut d_p2, mut d_a2, mut d_l2, mut d_o2) = self.load_octave_config_pooled(&c2)?;
+        let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (d_p1, d_a1, d_l1, d_o1) = self.load_octave_config_pooled(&c1)?;
+        let (d_p2, d_a2, d_l2, d_o2) = self.load_octave_config_pooled(&c2)?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
 
@@ -518,8 +517,8 @@ impl GpuNoiseSampler {
         let m = config.num_octaves();
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
-        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (mut d_perm, mut d_amp, mut d_lac, mut d_org) =
+        let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (d_perm, d_amp, d_lac, d_org) =
             self.load_octave_config_pooled(&config)?;
         self.device.copy_to_device(&mut d_pos, xz_positions)?;
 
@@ -657,8 +656,8 @@ impl GpuNoiseSampler {
         let m = config.num_octaves();
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
-        let mut d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (mut d_perm, mut d_amp, mut d_lac, mut d_org) =
+        let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (d_perm, d_amp, d_lac, d_org) =
             self.load_octave_config_pooled(&config)?;
         self.device.copy_to_device(&mut d_pos, zx_positions)?;
 
