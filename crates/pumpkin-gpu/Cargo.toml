@@ -9,7 +9,6 @@ license.workspace = true
 [dependencies]
 # Core
 tracing.workspace = true
-thiserror.workspace = true
 rustc-hash.workspace = true
 bytemuck.workspace = true
 parking_lot = "0.12"
@@ -66,4 +65,4 @@ harness = true
 workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["pumpkin-util"]
+ignored = []

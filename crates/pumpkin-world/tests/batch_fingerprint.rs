@@ -297,11 +297,11 @@ fn aquifer_apply_consistency() {
     let mut packed_grid = Vec::with_capacity(grid_size * 4);
     let mut sg = SEED.wrapping_add(42);
     for ix in 0..gx {
-        for iy in 0..gy {
-            for iz in 0..gz {
+        for yi in 0..gy {
+            for zi in 0..gz {
                 let px = ((ix as i32 - 2) * 16) as f64;
-                let py = ((iy as i32 - 3) * 16) as f64;
-                let pz = ((iz as i32 - 2) * 16) as f64;
+                let py = ((yi as i32 - 3) * 16) as f64;
+                let pz = ((zi as i32 - 2) * 16) as f64;
                 packed_grid.push(px.to_bits() as i64);
                 packed_grid.push(py.to_bits() as i64);
                 packed_grid.push(pz.to_bits() as i64);
@@ -520,11 +520,11 @@ fn all_batch_types() {
     let mut packed_grid = Vec::with_capacity(grid_size * 4);
     let mut sg = SEED.wrapping_add(84);
     for ix in 0..gx {
-        for iy in 0..gy {
-            for iz in 0..gz {
+        for yi in 0..gy {
+            for zi in 0..gz {
                 let px = ((ix as i32 - 1) * 20) as f64;
-                let py = ((iy as i32 - 2) * 20) as f64;
-                let pz = ((iz as i32 - 1) * 20) as f64;
+                let py = ((yi as i32 - 2) * 20) as f64;
+                let pz = ((zi as i32 - 1) * 20) as f64;
                 packed_grid.push(px.to_bits() as i64);
                 packed_grid.push(py.to_bits() as i64);
                 packed_grid.push(pz.to_bits() as i64);
@@ -536,9 +536,20 @@ fn all_batch_types() {
     }
     let fluid_level: f64 = -10000.0;
     let barrier_scale: f64 = 0.3;
-    let cpu_aq = cpu_aquifer_ref(&pos_aq, &densities, &packed_grid, fluid_level, barrier_scale);
-    let gpu_aq =
-        accel.batch_aquifer_apply(&pos_aq, &densities, &packed_grid, fluid_level, barrier_scale);
+    let cpu_aq = cpu_aquifer_ref(
+        &pos_aq,
+        &densities,
+        &packed_grid,
+        fluid_level,
+        barrier_scale,
+    );
+    let gpu_aq = accel.batch_aquifer_apply(
+        &pos_aq,
+        &densities,
+        &packed_grid,
+        fluid_level,
+        barrier_scale,
+    );
     assert_eq!(
         fnv1a_i32(&cpu_aq.block_ids),
         fnv1a_i32(&gpu_aq.block_ids),

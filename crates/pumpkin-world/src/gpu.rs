@@ -77,19 +77,19 @@ impl GpuCompute {
 
     /// 噪声加速是否启用（需同时满足全局启用和子系统启用）。
     #[must_use]
-    pub fn noise_enabled(&self) -> bool {
+    pub const fn noise_enabled(&self) -> bool {
         self.is_gpu_active() && self.config.noise_acceleration
     }
 
     /// 光照加速是否启用。
     #[must_use]
-    pub fn light_enabled(&self) -> bool {
+    pub const fn light_enabled(&self) -> bool {
         self.is_gpu_active() && self.config.light_acceleration
     }
 
     /// 地表加速是否启用。
     #[must_use]
-    pub fn surface_enabled(&self) -> bool {
+    pub const fn surface_enabled(&self) -> bool {
         self.is_gpu_active() && self.config.surface_acceleration
     }
 

@@ -11,8 +11,8 @@ pub mod sampler;
 
 pub use batch_cell::{
     AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData, CellFillParams,
-    GpuAquiferBatchSampler, GpuBeardifierBatchSampler, GpuCellBatchSampler,
-    GpuVeinBatchSampler, VeinParams,
+    GpuAquiferBatchSampler, GpuBeardifierBatchSampler, GpuCellBatchSampler, GpuVeinBatchSampler,
+    VeinParams,
 };
 pub use batch_sampler::GpuNoiseSampler;
 pub use cache::NoiseCache;

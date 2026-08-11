@@ -36,7 +36,7 @@ impl BatchAccelerator {
     /// 注意：返回 `true` 仅表示配置层面允许尝试 GPU 加速，
     /// 实际运行时仍可能因驱动缺失等原因回退到 CPU。
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         self.config.enabled
             && (self.config.noise_acceleration
                 || self.config.surface_acceleration
@@ -52,11 +52,7 @@ impl BatchAccelerator {
             return None;
         }
         let device = GpuDevice::from_config(&self.config);
-        if device.device_type() != pumpkin_gpu::DeviceType::Cpu {
-            Some(device)
-        } else {
-            None
-        }
+        (device.device_type() != pumpkin_gpu::DeviceType::Cpu).then_some(device)
     }
 
     // --------------------------------------------------------------------------
@@ -119,6 +115,7 @@ impl BatchAccelerator {
     ///
     /// GPU 路径通过 `aquifer_batch_f64` kernel 并行计算，
     /// 失败或不可用时回退到 4-NN 搜索。
+    #[allow(clippy::must_use_candidate)]
     pub fn batch_aquifer_apply(
         &self,
         positions: &[f64],
@@ -141,7 +138,13 @@ impl BatchAccelerator {
             }
         }
         // CPU fallback: 4-NN 搜索
-        cpu_aquifer_apply(positions, densities, packed_grid, fluid_level, barrier_scale)
+        cpu_aquifer_apply(
+            positions,
+            densities,
+            packed_grid,
+            fluid_level,
+            barrier_scale,
+        )
     }
 
     // --------------------------------------------------------------------------
@@ -181,12 +184,7 @@ impl BatchAccelerator {
     ///
     /// GPU 路径通过 `vein_batch_f64` kernel 并行计算，
     /// 失败或不可用时回退到默认值（无矿脉）。
-    pub fn batch_vein_sample(
-        &self,
-        positions: &[f64],
-        params: &VeinParams,
-        results: &mut [i32],
-    ) {
+    pub fn batch_vein_sample(&self, positions: &[f64], params: &VeinParams, results: &mut [i32]) {
         #[cfg(feature = "gpu")]
         if let Some(device) = self.make_device() {
             let mut sampler = GpuVeinBatchSampler::new(device);
@@ -253,6 +251,7 @@ fn cpu_aquifer_apply(
         let mut best_idx = [0usize; 4];
         let mut best_dist = [f64::INFINITY; 4];
 
+        #[allow(clippy::needless_range_loop)]
         for j in 0..m {
             let dx = qx - grid_positions[j][0];
             let dy = qy - grid_positions[j][1];

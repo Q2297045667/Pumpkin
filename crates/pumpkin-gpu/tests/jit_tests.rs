@@ -82,7 +82,7 @@ fn jit_source_contains_amplitudes() {
 
     let kernel = jit::specialize_octave_perlin(&config).unwrap();
     // 验证烘焙了振幅值
-    assert!(kernel.source.contains("1"));
+    assert!(kernel.source.contains('1'));
     // 验证烘焙了 origin
     assert!(kernel.source.contains("1.5"));
     assert!(kernel.source.contains("2.5"));

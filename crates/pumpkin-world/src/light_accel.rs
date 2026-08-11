@@ -61,7 +61,7 @@ impl LightAccelerator {
             );
         }
         for col in 0..n {
-            let top = hm[col] as i32;
+            let top = hm[col];
             for y in (top + 1)..h as i32 {
                 sl[col * h + y as usize] = 15;
             }
@@ -124,7 +124,7 @@ impl LightAccelerator {
             let mut ch = false;
             for i in 0..n {
                 let cur = light[i];
-                let _op = opacity[i];
+                let _ = &opacity[i];
                 let mut best = cur;
                 for d in 0..6 {
                     let ni = neighbors[i * 6 + d] as usize;

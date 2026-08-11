@@ -102,7 +102,7 @@ fn propagate_consistency() {
         let mut ch = false;
         for i in 0..1024 {
             let cur = cpu_lt[i];
-            let op_v = op[i];
+            let _op_v = op[i];
             let mut best = cur;
             for d in 0..6 {
                 let ni = nb[i * 6 + d] as usize;
