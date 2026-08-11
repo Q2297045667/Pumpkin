@@ -3,6 +3,10 @@
 use super::BackendType;
 
 /// CUDA 设备内存包装。
+///
+/// 注意：在 GPU 硬件验证完成前，`CudaSliceHolder` 字段暂时未使用。
+/// 待 CUDA 后端完成后，此类型将被激活。
+#[allow(dead_code)]
 #[cfg(feature = "cuda")]
 #[derive(Debug)]
 pub(crate) struct CudaSliceHolder<T: bytemuck::Pod> {
@@ -25,6 +29,7 @@ pub(crate) struct OpenClBufferHolder {
 unsafe impl Send for OpenClBufferHolder {}
 
 /// 后端特定的缓冲区内部表示。
+#[allow(dead_code)]
 pub(crate) enum RawBuffer<T: bytemuck::Pod> {
     Cpu(Vec<T>),
     #[cfg(feature = "cuda")]
@@ -54,6 +59,7 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         }
     }
 
+    #[allow(dead_code)]
     #[cfg(feature = "cuda")]
     #[must_use]
     pub(crate) fn new_cuda(len: usize, slice: cudarc::driver::CudaSlice<T>) -> Self {
@@ -115,6 +121,7 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         }
     }
 
+    #[allow(dead_code)]
     #[cfg(feature = "cuda")]
     #[must_use]
     pub(crate) fn cuda_slice(&self) -> Result<&cudarc::driver::CudaSlice<T>, &'static str> {
@@ -124,6 +131,7 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         }
     }
 
+    #[allow(dead_code)]
     #[cfg(feature = "opencl")]
     #[must_use]
     pub(crate) fn opencl_buffer(

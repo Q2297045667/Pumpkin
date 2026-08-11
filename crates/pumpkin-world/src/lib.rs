@@ -17,6 +17,7 @@ pub mod generation;
 pub mod gpu;
 pub mod inventory;
 pub mod level;
+pub mod light_accel;
 pub mod lighting;
 pub mod noise_accel;
 pub mod poi;

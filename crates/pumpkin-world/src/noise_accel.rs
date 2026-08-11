@@ -1,4 +1,5 @@
 //! 噪声阶段的 GPU 加速接口。
+#![allow(clippy::doc_markdown)]
 
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
@@ -130,17 +131,18 @@ impl NoiseAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if let Some(ref mut i) = self.inner {
-            if i.precompute_flatcache(s, xz, results).is_ok() {
-                return;
-            }
+        if let Some(ref mut i) = self.inner
+            && i.precompute_flatcache(s, xz, results).is_ok()
+        {
+            return;
         }
         for i in 0..results.len() {
             results[i] = s.sample(xz[i * 2], 0.0, xz[i * 2 + 1]);
         }
     }
 
-    /// 预计算 Surface 阶段噪声缓存（256 列批量 DoublePerlin 采样）。
+    /// 预计算 Surface 阶段噪声缓存（256 列批量 `DoublePerlin` 采样）。
+    #[allow(clippy::too_many_arguments)]
     pub fn precompute_surface(
         &mut self,
         surface_a: &OctavePerlinNoiseSampler,

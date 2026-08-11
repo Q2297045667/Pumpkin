@@ -29,11 +29,13 @@ use std::sync::Arc;
 
 /// CUDA 后端实现。
 pub struct CudaBackend {
+    #[allow(dead_code)]
     pub(crate) ctx: Arc<cudarc::driver::CudaContext>,
     pub(crate) name: String,
     pub(crate) launcher: kernel::CudaKernelLauncher,
 }
 
+// SAFETY: CudaBackend's internal state (Arc<CudaContext>) is Send by cudarc specification.
 unsafe impl Send for CudaBackend {}
 
 impl CudaBackend {

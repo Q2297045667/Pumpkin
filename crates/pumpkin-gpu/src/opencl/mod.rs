@@ -12,11 +12,14 @@ use opencl3::context::Context;
 pub struct OpenClBackend {
     pub(crate) ctx: Context,
     pub(crate) queue: CommandQueue,
+    #[allow(dead_code)]
     pub(crate) device: opencl3::device::Device,
     pub(crate) name: String,
     pub(crate) launcher: kernel::OpenClKernelLauncher,
 }
 
+// SAFETY: OpenClBackend 的所有内部字段（Context, CommandQueue, Device）
+// 都实现了 Send，且 OpenCL API 本身是线程安全的（命令队列序列化访问）。
 unsafe impl Send for OpenClBackend {}
 
 impl OpenClBackend {

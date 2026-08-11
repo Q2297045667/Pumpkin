@@ -1,5 +1,10 @@
 //! Kernel 相关测试。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::redundant_test_prefix
+)]
 
 use pumpkin_gpu::GpuDevice;
 

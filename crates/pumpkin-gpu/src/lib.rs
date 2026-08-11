@@ -11,7 +11,15 @@
     clippy::missing_fields_in_debug,
     clippy::tuple_array_conversions,
     clippy::explicit_iter_loop,
-    clippy::needless_pass_by_ref_mut
+    clippy::needless_pass_by_ref_mut,
+    clippy::wildcard_imports,
+    clippy::new_without_default,
+    clippy::collapsible_if,
+    clippy::ptr_as_ptr,
+    clippy::let_and_return,
+    clippy::used_underscore_binding,
+    clippy::module_name_repetitions,
+    clippy::unnecessary_wraps
 )]
 //! - `common` — 平台无关的共享类型、错误类型、缓冲区抽象和后端枚举
 //! - `cuda`   — CUDA 后端 ([`cudarc`])，通过 `features = ["cuda"]` 启用
@@ -50,6 +58,7 @@
 pub mod common;
 pub mod compile;
 pub mod cpu;
+pub mod light;
 #[cfg(feature = "pumpkin-util")]
 pub mod noise;
 

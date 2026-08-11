@@ -3,7 +3,6 @@
 use crate::common::DeviceError;
 use crate::common::kernel::{KernelLaunch, KernelLauncher};
 use crate::compile::cuda_compile::CudaKernelCompiler;
-use crate::noise::kernels;
 
 /// CUDA Kernel 启动器。
 pub struct CudaKernelLauncher {

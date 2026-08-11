@@ -9,6 +9,8 @@ use opencl3::memory::Buffer;
 fn alloc_raw(ctx: &Context, num_bytes: usize) -> Result<Buffer<u8>, DeviceError> {
     let size = if num_bytes == 0 { 1 } else { num_bytes };
 
+    // SAFETY: Buffer::create with a null host pointer creates a device-only buffer.
+    // No host memory is shared, so there is no aliasing risk.
     unsafe {
         Buffer::<u8>::create(
             ctx,
@@ -55,13 +57,13 @@ pub fn alloc_u8(
     Ok(GpuBuffer::new_opencl(len, buf))
 }
 
-/// 获取 OpenCL buffer 的可变引用（通过 wrapper 的 interior mutability）。
+/// 获取 OpenCL buffer 的可变引用（通过 wrapper 的 `UnsafeCell` 实现内部可变性）。
+#[allow(clippy::mut_from_ref)]
 fn get_mut_buffer(buf: &GpuBuffer<impl bytemuck::Pod>) -> Result<&mut Buffer<u8>, &'static str> {
-    let holder = match &buf.raw {
-        crate::common::buffer::RawBuffer::OpenCl(h) => h,
-        _ => return Err("不是 OpenCL 缓冲区"),
+    let crate::common::buffer::RawBuffer::OpenCl(holder) = &buf.raw else {
+        return Err("不是 OpenCL 缓冲区");
     };
-    // SAFETY: We ensure exclusive access at the application level
+    // SAFETY: 应用层保证对此缓冲区的排他访问（单线程或外部同步）
     Ok(unsafe { &mut *holder.buffer.get() })
 }
 
@@ -86,6 +88,8 @@ pub fn copy_to_device<T: bytemuck::Pod>(
 
     let host_bytes: &[u8] = bytemuck::cast_slice(data);
 
+    // SAFETY: cl_buf was allocated by us via Buffer::create and is exclusively accessed.
+    // host_bytes is a valid slice from the caller's data.
     unsafe {
         queue.enqueue_write_buffer(
             cl_buf,
@@ -121,6 +125,8 @@ pub fn copy_from_device<T: bytemuck::Pod>(
 
     let host_bytes: &mut [u8] = bytemuck::cast_slice_mut(data);
 
+    // SAFETY: cl_buf was allocated by us and is exclusively accessed.
+    // host_bytes is a valid mutable slice from the caller.
     unsafe {
         queue.enqueue_read_buffer(
             cl_buf,

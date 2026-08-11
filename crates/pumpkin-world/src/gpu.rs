@@ -32,6 +32,7 @@ impl GpuCompute {
         #[cfg(feature = "gpu")]
         {
             let device = pumpkin_gpu::GpuDevice::from_config(&config);
+            #[allow(clippy::single_match_else)]
             match device.device_type() {
                 pumpkin_gpu::DeviceType::Cpu => Self {
                     status: GpuStatus::Fallback,

@@ -55,7 +55,7 @@ impl GpuNoiseSampler {
         results: &mut [f64],
     ) -> Result<(), DeviceError> {
         let n = results.len();
-        let key = sampler as *const _ as u64;
+        let key = std::ptr::from_ref(sampler) as u64;
         let guard = self.cache.get_or_insert(key, sampler);
         let config = guard
             .get(&key)
@@ -133,7 +133,7 @@ mod tests {
     use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};
 
     fn make_sampler() -> OctavePerlinNoiseSampler {
-        let mut rand = Xoroshiro::from_seed(42);
+        let rand = Xoroshiro::from_seed(42);
         let (start, amplitudes) = OctavePerlinNoiseSampler::calculate_amplitudes(&[0, 1, 2]);
         let mut rand_gen = RandomGenerator::Xoroshiro(rand);
         OctavePerlinNoiseSampler::new(&mut rand_gen, start, &amplitudes, false)

@@ -52,7 +52,7 @@ impl GpuNoiseSampler {
             return Ok(());
         }
 
-        let key = sampler as *const _ as u64;
+        let key = std::ptr::from_ref(sampler) as u64;
         let guard = self.cache.get_or_insert(key, sampler);
         let config = guard
             .get(&key)
@@ -116,8 +116,8 @@ impl GpuNoiseSampler {
             return Ok(());
         }
 
-        let k1 = first as *const _ as u64;
-        let k2 = second as *const _ as u64;
+        let k1 = std::ptr::from_ref(first) as u64;
+        let k2 = std::ptr::from_ref(second) as u64;
 
         let g1 = self.cache.get_or_insert(k1, first);
         let c1 = g1
@@ -202,7 +202,7 @@ impl GpuNoiseSampler {
             cpu_shift_a_batch(sampler, xz_positions, results);
             return Ok(());
         }
-        let key = sampler as *const _ as u64;
+        let key = std::ptr::from_ref(sampler) as u64;
         let guard = self.cache.get_or_insert(key, sampler);
         let config = guard
             .get(&key)
@@ -256,7 +256,7 @@ impl GpuNoiseSampler {
             cpu_shift_b_batch(sampler, zx_positions, results);
             return Ok(());
         }
-        let key = sampler as *const _ as u64;
+        let key = std::ptr::from_ref(sampler) as u64;
         let guard = self.cache.get_or_insert(key, sampler);
         let config = guard
             .get(&key)
@@ -371,7 +371,7 @@ impl GpuNoiseSampler {
             return Ok(());
         }
 
-        let key = sampler as *const _ as u64;
+        let key = std::ptr::from_ref(sampler) as u64;
         let guard = self.cache.get_or_insert(key, sampler);
         let c = guard
             .get(&key)
@@ -477,7 +477,7 @@ mod tests {
     const SEED: u64 = 138_782_381_985_206;
 
     fn mk_sampler(octaves: &[i32]) -> OctavePerlinNoiseSampler {
-        let mut r = Xoroshiro::from_seed(SEED);
+        let r = Xoroshiro::from_seed(SEED);
         let (s, a) = OctavePerlinNoiseSampler::calculate_amplitudes(octaves);
         let mut g = RandomGenerator::Xoroshiro(r);
         OctavePerlinNoiseSampler::new(&mut g, s, &a, false)

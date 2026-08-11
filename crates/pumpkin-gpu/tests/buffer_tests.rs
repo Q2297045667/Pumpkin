@@ -5,7 +5,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::missing_const_for_fn
+    clippy::missing_const_for_fn,
+    clippy::redundant_test_prefix,
+    clippy::separated_literal_suffix
 )]
 
 use pumpkin_gpu::GpuDevice;

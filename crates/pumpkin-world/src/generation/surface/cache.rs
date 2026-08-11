@@ -8,9 +8,9 @@ use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 /// 预计算的表面噪声缓存（16×16 列）。
 #[derive(Clone)]
 pub struct CachedSurfaceNoise {
-    /// surface_noise 采样结果 (DoublePerlin)，索引 = local_x * 16 + local_z
+    /// `surface_noise` 采样结果 (`DoublePerlin`)，索引 = `local_x` * 16 + `local_z`
     pub surface: Box<[f64; 256]>,
-    /// secondary_noise 采样结果 (DoublePerlin)，索引同上
+    /// `secondary_noise` 采样结果 (`DoublePerlin`)，索引同上
     pub secondary: Box<[f64; 256]>,
 }
 
@@ -26,6 +26,7 @@ impl CachedSurfaceNoise {
 
     /// CPU 路径：逐列计算并填充缓存
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_cpu(
         surface_noise_a: &OctavePerlinNoiseSampler,
         surface_noise_b: &OctavePerlinNoiseSampler,

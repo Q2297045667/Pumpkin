@@ -116,9 +116,9 @@ impl NoiseCache {
         sampler: &OctavePerlinNoiseSampler,
     ) -> parking_lot::MutexGuard<'_, FxHashMap<u64, SerializedOctaveConfig>> {
         let mut guard = self.configs.lock();
-        if !guard.contains_key(&key) {
-            guard.insert(key, SerializedOctaveConfig::from_sampler(sampler));
-        }
+        guard
+            .entry(key)
+            .or_insert_with(|| SerializedOctaveConfig::from_sampler(sampler));
         guard
     }
 

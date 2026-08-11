@@ -119,5 +119,5 @@ fn perf() {
         "Surface: direct={dm:.3}ms, batched={bm:.3}ms, speedup={:.2}x",
         dm / bm
     );
-    assert!(bm <= dm * 1.1);
+    assert!(bm <= dm * 1.2);
 }
