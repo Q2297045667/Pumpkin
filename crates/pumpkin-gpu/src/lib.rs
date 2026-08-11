@@ -101,7 +101,7 @@ impl GpuDevice {
     /// 所有初始化失败都会通过 [`tracing::warn`] 输出日志。
     #[must_use]
     pub fn init() -> Self {
-        let device = Self::init_internal(None, None);
+        let device = Self::init_internal(None, None, None, false, None, None);
         device.log_startup();
         device
     }
@@ -138,48 +138,70 @@ impl GpuDevice {
             pumpkin_config::gpu::GpuBackend::Auto => None,
         };
 
-        let device_index = match &config.device {
-            pumpkin_config::gpu::GpuDeviceSelection::ByIndex { index } => Some(*index),
-            _ => None,
+        let (device_index, device_name_filter, prefer_integrated) = match &config.device {
+            pumpkin_config::gpu::GpuDeviceSelection::ByIndex { index } => {
+                (Some(*index), None, false)
+            }
+            pumpkin_config::gpu::GpuDeviceSelection::ByName { name } => {
+                (None, Some(name.as_str()), false)
+            }
+            pumpkin_config::gpu::GpuDeviceSelection::Integrated => (None, None, true),
+            pumpkin_config::gpu::GpuDeviceSelection::Auto => (None, None, false),
         };
 
-        let _device_name_filter = match &config.device {
-            pumpkin_config::gpu::GpuDeviceSelection::ByName { name } => Some(name.as_str()),
-            _ => None,
-        };
-
-        let device = Self::init_internal(forced_backend, device_index);
+        let device = Self::init_internal(
+            forced_backend,
+            device_index,
+            device_name_filter,
+            prefer_integrated,
+            Some(&config.cudarc.flags),
+            Some(&config.opencl3.flags),
+        );
         device.log_startup();
         device
     }
 
     /// 内部初始化逻辑。
     #[allow(clippy::too_many_lines)]
-    fn init_internal(forced_backend: Option<DeviceType>, _device_index: Option<usize>) -> Self {
+    fn init_internal(
+        forced_backend: Option<DeviceType>,
+        device_index: Option<usize>,
+        device_name_filter: Option<&str>,
+        prefer_integrated: bool,
+        cuda_flags: Option<&[String]>,
+        opencl_flags: Option<&[String]>,
+    ) -> Self {
         // 如果强制指定了后端，仅尝试该后端
         if let Some(forced) = forced_backend {
             match forced {
                 #[cfg(feature = "cuda")]
-                DeviceType::Cuda => match crate::cuda::CudaBackend::try_init() {
-                    Ok(backend) => {
-                        tracing::info!("GPU 加速已启用: CUDA 后端（强制指定）");
-                        return Self {
-                            device_type: DeviceType::Cuda,
-                            backend: BackendImpl::Cuda(backend),
-                        };
+                DeviceType::Cuda => {
+                    match crate::cuda::CudaBackend::try_init(device_index, cuda_flags) {
+                        Ok(backend) => {
+                            tracing::info!("GPU 加速已启用: CUDA 后端（强制指定）");
+                            return Self {
+                                device_type: DeviceType::Cuda,
+                                backend: BackendImpl::Cuda(backend),
+                            };
+                        }
+                        Err(e) => {
+                            tracing::error!("强制指定的 CUDA 后端不可用 ({e}), 回退到 CPU");
+                            crate::logging::log_fallback(
+                                &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                                "GpuDevice::init_internal::forced_cuda",
+                            );
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("强制指定的 CUDA 后端不可用 ({e}), 回退到 CPU");
-                        crate::logging::log_fallback(
-                            &crate::logging::FallbackReason::InitFailed(e.to_string()),
-                            "GpuDevice::init_internal::forced_cuda",
-                        );
-                    }
-                },
+                }
                 #[cfg(feature = "opencl")]
                 DeviceType::OpenCl => {
                     if crate::opencl::is_opencl_available() {
-                        match crate::opencl::OpenClBackend::try_init() {
+                        match crate::opencl::OpenClBackend::try_init(
+                            device_index,
+                            device_name_filter,
+                            prefer_integrated,
+                            opencl_flags,
+                        ) {
                             Ok(backend) => {
                                 tracing::info!("GPU 加速已启用: OpenCL 后端（强制指定）");
                                 return Self {
@@ -242,7 +264,7 @@ impl GpuDevice {
         // Auto 模式：按 CUDA → OpenCL → CPU 探测
         #[cfg(feature = "cuda")]
         {
-            match crate::cuda::CudaBackend::try_init() {
+            match crate::cuda::CudaBackend::try_init(device_index, cuda_flags) {
                 Ok(backend) => {
                     tracing::info!("GPU 加速已启用: CUDA 后端初始化成功");
                     return Self {
@@ -264,7 +286,12 @@ impl GpuDevice {
         {
             // 预检：探测 OpenCL 驱动是否已安装，避免不必要的 DLL 加载尝试
             if crate::opencl::is_opencl_available() {
-                match crate::opencl::OpenClBackend::try_init() {
+                match crate::opencl::OpenClBackend::try_init(
+                    device_index,
+                    device_name_filter,
+                    prefer_integrated,
+                    opencl_flags,
+                ) {
                     Ok(backend) => {
                         tracing::info!("GPU 加速已启用: OpenCL 后端初始化成功");
                         return Self {

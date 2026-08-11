@@ -20,14 +20,23 @@ impl CudaKernelLauncher {
     }
 
     /// 初始化编译器并编译所有 Kernel。
-    pub fn init(&mut self, ctx: std::sync::Arc<cudarc::driver::CudaContext>) {
+    pub fn init(
+        &mut self,
+        ctx: std::sync::Arc<cudarc::driver::CudaContext>,
+        flags: Option<&[String]>,
+    ) {
         let mut compiler = CudaKernelCompiler::new();
-        let flags = vec![
-            "--fmad=false".to_string(),
-            "--ftz=false".to_string(),
-            "--prec-div=true".to_string(),
-            "--prec-sqrt=true".to_string(),
-        ];
+        let flags = flags.map_or_else(
+            || {
+                vec![
+                    "--fmad=false".to_string(),
+                    "--ftz=false".to_string(),
+                    "--prec-div=true".to_string(),
+                    "--prec-sqrt=true".to_string(),
+                ]
+            },
+            <[String]>::to_vec,
+        );
         if let Err(e) = compiler.compile_all(&ctx, &flags) {
             tracing::warn!("CUDA NVRTC kernel compilation failed: {e}. CPU fallback will be used.");
         }

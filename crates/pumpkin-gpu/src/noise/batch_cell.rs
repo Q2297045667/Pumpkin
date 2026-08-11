@@ -271,8 +271,13 @@ impl GpuAquiferBatchSampler {
         self.device.copy_to_device(&mut d_gpos, &grid_positions)?;
         self.device.copy_to_device(&mut d_gden, &grid_densities)?;
 
+        let kernel_name = if m <= 2048 {
+            "aquifer_batch_tiled_f64"
+        } else {
+            "aquifer_batch_f64"
+        };
         let ok = self.try_launch(
-            "aquifer_batch_f64",
+            kernel_name,
             n,
             vec![
                 KernelArg::BufferRef(0),

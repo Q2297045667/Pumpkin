@@ -135,8 +135,12 @@ fn probe_unix_opencl() -> bool {
 /// # Errors
 ///
 /// 如果没有可用的 OpenCL 平台或设备，返回错误。
-pub fn init_opencl() -> Result<(Context, CommandQueue, Device, String), String> {
-    let device = find_best_device()?;
+pub fn init_opencl(
+    device_index: Option<usize>,
+    device_name_filter: Option<&str>,
+    prefer_integrated: bool,
+) -> Result<(Context, CommandQueue, Device, String), String> {
+    let device = find_best_device(device_index, device_name_filter, prefer_integrated)?;
 
     let name = device
         .name()
@@ -150,7 +154,11 @@ pub fn init_opencl() -> Result<(Context, CommandQueue, Device, String), String> 
     Ok((ctx, queue, device, name))
 }
 
-fn find_best_device() -> Result<Device, String> {
+fn find_best_device(
+    device_index: Option<usize>,
+    device_name_filter: Option<&str>,
+    prefer_integrated: bool,
+) -> Result<Device, String> {
     let platforms =
         opencl3::platform::get_platforms().map_err(|e| format!("获取 OpenCL 平台失败: {e}"))?;
 
@@ -158,31 +166,99 @@ fn find_best_device() -> Result<Device, String> {
         return Err("未检测到 OpenCL 平台".into());
     }
 
-    for platform in &platforms {
-        let gpu_ids = platform
-            .get_devices(opencl3::device::CL_DEVICE_TYPE_GPU)
-            .map_err(|e| format!("获取 GPU 设备失败: {e}"))?;
+    // 收集所有设备：(device, name, is_gpu)
+    let mut gpu_devices: Vec<(Device, String)> = Vec::new();
+    let mut cpu_devices: Vec<(Device, String)> = Vec::new();
 
-        for &id in &gpu_ids {
-            let device = Device::new(id);
-            if let Ok(name) = device.name() {
-                tracing::debug!("  OpenCL GPU 设备: {name}");
-                return Ok(device);
+    for platform in &platforms {
+        if let Ok(gpu_ids) = platform.get_devices(opencl3::device::CL_DEVICE_TYPE_GPU) {
+            for &id in &gpu_ids {
+                let device = Device::new(id);
+                if let Ok(name) = device.name() {
+                    // 按名称过滤
+                    if let Some(filter) = device_name_filter {
+                        if !device_matches_name(&name, filter) {
+                            tracing::debug!("  OpenCL GPU 设备 '{name}' 不匹配名称过滤 '{filter}'");
+                            continue;
+                        }
+                    }
+                    tracing::debug!("  OpenCL GPU 设备: {name}");
+                    gpu_devices.push((device, name));
+                }
             }
         }
 
-        let cpu_ids = platform
-            .get_devices(opencl3::device::CL_DEVICE_TYPE_CPU)
-            .map_err(|e| format!("获取 CPU 设备失败: {e}"))?;
-
-        for &id in &cpu_ids {
-            let device = Device::new(id);
-            if let Ok(name) = device.name() {
-                tracing::debug!("  OpenCL CPU 设备: {name}");
-                return Ok(device);
+        if let Ok(cpu_ids) = platform.get_devices(opencl3::device::CL_DEVICE_TYPE_CPU) {
+            for &id in &cpu_ids {
+                let device = Device::new(id);
+                if let Ok(name) = device.name() {
+                    if let Some(filter) = device_name_filter {
+                        if !device_matches_name(&name, filter) {
+                            tracing::debug!("  OpenCL CPU 设备 '{name}' 不匹配名称过滤 '{filter}'");
+                            continue;
+                        }
+                    }
+                    tracing::debug!("  OpenCL CPU 设备: {name}");
+                    cpu_devices.push((device, name));
+                }
             }
         }
     }
 
+    // ByIndex: 在扁平列表中按索引选择
+    if let Some(idx) = device_index {
+        let all_devices: Vec<(Device, String)> =
+            gpu_devices.into_iter().chain(cpu_devices).collect();
+        if idx >= all_devices.len() {
+            return Err(format!(
+                "设备索引 {} 超出范围（共 {} 个设备）",
+                idx,
+                all_devices.len()
+            ));
+        }
+        #[allow(clippy::unwrap_used)]
+        let (device, name) = all_devices.into_iter().nth(idx).unwrap();
+        tracing::info!("OpenCL 按索引 {idx} 选择设备: {name}");
+        return Ok(device);
+    }
+
+    // prefer_integrated: 在 GPU 设备中优先选择集成显卡
+    if prefer_integrated && !gpu_devices.is_empty() {
+        // 先找集成显卡
+        for (device, name) in &gpu_devices {
+            if is_integrated_gpu(name) {
+                tracing::info!("OpenCL 优先选择集成显卡: {name}");
+                return Ok(*device);
+            }
+        }
+        // 未找到集成显卡，回退到第一个 GPU
+        tracing::info!("OpenCL 未找到集成显卡，使用第一个 GPU");
+        return Ok(gpu_devices[0].0);
+    }
+
+    // 默认：返回第一个 GPU，否则第一个 CPU
+    if let Some((device, _)) = gpu_devices.into_iter().next() {
+        return Ok(device);
+    }
+
+    if let Some((device, _)) = cpu_devices.into_iter().next() {
+        return Ok(device);
+    }
+
     Err("未找到可用的 OpenCL 设备".into())
+}
+
+/// 检查设备名称是否匹配给定的过滤字符串（大小写不敏感子串匹配）。
+fn device_matches_name(device_name: &str, filter: &str) -> bool {
+    device_name.to_lowercase().contains(&filter.to_lowercase())
+}
+
+/// 检查设备名称是否属于集成显卡。
+fn is_integrated_gpu(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("intel")
+        || lower.contains("uhd")
+        || lower.contains("iris")
+        || (lower.contains("radeon") && !lower.contains("radeon rx"))
+        || lower.contains("hd graphics")
 }

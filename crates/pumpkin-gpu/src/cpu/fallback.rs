@@ -25,6 +25,7 @@ const REGISTERED_KERNELS: &[&str] = &[
     "cell_cache_fill_f64",
     "interpolator_fill_f64",
     "aquifer_batch_f64",
+    "aquifer_batch_tiled_f64",
     "beardifier_batch_f64",
     "vein_batch_f64",
     "trilinear_interpolate_f64",
@@ -61,15 +62,6 @@ fn get_f64_slice_mut<'a>(args: &'a [KernelArg<'_>], idx: usize) -> Option<&'a mu
     }
 }
 
-/// 从 KernelLaunch 的 args 中提取 u8 切片引用。
-#[allow(dead_code)]
-fn get_u8_slice<'a>(args: &'a [KernelArg<'_>], idx: usize) -> Option<&'a [u8]> {
-    match args.get(idx)? {
-        KernelArg::U8Slice(s) => Some(s),
-        _ => None,
-    }
-}
-
 /// 从 KernelLaunch 的 args 中提取 mutable u8 切片引用。
 /// 从 KernelLaunch 的 args 中提取 mutable u8 切片引用。
 #[allow(clippy::mut_from_ref)]
@@ -82,33 +74,6 @@ fn get_u8_slice_mut<'a>(args: &'a [KernelArg<'_>], idx: usize) -> Option<&'a mut
             // SAFETY: ptr 来自有效的 `&mut [u8]`，长度正确。
             Some(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
         }
-        _ => None,
-    }
-}
-
-/// 从 KernelLaunch 的 args 中提取 i32 切片引用。
-#[allow(dead_code)]
-fn get_i32_slice<'a>(args: &'a [KernelArg<'_>], idx: usize) -> Option<&'a [i32]> {
-    match args.get(idx)? {
-        KernelArg::I32Slice(s) => Some(s),
-        _ => None,
-    }
-}
-
-/// 从 KernelLaunch 的 args 中提取 i32 标量。
-#[allow(dead_code)]
-fn get_i32(args: &[KernelArg<'_>], idx: usize) -> Option<i32> {
-    match args.get(idx)? {
-        KernelArg::I32(v) => Some(*v),
-        _ => None,
-    }
-}
-
-/// 从 KernelLaunch 的 args 中提取 f64 标量。
-#[allow(dead_code)]
-fn get_f64(args: &[KernelArg<'_>], idx: usize) -> Option<f64> {
-    match args.get(idx)? {
-        KernelArg::F64(v) => Some(*v),
         _ => None,
     }
 }
@@ -177,7 +142,7 @@ pub fn dispatch(launch: &KernelLaunch<'_>) -> Result<(), DeviceError> {
         }
 
         // --- 含水层批量 / 矿脉批量 (no-op CPU path) ---
-        "aquifer_batch_f64" | "vein_batch_f64" => Ok(()),
+        "aquifer_batch_f64" | "aquifer_batch_tiled_f64" | "vein_batch_f64" => Ok(()),
 
         // --- Beardifier / FlatCache ---
         "beardifier_batch_f64" | "flatcache_precompute_f64" => {

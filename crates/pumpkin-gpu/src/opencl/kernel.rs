@@ -26,9 +26,18 @@ impl OpenClKernelLauncher {
     /// 初始化启动器：编译所有 kernel 并保存命令队列。
     ///
     /// `queue` 的所有权被移入启动器。
-    pub fn init(&mut self, ctx: &Context, device: &Device, queue: CommandQueue) {
+    pub fn init(
+        &mut self,
+        ctx: &Context,
+        device: &Device,
+        queue: CommandQueue,
+        flags: Option<&[String]>,
+    ) {
         let mut compiler = OpenClKernelCompiler::new();
-        let flags = vec!["-cl-fp32-correctly-rounded-divide-sqrt".to_string()];
+        let flags = flags.map_or_else(
+            || vec!["-cl-fp32-correctly-rounded-divide-sqrt".to_string()],
+            <[String]>::to_vec,
+        );
         if let Err(e) = compiler.compile_all(ctx, device.id(), &flags) {
             tracing::warn!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
         }

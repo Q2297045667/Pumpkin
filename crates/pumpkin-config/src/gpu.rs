@@ -199,6 +199,8 @@ pub struct CudaConfig {
     ///（kernel 不退出，用原子标志检测收敛），减少重复启动开销。
     /// 需要 CUDA cooperative groups 支持。
     /// 默认值：`false`
+    ///
+    /// ⚠️ **未实现**：此配置项已声明但运行时尚未实现 persistent kernel 模式。
     pub persistent_kernels: bool,
 
     /// 是否使用 cuRAND 提供真随机生成。
@@ -207,6 +209,8 @@ pub struct CudaConfig {
     /// 会产生不同的随机数序列，**破坏地形一致性**。
     /// 仅在非地形生成场景（如粒子效果、实体 AI）中可用。
     /// 默认值：`false`
+    ///
+    /// ⚠️ **未实现**：此配置项已声明但运行时尚未集成 cuRAND。
     pub use_curand: bool,
 
     /// 零拷贝阈值 (KB)。
@@ -254,7 +258,7 @@ pub struct OpenClConfig {
     /// - `-cl-finite-math-only` — 假设无 NaN/Inf
     /// - `-cl-fast-relaxed-math` — 等价于上面两个的组合，性能提升最大
     /// - `-cl-mad-enable` — 允许融合乘加指令
-    /// - `-cl-std=CL2.0` — OpenCL C 版本
+    /// - `-cl-std=CL2.0` — `OpenCL` C 版本
     /// - `-cl-opt-disable` — 关闭优化（调试用）
     /// - `-w` / `-Werror` — 警告控制
     ///
@@ -263,12 +267,14 @@ pub struct OpenClConfig {
 
     /// 是否强制使用 persistent kernel 进行光照传播。
     ///
-    /// ⚠️ OpenCL 对 persistent kernel 支持有限（无全局 barrier），
+    /// ⚠️ `OpenCL` 对 persistent kernel 支持有限（无全局 barrier），
     /// 可能无法正确收敛。建议仅在 CUDA 后端使用。
     /// 默认值：`false`
+    ///
+    /// ⚠️ **未实现**：此配置项已声明但运行时尚未实现 persistent kernel 模式。
     pub persistent_kernels: bool,
 
-    /// 多 CommandQueue 流水线数。
+    /// 多 `CommandQueue` 流水线数。
     ///
     /// 大于 `1` 时启用多队列流水线：HtoD 传输、kernel 执行、DtoH 传输
     /// 可在不同队列上重叠执行。仅在连续批量采样时有效。

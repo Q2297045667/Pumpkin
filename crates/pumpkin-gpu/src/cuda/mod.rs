@@ -2,24 +2,28 @@
 //!
 //! # 实现状态
 //!
-//! 设备初始化 ✓ — 驱动加载和设备探测已完成。
-//! 内存分配 ⚠ — 需要装有 CUDA Toolkit 和 NVIDIA GPU 的开发环境验证。
-//! 数据传输 ⚠ — 同上，API 需在 GPU 机器上测试。
-//! Kernel 执行 ❌ — 待 Kernel 编译链实现。
-//!
-//! 当前在非 CUDA 环境下自动回退 CPU，不影响功能。
+//! | 功能 | 状态 | 阻塞条件 |
+//! |------|------|---------|
+//! | 驱动初始化 | ✅ 已完成 | |
+//! | NVRTC kernel 编译 | ⚠️ 需要 CUDA kernel 源码 | 当前 kernel 为 OpenCL C 语法，NVRTC 无法编译 |
+//! | GPU 内存分配 | ❌ 使用 CPU fallback | 需实现 `CudaSlice` 分配 |
+//! | Kernel 启动 | ❌ 硬编码 Unsupported | 需 GPU 硬件 + CUDA kernel 源码 |
+//! | 设备选择 (ByIndex) | ✅ 已完成 | |
+//! | 设备选择 (ByName) | ⚠️ 部分完成 | 需 CUDA 设备枚举 API |
+//! | CPU 回退 | ✅ 已完成 | |
 //!
 //! # CUDA ↔ OpenCL 对齐状态
 //!
 //! | 特性 | CUDA | OpenCL |
 //! |------|------|--------|
-//! | 设备初始化 | ✓ (cudarc driver API) | ✓ (opencl3 platform API) |
-//! | GPU 内存分配 | ⚠ (API 验证待完成) | ✓ (Buffer::create) |
-//! | HtoD/DtoH 拷贝 | ⚠ (API 验证待完成) | ✓ (enqueue_read/write) |
-//! | Kernel 加载 | ❌ | ❌ |
-//! | Kernel 执行 | ❌ | ❌ |
-//! | f64 支持 | ✓ (CUDA 原生) | ✓ (cl_khr_f64) |
-//! | CPU 回退 | ✓ | ✓ |
+//! | 设备初始化 | ✅ (cudarc driver API) | ✅ (opencl3 platform API) |
+//! | GPU 内存分配 | ❌ (CPU fallback) | ✅ (Buffer::create) |
+//! | HtoD/DtoH 拷贝 | ❌ (CPU fallback) | ✅ (enqueue_read/write) |
+//! | Kernel 编译 | ⚠️ (NVRTC 编译 OpenCL 语法失败) | ✅ (create_from_source + build) |
+//! | Kernel 启动 | ❌ (硬编码 Unsupported) | ⚠️ (标量参数已绑定，buffer 参数需接线) |
+//! | f64 支持 | ✅ (CUDA 原生) | ✅ (cl_khr_f64) |
+//! | 设备选择 | ✅ (ByIndex) | ✅ (ByIndex/ByName/Integrated) |
+//! | CPU 回退 | ✅ | ✅ |
 
 mod context;
 pub(crate) mod kernel;
@@ -39,9 +43,13 @@ pub struct CudaBackend {
 unsafe impl Send for CudaBackend {}
 
 impl CudaBackend {
-    pub fn try_init() -> Result<Self, DeviceError> {
+    pub fn try_init(
+        device_index: Option<usize>,
+        flags: Option<&[String]>,
+    ) -> Result<Self, DeviceError> {
+        let idx = device_index.unwrap_or(0);
         let ctx =
-            context::init_cuda().map_err(|e| DeviceError::InitFailed(format!("CUDA: {e}")))?;
+            context::init_cuda(idx).map_err(|e| DeviceError::InitFailed(format!("CUDA: {e}")))?;
 
         let name = ctx
             .name()
@@ -49,7 +57,7 @@ impl CudaBackend {
 
         tracing::info!("CUDA 设备: {name}");
         let mut launcher = kernel::CudaKernelLauncher::new();
-        launcher.init(ctx.clone());
+        launcher.init(ctx.clone(), flags);
         Ok(Self {
             ctx,
             name,

@@ -335,7 +335,13 @@ pub mod opencl_compile {
             // SAFETY: device_id is valid and program was created from valid source
             program.build(&[device_id], &flag_str).map_err(|e| {
                 // 尝试获取构建日志以提供更好的错误信息
-                let _log = program.get_build_log(device_id);
+                let log = program.get_build_log(device_id).unwrap_or_default();
+                if !log.is_empty() {
+                    tracing::warn!(
+                        "OpenCL build log for '{name}': {}",
+                        &log[..log.len().min(500)]
+                    );
+                }
                 DeviceError::KernelError(format!("OpenCL build '{name}': {e}"))
             })?;
 

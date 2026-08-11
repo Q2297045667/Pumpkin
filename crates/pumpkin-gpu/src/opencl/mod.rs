@@ -25,13 +25,19 @@ unsafe impl Send for OpenClBackend {}
 
 impl OpenClBackend {
     /// 尝试初始化 OpenCL 后端。
-    pub fn try_init() -> Result<Self, DeviceError> {
+    pub fn try_init(
+        device_index: Option<usize>,
+        device_name_filter: Option<&str>,
+        prefer_integrated: bool,
+        flags: Option<&[String]>,
+    ) -> Result<Self, DeviceError> {
         let (ctx, queue, device, name) =
-            context::init_opencl().map_err(|e| DeviceError::InitFailed(format!("OpenCL: {e}")))?;
+            context::init_opencl(device_index, device_name_filter, prefer_integrated)
+                .map_err(|e| DeviceError::InitFailed(format!("OpenCL: {e}")))?;
 
         tracing::info!("OpenCL 设备: {name}");
         let mut launcher = kernel::OpenClKernelLauncher::new();
-        launcher.init(&ctx, &device, queue);
+        launcher.init(&ctx, &device, queue, flags);
         Ok(Self {
             ctx,
             device,
