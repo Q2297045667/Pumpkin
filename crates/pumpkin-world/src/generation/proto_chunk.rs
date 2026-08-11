@@ -882,8 +882,13 @@ impl ProtoChunk {
 
         // GPU 批量矿脉预计算：一次性收集所有位置并调用 GPU。
         // 后续 sample_block_state 将直接从缓存读取，绕过 CPU DAG。
+        // GPU 批量矿脉预计算
         #[cfg(feature = "gpu")]
         noise_sampler.precompute_gpu_veins();
+
+        // GPU 批量 Cell Cache 预计算（合并 N 次调用为 1 次）
+        #[cfg(feature = "gpu")]
+        noise_sampler.precompute_gpu_cell_caches();
 
         for cell_x in 0..horizontal_cells {
             noise_sampler.sample_end_density(cell_x);

@@ -359,6 +359,107 @@ impl GpuNoiseSampler {
 
     // ========== Double Perlin ==========
 
+    /// 使用 JIT 特化 kernel 进行双 Perlin 批量采样。
+    ///
+    /// 八度数均 ≤ max_unroll 时生成专用 kernel，
+    /// 将两组振幅/间隙/原点硬编码为常量，展开两个循环。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn sample_double_perlin_jit(
+        &mut self,
+        first: &OctavePerlinNoiseSampler,
+        second: &OctavePerlinNoiseSampler,
+        amplitude: f64,
+        positions: &[f64],
+        results: &mut [f64],
+    ) -> Result<(), DeviceError> {
+        let n = results.len();
+        if n == 0 {
+            return Ok(());
+        }
+        assert_eq!(positions.len(), n * 3);
+
+        if self.device.device_type() == crate::DeviceType::Cpu {
+            cpu_double_perlin_batch(first, second, amplitude, positions, results);
+            return Ok(());
+        }
+
+        let k1 = std::ptr::from_ref(first) as u64;
+        let k2 = std::ptr::from_ref(second) as u64;
+
+        let g1 = self.cache.get_or_insert(k1, first);
+        let c1 = g1
+            .get(&k1)
+            .cloned()
+            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(first));
+        drop(g1);
+        let g2 = self.double_cache.get_or_insert(k2, second);
+        let c2 = g2
+            .get(&k2)
+            .cloned()
+            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(second));
+        drop(g2);
+
+        let max_unroll = crate::jit::get_jit_max_unroll();
+        if let Some(jit_kernel) =
+            crate::jit::specialize_double_perlin(&c1, &c2, amplitude, max_unroll)
+        {
+            let m1 = c1.num_octaves();
+            let m2 = c2.num_octaves();
+
+            let mut d_pos = self.device.alloc_f64(n * 3)?;
+            let d_res = self.device.alloc_f64(n)?;
+            let mut d_perm1 = self.device.alloc_u8(m1 * 256)?;
+            let mut d_perm2 = self.device.alloc_u8(m2 * 256)?;
+
+            self.device.copy_to_device(&mut d_pos, positions)?;
+            self.device
+                .copy_to_device(&mut d_perm1, &c1.packed_permutations())?;
+            self.device
+                .copy_to_device(&mut d_perm2, &c2.packed_permutations())?;
+
+            if !self
+                .device
+                .kernel_launcher()
+                .is_some_and(|l| l.has_kernel(&jit_kernel.name))
+            {
+                let _ = self.device.compile_jit_kernel(&jit_kernel);
+            }
+
+            let ok = self.try_launch(
+                &jit_kernel.name,
+                n,
+                vec![
+                    KernelArg::BufferRef(0),
+                    KernelArg::BufferRef(1),
+                    KernelArg::BufferRef(2),
+                    KernelArg::BufferRef(3),
+                    KernelArg::I32(n as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm1),
+                    GpuBufferRef::U8(&d_perm2),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+                self.device.free(d_pos)?;
+                self.device.free(d_res)?;
+                self.device.free(d_perm1)?;
+                self.device.free(d_perm2)?;
+                return Ok(());
+            }
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_perm1)?;
+            self.device.free(d_perm2)?;
+        }
+
+        // 回退标准路径
+        self.sample_double_perlin_batch(first, second, amplitude, positions, results)
+    }
+
     #[cfg(feature = "pumpkin-util")]
     pub fn sample_double_perlin_batch(
         &mut self,

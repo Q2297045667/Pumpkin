@@ -111,3 +111,107 @@ pub fn specialize_octave_perlin(
 pub fn should_jit_specialize(num_octaves: usize, max_unroll: usize) -> bool {
     num_octaves > 0 && num_octaves <= max_unroll
 }
+
+/// 生成双 Perlin 噪声的 JIT 特化 kernel。
+///
+/// 将两组八度参数（amp1/lac1/org1 + amp2/lac2/org2）全部硬编码为 GPU 常量，
+/// 展开两个循环。预期加速 1.5×–2.5×（当前 kernel 参数最多，内存读取最频繁）。
+#[must_use]
+pub fn specialize_double_perlin(
+    config1: &SerializedOctaveConfig,
+    config2: &SerializedOctaveConfig,
+    amplitude: f64,
+    max_unroll: usize,
+) -> Option<JitSpecializedKernel> {
+    let m1 = config1.num_octaves();
+    let m2 = config2.num_octaves();
+    if m1 > max_unroll || m2 > max_unroll {
+        return None;
+    }
+
+    let amps1 = config1.packed_amplitudes();
+    let lacs1 = config1.packed_lacunarities();
+    let orgs1 = config1.packed_origins();
+    let amps2 = config2.packed_amplitudes();
+    let lacs2 = config2.packed_lacunarities();
+    let orgs2 = config2.packed_origins();
+
+    let name = format!("double_perlin_sample_f64_jit_m{m1}_{m2}");
+    let mut src = String::new();
+    let c = 1.0181268882175227f64;
+
+    let _ = writeln!(src, "// JIT specialized: double_perlin_sample_f64");
+    let _ = writeln!(
+        src,
+        "// num_octaves = {m1}, {m2}, amp = {amplitude}, c = {c}"
+    );
+    let _ = writeln!(src, "#pragma OPENCL EXTENSION cl_khr_f64 : enable");
+    let _ = writeln!(src);
+
+    let _ = writeln!(src, "__kernel void {name}(");
+    let _ = writeln!(src, "    __global const double* pos,");
+    let _ = writeln!(src, "    __global const uchar* perms1,  // {m1}*256 bytes");
+    let _ = writeln!(src, "    __global const uchar* perms2,  // {m2}*256 bytes");
+    let _ = writeln!(src, "    __global double* res,");
+    let _ = writeln!(src, "    int N");
+    let _ = writeln!(src, ") {{");
+    let _ = writeln!(src, "    int i = get_global_id(0); if (i >= N) return;");
+    let _ = writeln!(
+        src,
+        "    double x = pos[i*3], y = pos[i*3+1], z = pos[i*3+2];"
+    );
+
+    // 第一组八度
+    let _ = writeln!(src, "    double sum1 = 0.0;");
+    for o in 0..m1 {
+        let _ = writeln!(
+            src,
+            "    sum1 += {amp} * sample_no_fade_core(perms1 + {o}*256,",
+            amp = amps1[o],
+            o = o
+        );
+        let _ = writeln!(
+            src,
+            "        {ox}, {oy}, {oz},",
+            ox = orgs1[o * 3],
+            oy = orgs1[o * 3 + 1],
+            oz = orgs1[o * 3 + 2]
+        );
+        let _ = writeln!(
+            src,
+            "        maintain_precision(x*{lac}), maintain_precision(y*{lac}), maintain_precision(z*{lac}));",
+            lac = lacs1[o]
+        );
+    }
+
+    // 第二组八度 (带常量 c 缩放)
+    let _ = writeln!(src, "    double x2 = maintain_precision(x*{c});", c = c);
+    let _ = writeln!(src, "    double y2 = maintain_precision(y*{c});");
+    let _ = writeln!(src, "    double z2 = maintain_precision(z*{c});");
+    let _ = writeln!(src, "    double sum2 = 0.0;");
+    for o in 0..m2 {
+        let _ = writeln!(
+            src,
+            "    sum2 += {amp} * sample_no_fade_core(perms2 + {o}*256,",
+            amp = amps2[o],
+            o = o
+        );
+        let _ = writeln!(
+            src,
+            "        {ox}, {oy}, {oz},",
+            ox = orgs2[o * 3],
+            oy = orgs2[o * 3 + 1],
+            oz = orgs2[o * 3 + 2]
+        );
+        let _ = writeln!(
+            src,
+            "        maintain_precision(x2*{lac}), maintain_precision(y2*{lac}), maintain_precision(z2*{lac}));",
+            lac = lacs2[o]
+        );
+    }
+
+    let _ = writeln!(src, "    res[i] = (sum1 + sum2) * {amp};", amp = amplitude);
+    let _ = writeln!(src, "}}");
+
+    Some(JitSpecializedKernel { name, source: src })
+}

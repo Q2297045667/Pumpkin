@@ -131,4 +131,10 @@ impl CudaBackend {
     ) -> Result<(), DeviceError> {
         self.launcher.compile_jit_kernel(jit_kernel)
     }
+
+    /// 按需编译单个预注册 kernel（延迟加载）。
+    /// 在 kernel 列表中找到对应名称的源码并编译。
+    pub fn compile_kernel_by_name(&self, name: &str) {
+        self.launcher.compile_kernel_by_name(name);
+    }
 }

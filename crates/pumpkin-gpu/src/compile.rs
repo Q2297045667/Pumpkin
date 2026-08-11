@@ -209,6 +209,9 @@ pub mod cuda_compile {
             if let Some(ref arch) = self.compile_ptx_arch {
                 opts.options.push(format!("--gpu-architecture={arch}"));
             }
+            // 内置优化标志：FMA 融合乘加可显著加速噪声计算中的 a*b+c 模式
+            opts.options.push("--fmad=true".into());
+            opts.options.push("--opt-level=3".into());
             for flag in flags {
                 opts.options.push(flag.clone());
             }

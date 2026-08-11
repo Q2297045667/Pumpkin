@@ -80,6 +80,11 @@ impl NoiseAccelerator {
     ) {
         #[cfg(feature = "gpu")]
         if let Some(ref mut i) = self.inner {
+            // 尝试 JIT 路径
+            if i.sample_double_perlin_jit(a, b, amp, pos, res).is_ok() {
+                return;
+            }
+            // 回退标准 GPU 路径
             if i.sample_double_perlin_batch(a, b, amp, pos, res).is_ok() {
                 return;
             }

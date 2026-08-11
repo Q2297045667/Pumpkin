@@ -183,6 +183,11 @@ pub struct ChunkNoiseGenerator<'a> {
     /// Value: 矿脉类型码 (0=无, 1=矿石, 2=粗矿, 3=围岩)
     #[cfg(feature = "gpu")]
     gpu_vein_cache: Option<Vec<i32>>,
+
+    /// GPU 批量预计算 cell cache 结果（整个 chunk 所有 cell 一次性 GPU 填充）。
+    /// 布局：`[cell_flat_index * hb² * vb + local_index]`
+    #[cfg(feature = "gpu")]
+    gpu_cell_cache: Option<Vec<f64>>,
 }
 
 impl<'a> ChunkNoiseGenerator<'a> {
@@ -284,6 +289,9 @@ impl<'a> ChunkNoiseGenerator<'a> {
 
             #[cfg(feature = "gpu")]
             gpu_vein_cache: None,
+
+            #[cfg(feature = "gpu")]
+            gpu_cell_cache: None,
         }
     }
 
@@ -381,6 +389,26 @@ impl<'a> ChunkNoiseGenerator<'a> {
             .on_sampled_cell_corners(cell_y as usize, cell_z as usize);
         self.cache_fill_unique_id += 1;
 
+        // GPU 批量预计算路径：直接从 chunk 级缓存复制当前 cell 数据
+        #[cfg(feature = "gpu")]
+        if let Some(ref chunk_cache) = self.gpu_cell_cache {
+            let hb = self.horizontal_cell_block_count() as usize;
+            let vb = self.vertical_cell_block_count() as usize;
+            let hc = self.horizontal_cell_count;
+            let ppc = hb * hb * vb; // positions per cell
+            // 展平 cell 索引：cy → cx → cz（与 precompute 收集顺序一致）
+            let cell_flat =
+                (cell_y as usize * hc * hc + cell_x as usize * hc + cell_z as usize) as usize;
+            let offset = cell_flat * ppc;
+            if offset + ppc <= chunk_cache.len() {
+                let slice = &chunk_cache[offset..offset + ppc];
+                self.router.copy_to_cell_caches(slice);
+                self.cache_fill_unique_id += 1;
+                return;
+            }
+        }
+
+        // CPU 或单 cell GPU 回退路径
         let start_x = (self.start_cell_pos_x + cell_x) * self.horizontal_cell_block_count() as i32;
         let start_y = (cell_y + self.minimum_cell_y) * self.vertical_cell_block_count() as i32;
         let start_z = (self.start_cell_pos_z + cell_z) * self.horizontal_cell_block_count() as i32;
@@ -536,6 +564,62 @@ impl<'a> ChunkNoiseGenerator<'a> {
     #[cfg(feature = "gpu")]
     pub fn invalidate_vein_cache(&mut self) {
         self.gpu_vein_cache = None;
+    }
+
+    /// GPU 批量预计算 Cell Cache（合并 N 次调用为 1 次）。
+    ///
+    /// 收集当前区块所有 cell 的所有角点位置，一次性调用 GPU `batch_fill_cell_caches`，
+    /// 将结果写入内部缓存。后续 `on_sampled_cell_corners` 调用将直接从缓存复制
+    /// 绕过 GPU kernel launch。
+    #[cfg(feature = "gpu")]
+    pub fn precompute_gpu_cell_caches(&mut self) {
+        let Some(accel) = self.batch_accel else {
+            return;
+        };
+        let params = self.router.build_cell_fill_params();
+        if params.perlin_configs.is_empty() || params.num_octaves.is_empty() {
+            return;
+        }
+
+        let hb = self.horizontal_cell_block_count() as i32;
+        let vb = self.vertical_cell_block_count() as i32;
+        let hc = self.horizontal_cell_count as i32;
+        let vc = self.vertical_cell_count as i32;
+
+        let ppc = (hb * hb * vb) as usize; // positions per cell
+        let total = ppc * (hc * hc * vc) as usize;
+        if total == 0 {
+            return;
+        }
+
+        let mut positions = Vec::with_capacity(total * 3);
+        let start_bx = self.start_cell_pos_x * hb;
+        let start_bz = self.start_cell_pos_z * hb;
+        let start_by = self.minimum_cell_y * vb;
+
+        // 收集所有 cell 角点位置（布局与 ChunkIndexMapper 一致）
+        for cy in 0..vc {
+            let by = start_by + cy * vb;
+            for cx in 0..hc {
+                let bx = start_bx + cx * hb;
+                for cz in 0..hc {
+                    let bz = start_bz + cz * hb;
+                    for ly in 0..vb {
+                        for lx in 0..hb {
+                            for lz in 0..hb {
+                                positions.push((bx + lx) as f64);
+                                positions.push((by + ly) as f64);
+                                positions.push((bz + lz) as f64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut results = vec![0.0f64; total];
+        accel.batch_fill_cell_caches(&positions, &params, &mut results);
+        self.gpu_cell_cache = Some(results);
     }
 
     #[inline]

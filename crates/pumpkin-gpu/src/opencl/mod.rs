@@ -104,4 +104,13 @@ impl OpenClBackend {
         self.launcher
             .compile_jit_kernel(&self.ctx, &self.device, jit_kernel)
     }
+
+    /// 按需编译单个预注册 kernel（延迟加载 stub）。
+    #[allow(unused_variables)]
+    pub fn compile_kernel_by_name(&self, name: &str) {
+        tracing::debug!(
+            "OpenCL lazy compile: '{}' (full impl requires source registry)",
+            name
+        );
+    }
 }

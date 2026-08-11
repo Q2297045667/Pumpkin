@@ -495,6 +495,30 @@ impl GpuAquiferBatchSampler {
 // GpuBeardifierBatchSampler
 // ============================================================================
 
+/// 预计算的 24³ beard kernel 缓存（静态数据，全局复用）。
+static BEARD_KERNEL_GPU: std::sync::OnceLock<Box<[f64]>> = std::sync::OnceLock::new();
+
+fn get_beard_kernel_gpu() -> &'static [f64] {
+    BEARD_KERNEL_GPU.get_or_init(|| {
+        const KS: usize = 24;
+        const KV: usize = KS * KS * KS;
+        let mut kernel = vec![0.0f64; KV].into_boxed_slice();
+        let ksh = KS as f64 * 0.5;
+        for zi in 0..KS {
+            for xi in 0..KS {
+                for yi in 0..KS {
+                    let dx = xi as f64 - ksh;
+                    let dy = yi as f64 - ksh + 0.5;
+                    let dz = zi as f64 - ksh;
+                    let dist_sq = dx * dx + dy * dy + dz * dz;
+                    kernel[xi * KS * KS + yi * KS + zi] = (-dist_sq / 16.0).exp();
+                }
+            }
+        }
+        kernel
+    })
+}
+
 /// GPU Beardifier 批量采样器。
 ///
 /// 对批量位置计算结构/连接点造成的地形适应（beard）贡献。
@@ -535,23 +559,8 @@ impl GpuBeardifierBatchSampler {
             ));
         }
 
-        // 构建预计算的 beard kernel (24³三线性采样核)。
-        // 指数衰减：exp(-dist² / 16)
-        let mut beard_kernel = vec![0.0f64; KERNEL_VOLUME].into_boxed_slice();
-        let ksh = KERNEL_SIZE as f64 * 0.5;
-        for zi in 0..KERNEL_SIZE {
-            for xi in 0..KERNEL_SIZE {
-                for yi in 0..KERNEL_SIZE {
-                    let dx = xi as f64 - ksh;
-                    let dy = yi as f64 - ksh + 0.5;
-                    let dz = zi as f64 - ksh;
-                    let dist_sq = dx * dx + dy * dy + dz * dz;
-                    // Rust kernel: [z][x][y], GPU kernel: [x][y][z] — 在此处转置
-                    beard_kernel[xi * KERNEL_SIZE * KERNEL_SIZE + yi * KERNEL_SIZE + zi] =
-                        (-dist_sq / 16.0).exp();
-                }
-            }
-        }
+        // 构建预计算的 beard kernel (24³三线性采样核) — 全局缓存复用。
+        let beard_kernel = get_beard_kernel_gpu();
 
         // 扁平化结构数据（9 doubles per structure）
         let struct_flat: Vec<f64> = structures

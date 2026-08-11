@@ -337,39 +337,81 @@ impl<'a> ChunkNoiseRouter<'a> {
                                 build_options.start_biome_z,
                                 build_options.horizontal_biome_end,
                             );
-                            let sample_options = ChunkNoiseFunctionSampleOptions::new(
-                                false,
-                                SampleAction::SkipCellCaches,
-                                0,
-                                0,
-                                0,
-                            );
 
-                            for biome_x_position in 0..=build_options.horizontal_biome_end {
-                                let absolute_biome_x_position =
-                                    build_options.start_biome_x + biome_x_position as i32;
-                                let block_x_position =
-                                    biome_coords::to_block(absolute_biome_x_position);
-
-                                for biome_z_position in 0..=build_options.horizontal_biome_end {
-                                    let absolute_biome_z_position =
-                                        build_options.start_biome_z + biome_z_position as i32;
-                                    let block_z_position =
-                                        biome_coords::to_block(absolute_biome_z_position);
-
-                                    let pos = Vector3::new(block_x_position, 0, block_z_position);
-
-                                    //NOTE: Due to our stack invariant, what is on the stack is a
-                                    // valid density function
-                                    let sample = ChunkNoiseFunctionComponent::sample_from_stack(
-                                        &mut component_stack[..=wrapper.input_index],
-                                        &pos,
-                                        &sample_options,
+                            // GPU 批量预计算 FlatCache
+                            #[cfg(feature = "gpu")]
+                            let gpu_did_fill = {
+                                let h_end = build_options.horizontal_biome_end as i32;
+                                let n_cols = ((h_end + 1) * (h_end + 1)) as usize;
+                                if let Some(mut accel) = crate::gpu::get_noise_accel() {
+                                    let start_bx = biome_coords::to_block(build_options.start_biome_x);
+                                    let start_bz = biome_coords::to_block(build_options.start_biome_z);
+                                    let mut pos_3d = Vec::with_capacity(n_cols * 3);
+                                    for bz in 0..=h_end {
+                                        for bx in 0..=h_end {
+                                            pos_3d.push((start_bx + biome_coords::to_block(bx)) as f64);
+                                            pos_3d.push(0.0f64);
+                                            pos_3d.push((start_bz + biome_coords::to_block(bz)) as f64);
+                                        }
+                                    }
+                                    // 尝试从 DAG 提取单 OctavePerlin sampler
+                                    let mut results = vec![0.0f64; n_cols];
+                                    let sampler_info = extract_flatcache_sampler(
+                                        &component_stack[..=wrapper.input_index],
                                     );
+                                    if let Some(sampler) = sampler_info {
+                                        accel.sample_octave(sampler, &pos_3d, &mut results);
+                                        for bi in 0..=build_options.horizontal_biome_end {
+                                            for bj in 0..=build_options.horizontal_biome_end {
+                                                let idx = (bi * (build_options.horizontal_biome_end + 1) + bj) as usize;
+                                                flat_cache.cache[idx] = results[idx];
+                                            }
+                                        }
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            };
+                            #[cfg(not(feature = "gpu"))]
+                            let gpu_did_fill = false;
 
-                                    let cache_index = flat_cache
-                                        .xz_to_index_const(biome_x_position, biome_z_position);
-                                    flat_cache.cache[cache_index] = sample;
+                            // CPU 回退
+                            if !gpu_did_fill {
+                                let sample_options = ChunkNoiseFunctionSampleOptions::new(
+                                    false,
+                                    SampleAction::SkipCellCaches,
+                                    0,
+                                    0,
+                                    0,
+                                );
+
+                                for biome_x_position in 0..=build_options.horizontal_biome_end {
+                                    let absolute_biome_x_position =
+                                        build_options.start_biome_x + biome_x_position as i32;
+                                    let block_x_position =
+                                        biome_coords::to_block(absolute_biome_x_position);
+
+                                    for biome_z_position in 0..=build_options.horizontal_biome_end {
+                                        let absolute_biome_z_position =
+                                            build_options.start_biome_z + biome_z_position as i32;
+                                        let block_z_position =
+                                            biome_coords::to_block(absolute_biome_z_position);
+
+                                        let pos = Vector3::new(block_x_position, 0, block_z_position);
+
+                                        let sample = ChunkNoiseFunctionComponent::sample_from_stack(
+                                            &mut component_stack[..=wrapper.input_index],
+                                            &pos,
+                                            &sample_options,
+                                        );
+
+                                        let cache_index = flat_cache
+                                            .xz_to_index_const(biome_x_position, biome_z_position);
+                                        flat_cache.cache[cache_index] = sample;
+                                    }
                                 }
                             }
 
@@ -804,6 +846,23 @@ impl<'a> ChunkNoiseRouter<'a> {
         }
     }
 
+    /// 将预计算的 cell 数据批量复制到所有 CellCache 实例。
+    /// 由 chunk 级批量 GPU 填充后调用，替代逐 cell 的 kernel launch。
+    pub fn copy_to_cell_caches(&mut self, data: &[f64]) {
+        let indices = &self.cell_indices;
+        let components = &mut self.component_stack;
+        for cell_cache_index in indices {
+            let (_, component) = components.split_at_mut(*cell_cache_index);
+            if let Some(ChunkNoiseFunctionComponent::Chunk(
+                ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache),
+            )) = component.first_mut()
+            {
+                debug_assert_eq!(cell_cache.cache.len(), data.len());
+                cell_cache.cache.copy_from_slice(data);
+            }
+        }
+    }
+
     pub fn swap_buffers(&mut self) {
         let indices = &self.interpolator_indices;
         let components = &mut self.component_stack;
@@ -1100,6 +1159,29 @@ impl<'a> ChunkNoiseRouter<'a> {
                 self.collect_noise_samplers(pass_through.input_index(), visited)
             }
         }
+    }
+}
+
+/// 尝试从 DAG 组件栈中提取简单的 OctavePerlin sampler 用于 FlatCache GPU 加速。
+///
+/// 如果组件栈解析到单一的 `Noise`、`ShiftA`、`ShiftB` 或 `InterpolatedNoise`
+/// 采样器，返回其 first_sampler。如果 DAG 更复杂（含 Dependent 组件等），
+/// 返回 None 让调用方回退到 CPU 路径。
+#[cfg(feature = "gpu")]
+fn extract_flatcache_sampler<'a>(
+    stack: &'a [ChunkNoiseFunctionComponent<'a>],
+) -> Option<&'a pumpkin_util::noise::perlin::OctavePerlinNoiseSampler> {
+    // 从栈顶向下查找，看是否直接指向 Independent(Noise/ShiftA/ShiftB/InterpolatedNoise)
+    let top = stack.last()?;
+    match top {
+        ChunkNoiseFunctionComponent::Independent(independent) => match independent {
+            IndependentProtoNoiseFunctionComponent::Noise(n) => Some(n.sampler.first_sampler()),
+            IndependentProtoNoiseFunctionComponent::ShiftA(s) => Some(s.sampler.first_sampler()),
+            IndependentProtoNoiseFunctionComponent::ShiftB(s) => Some(s.sampler.first_sampler()),
+            IndependentProtoNoiseFunctionComponent::InterpolatedNoise(i) => Some(&i.noise),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

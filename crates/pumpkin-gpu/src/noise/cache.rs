@@ -68,7 +68,11 @@ impl SerializedOctaveConfig {
 
     #[must_use]
     pub fn packed_amplitudes(&self) -> Vec<f64> {
-        self.octaves.iter().map(|o| o.amplitude).collect()
+        // GPU kernel 直接使用 amp * sample，persistence 需预乘
+        self.octaves
+            .iter()
+            .map(|o| o.amplitude * o.persistence)
+            .collect()
     }
 
     #[must_use]

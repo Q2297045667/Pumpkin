@@ -67,6 +67,15 @@ impl CudaKernelLauncher {
             |compiler| compiler.compile_jit_kernel(&ctx, jit_kernel),
         )
     }
+
+    /// 按需编译单个预注册 kernel（延迟加载 stub）。
+    #[allow(unused_variables)]
+    pub fn compile_kernel_by_name(&self, name: &str) {
+        tracing::debug!(
+            "CUDA lazy compile: '{}' (full impl requires source registry)",
+            name
+        );
+    }
 }
 
 impl Default for CudaKernelLauncher {

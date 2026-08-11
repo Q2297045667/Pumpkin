@@ -144,7 +144,10 @@ impl BackendImpl {
     }
 
     /// 尝试启动 GPU kernel，成功返回 true。
-    /// 这是 batch_sampler 和 batch_cell 中 try_launch 实例的共享实现。
+    ///
+    /// 注意：此方法不调用 `synchronize()` — 同步由调用方的
+    /// `copy_from_device` 隐式保证（CUDA 默认流 / OpenCL 有序队列）。
+    /// 若 kernel 尚未编译，尝试按需编译（延迟加载）。
     pub(crate) fn try_launch_kernel(
         &self,
         name: &str,
@@ -153,18 +156,36 @@ impl BackendImpl {
         gpu_buffers: Vec<crate::common::kernel::GpuBufferRef<'_>>,
     ) -> bool {
         match self.kernel_launcher() {
-            Some(l) if l.has_kernel(name) => {
-                l.launch(crate::common::kernel::KernelLaunch {
-                    name,
-                    global_work_size: [n, 1, 1],
-                    local_work_size: Some([256, 1, 1]),
-                    args,
-                    gpu_buffers,
-                })
-                .is_ok()
-                    && l.synchronize().is_ok()
+            Some(l) => {
+                // 延迟编译：如果 kernel 尚未编译，尝试按需编译
+                if !l.has_kernel(name) {
+                    self.try_compile_kernel_on_demand(name);
+                }
+                if l.has_kernel(name) {
+                    l.launch(crate::common::kernel::KernelLaunch {
+                        name,
+                        global_work_size: [n, 1, 1],
+                        local_work_size: Some([256, 1, 1]),
+                        args,
+                        gpu_buffers,
+                    })
+                    .is_ok()
+                } else {
+                    false
+                }
             }
             _ => false,
+        }
+    }
+
+    /// 按需编译单个 kernel（延迟加载优化）。
+    fn try_compile_kernel_on_demand(&self, name: &str) {
+        match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(cuda) => cuda.compile_kernel_by_name(name),
+            #[cfg(feature = "opencl")]
+            Self::OpenCl(ocl) => ocl.compile_kernel_by_name(name),
+            _ => {}
         }
     }
 
