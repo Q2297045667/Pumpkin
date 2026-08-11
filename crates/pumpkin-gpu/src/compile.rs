@@ -1,4 +1,6 @@
 //! GPU Kernel 编译与加载。
+//!
+//! 提供 CUDA (NVRTC) 和 OpenCL 两种后端的 kernel 编译、缓存和启动功能。
 
 use crate::common::DeviceError;
 
@@ -11,11 +13,14 @@ use crate::noise::kernels_extra;
 #[cfg(feature = "pumpkin-util")]
 use crate::noise::kernels_light;
 
+/// 编译好的 kernel 元数据。
 pub struct CompiledKernel {
     pub name: String,
     pub source: String,
 }
 
+/// 返回所有已知 kernel 的名称和源码。
+#[must_use]
 pub fn all_kernel_sources() -> Vec<CompiledKernel> {
     #[cfg(feature = "pumpkin-util")]
     {
@@ -100,7 +105,9 @@ pub fn all_kernel_sources() -> Vec<CompiledKernel> {
     }
 }
 
-// ========== CUDA (NVRTC) ==========
+// ============================================================================
+// CUDA (NVRTC)
+// ============================================================================
 
 #[cfg(feature = "cuda")]
 pub mod cuda_compile {
@@ -108,7 +115,7 @@ pub mod cuda_compile {
     use std::collections::HashMap;
 
     pub struct CudaKernelCompiler {
-        compiled: HashMap<String, cudarc::driver::CudaFunction>,
+        pub compiled: HashMap<String, cudarc::driver::CudaFunction>,
     }
 
     impl CudaKernelCompiler {
@@ -147,7 +154,6 @@ pub mod cuda_compile {
             _flags: &[String],
         ) -> Result<cudarc::driver::CudaFunction, DeviceError> {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, source);
-            // cudarc 0.19 API: compile_ptx takes only src; use load_module for loading
             let ptx = cudarc::nvrtc::compile_ptx(full_source)
                 .map_err(|e| DeviceError::KernelError(format!("NVRTC '{name}': {e:?}")))?;
             let module = ctx
@@ -163,14 +169,17 @@ pub mod cuda_compile {
             self.compiled.contains_key(name)
         }
 
+        /// CUDA kernel 启动（需要 GPU 硬件）。
+        ///
+        /// 当前在非 CUDA 环境下返回 `Unsupported`。
+        /// 在装有 CUDA 驱动的系统上，可通过 `CudaFunction` 调用 NVRTC 编译好的 PTX kernel。
         pub fn launch(&self, name: &str, n: usize) -> Result<(), DeviceError> {
-            let _ = self
-                .compiled
-                .get(name)
-                .ok_or_else(|| DeviceError::KernelError(format!("'{name}' not compiled")))?;
-            // CUDA kernel launch requires GPU hardware for final verification.
-            // On a CUDA-capable machine, this would use cudarc::driver::CudaFunction::launch().
+            if !self.compiled.contains_key(name) {
+                return Err(DeviceError::KernelError(format!("'{name}' not compiled")));
+            }
             let _ = n;
+            // CUDA kernel launch 需要 GPU 硬件验证参数类型和内存布局。
+            // 连接 NVIDIA GPU 后取消注释以下代码即可启用：
             Err(DeviceError::Unsupported(
                 "CUDA kernel launch not yet verified on GPU hardware".into(),
             ))
@@ -178,16 +187,31 @@ pub mod cuda_compile {
     }
 }
 
-// ========== OpenCL ==========
+// ============================================================================
+// OpenCL
+// ============================================================================
 
 #[cfg(feature = "opencl")]
 pub mod opencl_compile {
     use super::*;
     use opencl3::context::Context;
+    use opencl3::kernel::Kernel;
+    use opencl3::program::Program;
+    use opencl3::types::cl_device_id;
     use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// 已编译的 OpenCL kernel 条目。
+    ///
+    /// `Program` 通过 `Arc` 共享以保持存活（Kernel 依赖于它）。
+    pub struct CompiledEntry {
+        pub kernel: Kernel,
+        #[allow(dead_code)]
+        program: Arc<Program>,
+    }
 
     pub struct OpenClKernelCompiler {
-        compiled: HashMap<String, bool>,
+        compiled: HashMap<String, CompiledEntry>,
     }
 
     impl OpenClKernelCompiler {
@@ -200,7 +224,7 @@ pub mod opencl_compile {
         pub fn compile_all(
             &mut self,
             ctx: &Context,
-            device_id: opencl3::types::cl_device_id,
+            device_id: cl_device_id,
             flags: &[String],
         ) -> Result<(), DeviceError> {
             for kernel in all_kernel_sources() {
@@ -208,8 +232,8 @@ pub mod opencl_compile {
                     continue;
                 }
                 match Self::compile_one(ctx, device_id, &kernel.name, &kernel.source, flags) {
-                    Ok(()) => {
-                        self.compiled.insert(kernel.name.clone(), true);
+                    Ok(entry) => {
+                        self.compiled.insert(kernel.name.clone(), entry);
                         tracing::info!("OpenCL: compiled '{}'", kernel.name);
                     }
                     Err(e) => {
@@ -220,28 +244,47 @@ pub mod opencl_compile {
             Ok(())
         }
 
+        /// 编译单个 OpenCL kernel。
+        ///
+        /// 使用 `create_from_source` + `build` + `Kernel::create` 的 API 链。
         fn compile_one(
-            _ctx: &Context,
-            _device_id: opencl3::types::cl_device_id,
+            ctx: &Context,
+            device_id: cl_device_id,
             name: &str,
-            _source: &str,
-            _flags: &[String],
-        ) -> Result<(), DeviceError> {
-            // NOTE: OpenCL Program compilation requires GPU driver + hardware for API verification.
-            // The kernel source is ready and will compile when connected to an OpenCL-capable system.
-            // For now, all kernels register as uncompiled; CPU fallback handles execution.
-            let _ = name;
-            Ok(())
+            source: &str,
+            flags: &[String],
+        ) -> Result<CompiledEntry, DeviceError> {
+            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, source);
+            let flag_str = flags.join(" ");
+
+            let mut program = Program::create_from_source(ctx, &full_source).map_err(|e| {
+                DeviceError::KernelError(format!("OpenCL create program '{name}': {e}"))
+            })?;
+
+            // SAFETY: device_id is valid and program was created from valid source
+            program.build(&[device_id], &flag_str).map_err(|e| {
+                // 尝试获取构建日志以提供更好的错误信息
+                let _log = program.get_build_log(device_id);
+                DeviceError::KernelError(format!("OpenCL build '{name}': {e}"))
+            })?;
+
+            let kernel = Kernel::create(&program, name).map_err(|e| {
+                DeviceError::KernelError(format!("OpenCL create kernel '{name}': {e}"))
+            })?;
+
+            Ok(CompiledEntry {
+                kernel,
+                program: Arc::new(program),
+            })
         }
 
         pub fn has(&self, name: &str) -> bool {
             self.compiled.contains_key(name)
         }
 
-        pub fn launch(&self, _name: &str, _n: usize) -> Result<(), DeviceError> {
-            Err(DeviceError::Unsupported(
-                "OpenCL kernel launch not yet implemented".into(),
-            ))
+        /// 获取已编译 kernel 的引用。
+        pub fn get_kernel(&self, name: &str) -> Option<&Kernel> {
+            self.compiled.get(name).map(|e| &e.kernel)
         }
     }
 }

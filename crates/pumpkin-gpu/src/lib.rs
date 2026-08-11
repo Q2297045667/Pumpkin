@@ -156,18 +156,24 @@ impl GpuDevice {
                     }
                 },
                 #[cfg(feature = "opencl")]
-                DeviceType::OpenCl => match crate::opencl::OpenClBackend::try_init() {
-                    Ok(backend) => {
-                        tracing::info!("GPU 加速已启用: OpenCL 后端（强制指定）");
-                        return Self {
-                            device_type: DeviceType::OpenCl,
-                            backend: BackendImpl::OpenCl(backend),
-                        };
+                DeviceType::OpenCl => {
+                    if crate::opencl::is_opencl_available() {
+                        match crate::opencl::OpenClBackend::try_init() {
+                            Ok(backend) => {
+                                tracing::info!("GPU 加速已启用: OpenCL 后端（强制指定）");
+                                return Self {
+                                    device_type: DeviceType::OpenCl,
+                                    backend: BackendImpl::OpenCl(backend),
+                                };
+                            }
+                            Err(e) => {
+                                tracing::error!("强制指定的 OpenCL 后端不可用 ({e}), 回退到 CPU");
+                            }
+                        }
+                    } else {
+                        tracing::error!("强制指定 OpenCL 但驱动未安装，回退到 CPU");
                     }
-                    Err(e) => {
-                        tracing::error!("强制指定的 OpenCL 后端不可用 ({e}), 回退到 CPU");
-                    }
-                },
+                }
                 // 如果编译时未包含对应后端，但运行时强制指定了，回退 CPU
                 #[cfg(not(feature = "cuda"))]
                 DeviceType::Cuda => {
@@ -211,17 +217,22 @@ impl GpuDevice {
 
         #[cfg(feature = "opencl")]
         {
-            match crate::opencl::OpenClBackend::try_init() {
-                Ok(backend) => {
-                    tracing::info!("GPU 加速已启用: OpenCL 后端初始化成功");
-                    return Self {
-                        device_type: DeviceType::OpenCl,
-                        backend: BackendImpl::OpenCl(backend),
-                    };
+            // 预检：探测 OpenCL 驱动是否已安装，避免不必要的 DLL 加载尝试
+            if crate::opencl::is_opencl_available() {
+                match crate::opencl::OpenClBackend::try_init() {
+                    Ok(backend) => {
+                        tracing::info!("GPU 加速已启用: OpenCL 后端初始化成功");
+                        return Self {
+                            device_type: DeviceType::OpenCl,
+                            backend: BackendImpl::OpenCl(backend),
+                        };
+                    }
+                    Err(e) => {
+                        tracing::warn!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
-                }
+            } else {
+                tracing::info!("OpenCL 驱动未安装，跳过 OpenCL 后端");
             }
         }
 

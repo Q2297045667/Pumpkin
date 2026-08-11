@@ -1,28 +1,51 @@
 //! OpenCL Kernel 启动器。
+//!
+//! 集成 OpenCL kernel 编译、参数设置和命令入队。
 
 use crate::common::DeviceError;
-use crate::common::kernel::{KernelLaunch, KernelLauncher};
+use crate::common::kernel::{KernelArg, KernelLaunch, KernelLauncher};
 use crate::compile::opencl_compile::OpenClKernelCompiler;
+use opencl3::command_queue::CommandQueue;
 use opencl3::context::Context;
 use opencl3::device::Device;
 
 pub struct OpenClKernelLauncher {
     compiler: Option<OpenClKernelCompiler>,
+    queue: Option<CommandQueue>,
 }
 
 impl OpenClKernelLauncher {
     #[must_use]
     pub fn new() -> Self {
-        Self { compiler: None }
+        Self {
+            compiler: None,
+            queue: None,
+        }
     }
 
-    pub fn init(&mut self, ctx: &Context, device: &Device) {
+    /// 初始化启动器：编译所有 kernel 并保存命令队列。
+    ///
+    /// `queue` 的所有权被移入启动器。
+    pub fn init(&mut self, ctx: &Context, device: &Device, queue: CommandQueue) {
         let mut compiler = OpenClKernelCompiler::new();
         let flags = vec!["-cl-fp32-correctly-rounded-divide-sqrt".to_string()];
         if let Err(e) = compiler.compile_all(ctx, device.id(), &flags) {
             tracing::warn!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
         }
         self.compiler = Some(compiler);
+        self.queue = Some(queue);
+    }
+
+    /// 获取命令队列引用（供 `OpenClBackend` 的 buffer 操作使用）。
+    ///
+    /// # Panics
+    ///
+    /// 如果在 `init()` 之前调用会 panic。
+    #[allow(clippy::expect_used)]
+    pub fn queue(&self) -> &CommandQueue {
+        self.queue
+            .as_ref()
+            .expect("OpenClKernelLauncher::queue() called before init()")
     }
 }
 
@@ -33,18 +56,85 @@ impl Default for OpenClKernelLauncher {
 }
 
 impl KernelLauncher for OpenClKernelLauncher {
-    fn launch(&self, _launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
-        if let Some(ref c) = self.compiler {
-            return c.launch(_launch.name, _launch.global_work_size[0]);
+    fn launch(&self, launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
+        let compiler = self.compiler.as_ref().ok_or_else(|| {
+            DeviceError::Unsupported("OpenCL kernel compiler not initialized".into())
+        })?;
+        let queue = self
+            .queue
+            .as_ref()
+            .ok_or_else(|| DeviceError::Internal("OpenCL queue not initialized".into()))?;
+
+        let kernel = compiler
+            .get_kernel(launch.name)
+            .ok_or_else(|| DeviceError::KernelError(format!("'{}' not compiled", launch.name)))?;
+
+        // 设置 kernel 标量参数
+        for (arg_index, arg) in (0u32..).zip(launch.args.iter()) {
+            let result = match arg {
+                KernelArg::I32(v) => {
+                    // SAFETY: kernel is valid, arg_index within bounds, v lives long enough
+                    unsafe { kernel.set_arg(arg_index, v) }
+                }
+                // SAFETY: kernel is valid, arg_index within bounds
+                KernelArg::U32(v) => unsafe { kernel.set_arg(arg_index, v) },
+                KernelArg::USize(v) => {
+                    let v_i32 = *v as i32;
+                    // SAFETY: kernel is valid, v_i32 lives on stack long enough
+                    unsafe { kernel.set_arg(arg_index, &v_i32) }
+                }
+                // SAFETY: kernel is valid, arg_index within bounds
+                KernelArg::F64(v) => unsafe { kernel.set_arg(arg_index, v) },
+                KernelArg::BufferRef(_)
+                | KernelArg::F64Slice(_)
+                | KernelArg::F64SliceMut(_)
+                | KernelArg::I32Slice(_)
+                | KernelArg::I32SliceMut(_)
+                | KernelArg::U8Slice(_)
+                | KernelArg::U8SliceMut(_) => {
+                    return Err(DeviceError::Unsupported(
+                        "OpenCL buffer/slice args require GPU buffer wiring".into(),
+                    ));
+                }
+            };
+
+            result.map_err(|e| {
+                DeviceError::LaunchFailed(format!("set_arg {arg_index} on '{}': {e}", launch.name))
+            })?;
         }
-        Err(DeviceError::Unsupported(
-            "OpenCL kernel compiler not initialized".into(),
-        ))
+
+        // 执行 kernel
+        let global_size = launch.global_work_size[0];
+        let local_size = launch.local_work_size.map_or(256, |l| l[0]);
+
+        let gws: [usize; 1] = [global_size];
+        let lws: [usize; 1] = [local_size];
+
+        // SAFETY: kernel is valid with all args set; gws/lws correctly sized; no event dependencies
+        let result = unsafe {
+            queue.enqueue_nd_range_kernel(
+                kernel.get(),
+                1,
+                std::ptr::null::<usize>(),
+                gws.as_ptr(),
+                lws.as_ptr(),
+                &[],
+            )
+        };
+        result.map_err(|e| DeviceError::LaunchFailed(format!("'{}': {e}", launch.name)))?;
+
+        Ok(())
     }
+
     fn has_kernel(&self, name: &str) -> bool {
         self.compiler.as_ref().is_some_and(|c| c.has(name))
     }
+
     fn synchronize(&self) -> Result<(), DeviceError> {
+        if let Some(ref q) = self.queue {
+            q.finish()
+                .map_err(|e| DeviceError::TransferFailed(format!("finish: {e}")))?;
+        }
         Ok(())
     }
 }

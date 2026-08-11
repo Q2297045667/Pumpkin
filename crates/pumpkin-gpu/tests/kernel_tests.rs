@@ -27,7 +27,7 @@ fn test_cpu_fallback_has_kernels() {
     use pumpkin_gpu::cpu::CpuBackend;
     let backend = CpuBackend::new();
     let launcher = backend.kernel_launcher().expect("CPU should have launcher");
-    assert!(launcher.has_kernel("perlin_sample_f64"));
+    assert!(launcher.has_kernel("octave_perlin_sample_f64"));
     assert!(launcher.has_kernel("trilinear_interpolate_f64"));
     assert!(launcher.has_kernel("light_propagate_u8"));
     assert!(!launcher.has_kernel("nonexistent"));

@@ -1,0 +1,44 @@
+// Interpolator buffer fill: 为每个 YZ 切片位置采样密度。
+// dag_params 采用展平布局，每个 octave 8 个 double：
+//   [amp, lac, org_x, org_y, org_z, xz_scale, y_scale, _reserved]
+// pos 中 x 分量表示切片坐标，y/z 为单元格坐标。
+__kernel void interpolator_fill_f64(
+    __global const double* pos,           // [N*3] 位置
+    __global const double* dag_params,    // DAG 噪声参数
+    __global const uchar* perms_data,     // 置换数据
+    __global double* densities,           // [N] 输出
+    int N,
+    int num_octaves
+) {
+    int i = get_global_id(0);
+    if (i >= N) return;
+
+    double x = pos[i * 3];
+    double y = pos[i * 3 + 1];
+    double z = pos[i * 3 + 2];
+
+    if (num_octaves <= 0) {
+        densities[i] = 0.0;
+        return;
+    }
+
+    double sum = 0.0;
+    for (int o = 0; o < num_octaves; o++) {
+        int bo = o * 8;
+        double amp     = dag_params[bo];
+        double lac     = dag_params[bo + 1];
+        double orgx    = dag_params[bo + 2];
+        double orgy    = dag_params[bo + 3];
+        double orgz    = dag_params[bo + 4];
+        double xz_scale = dag_params[bo + 5];
+        double y_scale  = dag_params[bo + 6];
+
+        __global const uchar* perm = perms_data + o * 256;
+        sum += amp * sample_no_fade_core(perm,
+            orgx, orgy, orgz,
+            maintain_precision(x * xz_scale * lac),
+            maintain_precision(y * y_scale  * lac),
+            maintain_precision(z * xz_scale * lac));
+    }
+    densities[i] = sum;
+}
