@@ -7,8 +7,6 @@ pub mod kernels;
 pub mod kernels_cell;
 pub mod kernels_extra;
 pub mod kernels_light;
-pub mod sampler;
-
 pub use batch_cell::{
     AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData, CellFillParams,
     GpuAquiferBatchSampler, GpuBeardifierBatchSampler, GpuCellBatchSampler, GpuVeinBatchSampler,

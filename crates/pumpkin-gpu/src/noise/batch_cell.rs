@@ -13,6 +13,24 @@ use crate::GpuDevice;
 use crate::common::DeviceError;
 use crate::common::kernel::{GpuBufferRef, KernelArg};
 use crate::noise::cache::NoiseCache;
+use std::sync::OnceLock;
+
+/// 含水层 tiling 阈值全局配置。
+/// 当网格点数 ≤ 此值时使用 `__local` 内存 tiled kernel。
+/// 由 [`crate::GpuDevice::from_config`] 在初始化时设置。
+static AQUIFER_TILE_THRESHOLD: OnceLock<usize> = OnceLock::new();
+
+/// 设置含水层 tiling 阈值（从配置读取）。
+pub fn set_aquifer_tile_threshold(threshold: usize) {
+    let _ = AQUIFER_TILE_THRESHOLD.set(threshold);
+}
+
+/// 获取含水层 tiling 阈值。
+/// 如果尚未设置，返回默认值 `2048`。
+#[must_use]
+pub fn get_aquifer_tile_threshold() -> usize {
+    AQUIFER_TILE_THRESHOLD.get().copied().unwrap_or(2048)
+}
 
 // ============================================================================
 // 辅助数据结构
@@ -237,14 +255,10 @@ impl GpuAquiferBatchSampler {
         let grid_den_count = m;
         assert_eq!(packed_grid.len(), m * 4);
 
+        // GPU 失败时返回错误，让上层处理 CPU 回退
         if self.device.device_type() == crate::DeviceType::Cpu {
-            return Ok(cpu_aquifer_apply(
-                positions,
-                densities,
-                packed_grid,
-                m,
-                fluid_level,
-                barrier_scale,
+            return Err(DeviceError::LaunchFailed(
+                "aquifer batch: CPU device — use BatchAccelerator fallback".into(),
             ));
         }
 
@@ -271,7 +285,7 @@ impl GpuAquiferBatchSampler {
         self.device.copy_to_device(&mut d_gpos, &grid_positions)?;
         self.device.copy_to_device(&mut d_gden, &grid_densities)?;
 
-        let kernel_name = if m <= 2048 {
+        let kernel_name = if m <= get_aquifer_tile_threshold() {
             "aquifer_batch_tiled_f64"
         } else {
             "aquifer_batch_f64"
@@ -300,36 +314,32 @@ impl GpuAquiferBatchSampler {
                 GpuBufferRef::U8(&d_flags),
             ],
         );
-        let mut block_ids = vec![0i32; n];
-        let mut fluid_updates = vec![0u8; n];
 
         if ok {
+            let mut block_ids = vec![0i32; n];
+            let mut fluid_updates = vec![0u8; n];
             self.device.copy_from_device(&d_bids, &mut block_ids)?;
             self.device.copy_from_device(&d_flags, &mut fluid_updates)?;
-        } else {
-            let result = cpu_aquifer_apply(
-                positions,
-                densities,
-                packed_grid,
-                m,
-                fluid_level,
-                barrier_scale,
-            );
-            block_ids = result.block_ids;
-            fluid_updates = result.fluid_updates;
+            self.device.free(d_pos)?;
+            self.device.free(d_dens)?;
+            self.device.free(d_gpos)?;
+            self.device.free(d_gden)?;
+            self.device.free(d_bids)?;
+            self.device.free(d_flags)?;
+            return Ok(AquiferBatchResult {
+                block_ids,
+                fluid_updates,
+            });
         }
 
+        // GPU launch 失败，清理资源并返回错误
         self.device.free(d_pos)?;
         self.device.free(d_dens)?;
         self.device.free(d_gpos)?;
         self.device.free(d_gden)?;
         self.device.free(d_bids)?;
         self.device.free(d_flags)?;
-
-        Ok(AquiferBatchResult {
-            block_ids,
-            fluid_updates,
-        })
+        Err(DeviceError::LaunchFailed("aquifer batch failed".into()))
     }
 
     fn try_launch(
@@ -389,9 +399,11 @@ impl GpuBeardifierBatchSampler {
         }
         assert_eq!(positions.len(), n * 3);
 
+        // GPU 失败时返回错误，让上层处理 CPU 回退
         if self.device.device_type() == crate::DeviceType::Cpu {
-            cpu_beardifier(positions, structures, junctions, results);
-            return Ok(());
+            return Err(DeviceError::LaunchFailed(
+                "beardifier batch: CPU device — use BatchAccelerator fallback".into(),
+            ));
         }
 
         // 将结构/连接点展平为 f64 数组
@@ -428,15 +440,19 @@ impl GpuBeardifierBatchSampler {
         let ok = self.try_launch("beardifier_batch_f64", n, vec![], vec![]);
         if ok {
             self.device.copy_from_device(&d_res, results)?;
-        } else {
-            cpu_beardifier(positions, structures, junctions, results);
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_struct)?;
+            self.device.free(d_junct)?;
+            return Ok(());
         }
 
+        // GPU launch 失败，清理资源并返回错误
         self.device.free(d_pos)?;
         self.device.free(d_res)?;
         self.device.free(d_struct)?;
         self.device.free(d_junct)?;
-        Ok(())
+        Err(DeviceError::LaunchFailed("beardifier batch failed".into()))
     }
 
     fn try_launch(
@@ -551,12 +567,13 @@ impl GpuVeinBatchSampler {
 // CPU Fallbacks
 // ============================================================================
 
-/// CPU 回退：Cell Cache 填充。
+/// CPU 占位：Cell Cache 零填充（不会被实际调用）。
 ///
-/// 注意：这是占位实现（零填充）。完整的 DAG 求值需要在 pumpkin-world 侧调用
-/// `OctavePerlinNoiseSampler::sample()` 逐元素采样，或者通过 pumpkin-util 的噪声采样器链。
-/// 当前此函数通过 GpuCellBatchSampler 的 `try_launch` 失败流程被调用，
-/// 但实际调用链中的上层（BatchAccelerator）有自己的 CPU fallback，不会到达这里。
+/// 这是一个零填充占位实现，**永远不会在正常执行路径中被调用**。
+/// 完整的 DAG 求值由上层 [`BatchAccelerator`] 的 CPU fallback 处理。
+/// 此处保留仅用于：
+/// - 编译期类型检查（确保签名与 GPU kernel 一致）
+/// - 极端回退场景（GPU 不可用且上层未提供 fallback）的安全网
 #[allow(unused_variables)]
 fn cpu_cell_cache_fill(_positions: &[f64], results: &mut [f64]) {
     for item in results.iter_mut() {
@@ -564,12 +581,13 @@ fn cpu_cell_cache_fill(_positions: &[f64], results: &mut [f64]) {
     }
 }
 
-/// CPU 回退：插值器缓冲填充。
+/// CPU 占位：插值器缓冲零填充（不会被实际调用）。
 ///
-/// 注意：这是占位实现（零填充）。完整的 DAG 求值需要在 pumpkin-world 侧调用
-/// `OctavePerlinNoiseSampler::sample()` 逐元素采样，或者通过 pumpkin-util 的噪声采样器链。
-/// 当前此函数通过 GpuCellBatchSampler 的 `try_launch` 失败流程被调用，
-/// 但实际调用链中的上层（BatchAccelerator）有自己的 CPU fallback，不会到达这里。
+/// 这是一个零填充占位实现，**永远不会在正常执行路径中被调用**。
+/// 完整的 DAG 求值由上层 [`BatchAccelerator`] 的 CPU fallback 处理。
+/// 此处保留仅用于：
+/// - 编译期类型检查（确保签名与 GPU kernel 一致）
+/// - 极端回退场景（GPU 不可用且上层未提供 fallback）的安全网
 #[allow(unused_variables)]
 fn cpu_interpolator_fill(_positions: &[f64], results: &mut [f64]) {
     for item in results.iter_mut() {
@@ -577,162 +595,13 @@ fn cpu_interpolator_fill(_positions: &[f64], results: &mut [f64]) {
     }
 }
 
-/// CPU 回退：含水层 4-NN 搜索。
+/// CPU 占位：矿脉零填充（不会被实际调用）。
 ///
-/// 对每个查询位置在打包网格中查找 4 个最近邻，
-/// 计算屏障密度并确定流体状态。
-fn cpu_aquifer_apply(
-    positions: &[f64],
-    densities: &[f64],
-    packed_grid: &[i64],
-    m: usize,
-    fluid_level: f64,
-    barrier_scale: f64,
-) -> AquiferBatchResult {
-    let n = densities.len();
-    let mut block_ids = vec![0i32; n];
-    let mut fluid_updates = vec![0u8; n];
-
-    if m < 4 {
-        return AquiferBatchResult {
-            block_ids,
-            fluid_updates,
-        };
-    }
-
-    // 预提取网格位置和密度
-    let grid_positions: Vec<[f64; 3]> = (0..m)
-        .map(|i| {
-            [
-                f64::from_bits(packed_grid[i * 4] as u64),
-                f64::from_bits(packed_grid[i * 4 + 1] as u64),
-                f64::from_bits(packed_grid[i * 4 + 2] as u64),
-            ]
-        })
-        .collect();
-    let grid_densities: Vec<f64> = (0..m)
-        .map(|i| f64::from_bits(packed_grid[i * 4 + 3] as u64))
-        .collect();
-
-    for i in 0..n {
-        let qx = positions[i * 3];
-        let qy = positions[i * 3 + 1];
-        let qz = positions[i * 3 + 2];
-        let q_density = densities[i];
-
-        // 4-NN 线性搜索
-        let mut best_idx = [0usize; 4];
-        let mut best_dist = [f64::INFINITY; 4];
-
-        for (j, gp) in grid_positions.iter().enumerate().take(m) {
-            let dx = qx - gp[0];
-            let dy = qy - gp[1];
-            let dz = qz - gp[2];
-            let dist = dx * dx + dy * dy + dz * dz;
-
-            for k in 0..4 {
-                if dist < best_dist[k] {
-                    for kk in (k + 1..4).rev() {
-                        best_idx[kk] = best_idx[kk - 1];
-                        best_dist[kk] = best_dist[kk - 1];
-                    }
-                    best_idx[k] = j;
-                    best_dist[k] = dist;
-                    break;
-                }
-            }
-        }
-
-        let barrier_sum: f64 = best_idx.iter().map(|&idx| grid_densities[idx]).sum();
-        let barrier_density = barrier_sum / 4.0;
-        let effective = q_density + barrier_density * barrier_scale;
-
-        if effective > 0.0 {
-            block_ids[i] = 1; // 石头
-            fluid_updates[i] = 0;
-        } else if qy < fluid_level {
-            block_ids[i] = 2; // 水
-            fluid_updates[i] = 1;
-        } else {
-            block_ids[i] = 0; // 空气
-            fluid_updates[i] = 0;
-        }
-    }
-
-    AquiferBatchResult {
-        block_ids,
-        fluid_updates,
-    }
-}
-
-/// CPU 回退：Beardifier 遍历结构与连接点。
-///
-/// 简化为对每个位置计算到结构包围盒的距离贡献。
-fn cpu_beardifier(
-    positions: &[f64],
-    structures: &[BeardifierStructureData],
-    junctions: &[BeardifierJunctionData],
-    results: &mut [f64],
-) {
-    for i in 0..results.len() {
-        let x = positions[i * 3];
-        let y = positions[i * 3 + 1];
-        let z = positions[i * 3 + 2];
-        let mut beard = 0.0;
-
-        // 结构贡献：距离反比衰减
-        for s in structures {
-            let cx = f64::from(s.min_x + s.max_x) * 0.5;
-            let cy = f64::from(s.min_y + s.max_y) * 0.5;
-            let cz = f64::from(s.min_z + s.max_z) * 0.5;
-            let rx = f64::from(s.max_x - s.min_x).abs() * 0.5 + 1.0;
-            let ry = f64::from(s.max_y - s.min_y).abs() * 0.5 + 1.0;
-            let rz = f64::from(s.max_z - s.min_z).abs() * 0.5 + 1.0;
-
-            if rx <= 0.0 || ry <= 0.0 || rz <= 0.0 {
-                continue;
-            }
-
-            let dx = (x - cx) / rx;
-            let dy = (y - cy) / ry;
-            let dz = (z - cz) / rz;
-            let dist_sq = dx * dx + dy * dy + dz * dz;
-
-            // 仅包围盒内（归一化距离 < 1）才贡献
-            if dist_sq < 1.0 {
-                let contrib = (1.0 - dist_sq.sqrt()).max(0.0);
-                let y_factor = if s.ground_level_delta > 0 {
-                    ((y - f64::from(s.min_y)) / f64::from(s.ground_level_delta)).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                beard += contrib * y_factor * 0.5;
-            }
-        }
-
-        // 连接点贡献：固定半径高斯衰减
-        for j in junctions {
-            let dx = x - f64::from(j.x);
-            let dy = y - f64::from(j.ground_y);
-            let dz = z - f64::from(j.z);
-            let jr: f64 = 12.0;
-            let dist_sq = dx * dx + dy * dy + dz * dz;
-            let norm = dist_sq / (jr * jr);
-            if norm < 1.0 {
-                beard += (1.0 - norm) * 0.25;
-            }
-        }
-
-        results[i] = beard;
-    }
-}
-
-/// CPU 回退：矿脉采样。
-///
-/// 注意：这是占位实现（零填充 = 无矿脉）。完整的矿脉判定需要在 pumpkin-world 侧调用
-/// `VeinNoise::sample()` 逐元素采样。
-/// 当前此函数通过 GpuVeinBatchSampler 的 `try_launch` 失败流程被调用，
-/// 但实际调用链中的上层（BatchAccelerator）有自己的 CPU fallback，不会到达这里。
+/// 这是一个零填充占位实现（零填充 = 无矿脉），**永远不会在正常执行路径中被调用**。
+/// 完整的矿脉判定由上层 [`BatchAccelerator`] 的 CPU fallback 处理。
+/// 此处保留仅用于：
+/// - 编译期类型检查（确保签名与 GPU kernel 一致）
+/// - 极端回退场景（GPU 不可用且上层未提供 fallback）的安全网
 #[allow(unused_variables)]
 fn cpu_vein_sample(_positions: &[f64], results: &mut [i32]) {
     for item in results.iter_mut() {
@@ -805,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn aquifer_cpu_fallback() {
+    fn aquifer_gpu_unavailable_returns_error() {
         let mut s = GpuAquiferBatchSampler::new(mk_device());
         // 构造一个简单的含水层网格
         let positions = [0.0f64, -60.0, 0.0];
@@ -821,15 +690,13 @@ mod tests {
             grid_z.to_bits() as i64,
             grid_den.to_bits() as i64,
         ];
-        let result = s
-            .batch_aquifer_apply(&positions, &densities, &packed_grid, -10000.0, 0.3)
-            .unwrap();
-        assert_eq!(result.block_ids.len(), 1);
-        assert_eq!(result.fluid_updates.len(), 1);
+        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
+        let result = s.batch_aquifer_apply(&positions, &densities, &packed_grid, -10000.0, 0.3);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn beardifier_cpu_fallback() {
+    fn beardifier_gpu_unavailable_returns_error() {
         let mut s = GpuBeardifierBatchSampler::new(mk_device());
         let structures = [BeardifierStructureData {
             min_x: -5,
@@ -848,10 +715,9 @@ mod tests {
         }];
         let positions = [0.0f64, 64.0, 0.0];
         let mut results = [0.0f64];
-        s.batch_beardifier(&positions, &structures, &junctions, &mut results)
-            .unwrap();
-        // 在包围盒中心应有正值贡献
-        assert!(results[0] > 0.0);
+        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
+        let result = s.batch_beardifier(&positions, &structures, &junctions, &mut results);
+        assert!(result.is_err());
     }
 
     #[test]

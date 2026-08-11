@@ -61,6 +61,14 @@ harness = true
 name = "jit_tests"
 harness = true
 
+[[test]]
+name = "boundary_tests"
+harness = true
+
+[[test]]
+name = "jit_consistency_tests"
+harness = true
+
 [lints]
 workspace = true
 

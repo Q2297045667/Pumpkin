@@ -157,6 +157,16 @@ impl GpuDevice {
             Some(&config.cudarc.flags),
             Some(&config.opencl3.flags),
         );
+
+        // 将配置项注入全局 OnceLock，供各模块读取
+        #[cfg(feature = "pumpkin-util")]
+        {
+            crate::jit::set_jit_max_unroll(config.jit_max_unroll);
+            crate::noise::batch_cell::set_aquifer_tile_threshold(
+                config.opencl3.local_mem_tile_threshold,
+            );
+        };
+
         device.log_startup();
         device
     }

@@ -31,8 +31,8 @@ fn jit_specialize_small_octaves() {
         max_value: 2.0,
     };
 
-    assert!(jit::should_jit_specialize(config.num_octaves()));
-    let result = jit::specialize_octave_perlin(&config);
+    assert!(jit::should_jit_specialize(config.num_octaves(), 16));
+    let result = jit::specialize_octave_perlin(&config, 16);
     assert!(result.is_some());
     let kernel = result.unwrap();
     assert!(kernel.name.contains("jit_m2"));
@@ -60,8 +60,8 @@ fn jit_skip_large_octaves() {
         max_value: 10.0,
     };
 
-    assert!(!jit::should_jit_specialize(config.num_octaves()));
-    assert!(jit::specialize_octave_perlin(&config).is_none());
+    assert!(!jit::should_jit_specialize(config.num_octaves(), 16));
+    assert!(jit::specialize_octave_perlin(&config, 16).is_none());
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn jit_source_contains_amplitudes() {
         max_value: 1.0,
     };
 
-    let kernel = jit::specialize_octave_perlin(&config).unwrap();
+    let kernel = jit::specialize_octave_perlin(&config, 16).unwrap();
     // 验证烘焙了振幅值
     assert!(kernel.source.contains('1'));
     // 验证烘焙了 origin
@@ -91,11 +91,11 @@ fn jit_source_contains_amplitudes() {
 
 #[test]
 fn should_jit_specialize_bounds() {
-    assert!(!jit::should_jit_specialize(0));
-    assert!(jit::should_jit_specialize(1));
-    assert!(jit::should_jit_specialize(16));
-    assert!(!jit::should_jit_specialize(17));
-    assert!(!jit::should_jit_specialize(32));
+    assert!(!jit::should_jit_specialize(0, 16));
+    assert!(jit::should_jit_specialize(1, 16));
+    assert!(jit::should_jit_specialize(16, 16));
+    assert!(!jit::should_jit_specialize(17, 16));
+    assert!(!jit::should_jit_specialize(32, 16));
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn jit_kernel_name_includes_octave_count() {
             octaves: octaves.into_boxed_slice(),
             max_value: m as f64,
         };
-        let kernel = jit::specialize_octave_perlin(&config).unwrap();
+        let kernel = jit::specialize_octave_perlin(&config, 16).unwrap();
         assert!(
             kernel.name.contains(&format!("jit_m{m}")),
             "expected jit_m{m} in name, got {}",

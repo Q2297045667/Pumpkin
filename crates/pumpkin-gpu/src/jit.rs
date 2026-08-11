@@ -8,6 +8,23 @@
 
 use crate::noise::cache::SerializedOctaveConfig;
 use std::fmt::Write;
+use std::sync::OnceLock;
+
+/// JIT 循环展开上限的全局配置。
+/// 由 [`crate::GpuDevice::from_config`] 在初始化时设置。
+static JIT_MAX_UNROLL: OnceLock<usize> = OnceLock::new();
+
+/// 设置 JIT 循环展开上限（从配置读取）。
+pub fn set_jit_max_unroll(max: usize) {
+    let _ = JIT_MAX_UNROLL.set(max);
+}
+
+/// 获取 JIT 循环展开上限。
+/// 如果尚未设置，返回默认值 `16`。
+#[must_use]
+pub fn get_jit_max_unroll() -> usize {
+    JIT_MAX_UNROLL.get().copied().unwrap_or(16)
+}
 
 /// JIT 特化后的 kernel 元数据。
 pub struct JitSpecializedKernel {
@@ -19,12 +36,15 @@ pub struct JitSpecializedKernel {
 
 /// 生成八度 Perlin 噪声的 JIT 特化 kernel。
 ///
-/// 当八度数 ≤ 16 时收益显著（消除循环 + 间接访存）。
-/// 当八度数 > 16 时返回 `None`（展开的指令缓存压力可能抵消收益）。
+/// 当八度数 ≤ `max_unroll` 时收益显著（消除循环 + 间接访存）。
+/// 当八度数 > `max_unroll` 时返回 `None`（展开的指令缓存压力可能抵消收益）。
 #[must_use]
-pub fn specialize_octave_perlin(config: &SerializedOctaveConfig) -> Option<JitSpecializedKernel> {
+pub fn specialize_octave_perlin(
+    config: &SerializedOctaveConfig,
+    max_unroll: usize,
+) -> Option<JitSpecializedKernel> {
     let m = config.num_octaves();
-    if m > 16 {
+    if m > max_unroll {
         return None;
     }
 
@@ -88,6 +108,6 @@ pub fn specialize_octave_perlin(config: &SerializedOctaveConfig) -> Option<JitSp
 
 /// 检查 JIT 是否应该被使用。
 #[must_use]
-pub fn should_jit_specialize(num_octaves: usize) -> bool {
-    num_octaves > 0 && num_octaves <= 16
+pub fn should_jit_specialize(num_octaves: usize, max_unroll: usize) -> bool {
+    num_octaves > 0 && num_octaves <= max_unroll
 }

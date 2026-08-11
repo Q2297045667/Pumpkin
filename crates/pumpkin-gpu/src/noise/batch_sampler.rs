@@ -149,7 +149,8 @@ impl GpuNoiseSampler {
         drop(guard);
 
         // 尝试 JIT 特化
-        if let Some(jit_kernel) = crate::jit::specialize_octave_perlin(&config) {
+        let max_unroll = crate::jit::get_jit_max_unroll();
+        if let Some(jit_kernel) = crate::jit::specialize_octave_perlin(&config, max_unroll) {
             let m = config.num_octaves();
 
             // 分配缓冲区
