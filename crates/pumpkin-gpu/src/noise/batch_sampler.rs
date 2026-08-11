@@ -10,6 +10,7 @@
 
 use crate::GpuDevice;
 use crate::common::DeviceError;
+use crate::common::kernel::KernelArg;
 use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
 
 #[cfg(feature = "pumpkin-util")]
@@ -78,7 +79,11 @@ impl GpuNoiseSampler {
         self.device
             .copy_to_device(&mut d_org, &config.packed_origins())?;
 
-        let ok = self.try_launch("octave_perlin_sample_f64", n);
+        let ok = self.try_launch(
+            "octave_perlin_sample_f64",
+            n,
+            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+        );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -92,6 +97,80 @@ impl GpuNoiseSampler {
         self.device.free(d_lac)?;
         self.device.free(d_org)?;
         Ok(())
+    }
+
+    /// 使用 JIT 特化 kernel 进行八度 Perlin 批量采样。
+    ///
+    /// 仅在八度数 ≤ 16 时使用 JIT 特化。
+    /// 如果 JIT kernel 不可用，回退到标准 kernel 或 CPU 路径。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn sample_octave_jit(
+        &mut self,
+        sampler: &OctavePerlinNoiseSampler,
+        positions: &[f64],
+        results: &mut [f64],
+    ) -> Result<(), DeviceError> {
+        let n = results.len();
+        if n == 0 {
+            return Ok(());
+        }
+        assert_eq!(positions.len(), n * 3);
+
+        if self.device.device_type() == crate::DeviceType::Cpu {
+            cpu_octave_batch(sampler, positions, results);
+            return Ok(());
+        }
+
+        // 获取采样器配置
+        let key = std::ptr::from_ref(sampler) as u64;
+        let guard = self.cache.get_or_insert(key, sampler);
+        let config = guard
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
+        drop(guard);
+
+        // 尝试 JIT 特化
+        if let Some(jit_kernel) = crate::jit::specialize_octave_perlin(&config) {
+            let m = config.num_octaves();
+
+            // 分配缓冲区
+            let mut d_pos = self.device.alloc_f64(n * 3)?;
+            let d_res = self.device.alloc_f64(n)?;
+            let mut d_perm = self.device.alloc_u8(m * 256)?;
+
+            self.device.copy_to_device(&mut d_pos, positions)?;
+            self.device
+                .copy_to_device(&mut d_perm, &config.packed_permutations())?;
+
+            // 确保 JIT kernel 已编译
+            if !self
+                .device
+                .kernel_launcher()
+                .is_some_and(|l| l.has_kernel(&jit_kernel.name))
+            {
+                if let Err(e) = self.device.compile_jit_kernel(&jit_kernel) {
+                    tracing::debug!("JIT compile failed for '{}': {e}", jit_kernel.name);
+                }
+            }
+
+            // 尝试 JIT launch
+            let ok = self.try_launch(&jit_kernel.name, n, vec![KernelArg::I32(n as i32)]);
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+                self.device.free(d_pos)?;
+                self.device.free(d_res)?;
+                self.device.free(d_perm)?;
+                return Ok(());
+            }
+
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_perm)?;
+        }
+
+        // JIT 不可用，回退到标准路径
+        self.sample_octave_batch(sampler, positions, results)
     }
 
     // ========== Double Perlin ==========
@@ -164,7 +243,15 @@ impl GpuNoiseSampler {
         self.device
             .copy_to_device(&mut d_o2, &c2.packed_origins())?;
 
-        let ok = self.try_launch("double_perlin_sample_f64", n);
+        let ok = self.try_launch(
+            "double_perlin_sample_f64",
+            n,
+            vec![
+                KernelArg::I32(n as i32),
+                KernelArg::I32(m1 as i32),
+                KernelArg::I32(m2 as i32),
+            ],
+        );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -225,7 +312,11 @@ impl GpuNoiseSampler {
             .copy_to_device(&mut d_lac, &config.packed_lacunarities())?;
         self.device
             .copy_to_device(&mut d_org, &config.packed_origins())?;
-        let ok = self.try_launch("shift_a_sample_f64", n);
+        let ok = self.try_launch(
+            "shift_a_sample_f64",
+            n,
+            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+        );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -279,7 +370,11 @@ impl GpuNoiseSampler {
             .copy_to_device(&mut d_lac, &config.packed_lacunarities())?;
         self.device
             .copy_to_device(&mut d_org, &config.packed_origins())?;
-        let ok = self.try_launch("shift_b_sample_f64", n);
+        let ok = self.try_launch(
+            "shift_b_sample_f64",
+            n,
+            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+        );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -295,14 +390,14 @@ impl GpuNoiseSampler {
     }
 
     /// Helper: try to launch GPU kernel, return true if successful.
-    fn try_launch(&self, name: &str, n: usize) -> bool {
+    fn try_launch(&self, name: &str, n: usize, args: Vec<KernelArg<'_>>) -> bool {
         match self.device.kernel_launcher() {
             Some(l) if l.has_kernel(name) => {
                 l.launch(crate::common::kernel::KernelLaunch {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
-                    args: vec![],
+                    args,
                     buffers: vec![],
                 })
                 .is_ok()
@@ -337,7 +432,11 @@ impl GpuNoiseSampler {
         let d_r = self.device.alloc_f64(n)?;
         self.device.copy_to_device(&mut d_c, corners)?;
         self.device.copy_to_device(&mut d_d, deltas)?;
-        let ok = self.try_launch("trilinear_interpolate_f64", n);
+        let ok = self.try_launch(
+            "trilinear_interpolate_f64",
+            n,
+            vec![KernelArg::I32(n as i32)],
+        );
         if ok {
             self.device.copy_from_device(&d_r, results)?;
         } else {
@@ -394,7 +493,11 @@ impl GpuNoiseSampler {
             .copy_to_device(&mut d_lac, &c.packed_lacunarities())?;
         self.device
             .copy_to_device(&mut d_org, &c.packed_origins())?;
-        let ok = self.try_launch("flatcache_precompute_f64", n);
+        let ok = self.try_launch(
+            "flatcache_precompute_f64",
+            n,
+            vec![KernelArg::I32(n as i32), KernelArg::I32(m as i32)],
+        );
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {

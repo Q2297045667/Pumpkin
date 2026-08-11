@@ -6,6 +6,7 @@
     unused_mut,
     unused_imports
 )]
+#![cfg(feature = "gpu")]
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_data::chunk::DoublePerlinNoiseParameters;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};

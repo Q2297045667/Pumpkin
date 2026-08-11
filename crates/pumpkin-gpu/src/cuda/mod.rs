@@ -118,4 +118,13 @@ impl CudaBackend {
     pub fn kernel_launcher(&self) -> Option<&dyn KernelLauncher> {
         Some(&self.launcher)
     }
+
+    /// 编译一个 JIT 特化 kernel。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn compile_jit_kernel(
+        &mut self,
+        jit_kernel: &crate::jit::JitSpecializedKernel,
+    ) -> Result<(), DeviceError> {
+        self.launcher.compile_jit_kernel(jit_kernel)
+    }
 }

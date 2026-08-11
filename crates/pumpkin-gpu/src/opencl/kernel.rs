@@ -36,6 +36,23 @@ impl OpenClKernelLauncher {
         self.queue = Some(queue);
     }
 
+    /// 编译一个 JIT 特化 kernel。
+    ///
+    /// 在首次使用 JIT 路径时调用。需要 `Context` 和 `device`。
+    /// `OpenClBackend` 通过公共方法暴露编译入口。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn compile_jit_kernel(
+        &mut self,
+        ctx: &Context,
+        device: &Device,
+        jit_kernel: &crate::jit::JitSpecializedKernel,
+    ) -> Result<(), crate::common::DeviceError> {
+        let compiler = self.compiler.as_mut().ok_or_else(|| {
+            crate::common::DeviceError::Internal("OpenCL compiler not initialized".into())
+        })?;
+        compiler.compile_jit_kernel(ctx, device.id(), jit_kernel)
+    }
+
     /// 获取命令队列引用（供 `OpenClBackend` 的 buffer 操作使用）。
     ///
     /// # Panics

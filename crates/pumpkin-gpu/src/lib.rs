@@ -58,6 +58,8 @@
 pub mod common;
 pub mod compile;
 pub mod cpu;
+#[cfg(feature = "pumpkin-util")]
+pub mod jit;
 pub mod light;
 #[cfg(feature = "pumpkin-util")]
 pub mod noise;
@@ -312,6 +314,21 @@ impl GpuDevice {
     #[must_use]
     pub fn kernel_launcher(&self) -> Option<&dyn KernelLauncher> {
         self.backend.kernel_launcher()
+    }
+
+    /// 编译一个 JIT 特化 kernel。
+    ///
+    /// 仅在 GPU 后端（CUDA / OpenCL）下有效。
+    /// 当 kernel 编译成功时，后续的 `kernel_launcher()` 会识别该 kernel。
+    ///
+    /// # Errors
+    /// 编译失败或当前为 CPU 后端时返回错误。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn compile_jit_kernel(
+        &mut self,
+        jit_kernel: &crate::jit::JitSpecializedKernel,
+    ) -> Result<(), DeviceError> {
+        self.backend.compile_jit_kernel(jit_kernel)
     }
 }
 

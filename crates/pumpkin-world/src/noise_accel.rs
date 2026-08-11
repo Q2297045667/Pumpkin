@@ -50,10 +50,16 @@ impl NoiseAccelerator {
     pub fn sample_octave(&mut self, s: &OctavePerlinNoiseSampler, pos: &[f64], res: &mut [f64]) {
         #[cfg(feature = "gpu")]
         if let Some(ref mut i) = self.inner {
+            // 尝试 JIT 路径（如果配置启用且八度数 ≤ 16）
+            if i.sample_octave_jit(s, pos, res).is_ok() {
+                return;
+            }
+            // 回退标准 GPU 路径
             if i.sample_octave_batch(s, pos, res).is_ok() {
                 return;
             }
         }
+        // CPU 路径
         for i in 0..res.len() {
             res[i] = s.sample(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
         }

@@ -55,6 +55,10 @@ harness = true
 name = "kernel_tests"
 harness = true
 
+[[test]]
+name = "jit_tests"
+harness = true
+
 [lints]
 workspace = true
 

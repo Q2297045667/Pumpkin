@@ -34,6 +34,23 @@ impl CudaKernelLauncher {
         self.compiler = Some(compiler);
         self.device_ctx = Some(ctx);
     }
+
+    /// 编译一个 JIT 特化 kernel。
+    ///
+    /// 在首次使用 JIT 路径时调用。如果编译失败，记录警告但不中断流程。
+    #[cfg(feature = "pumpkin-util")]
+    pub fn compile_jit_kernel(
+        &mut self,
+        jit_kernel: &crate::jit::JitSpecializedKernel,
+    ) -> Result<(), crate::common::DeviceError> {
+        let ctx = self.device_ctx.as_ref().ok_or_else(|| {
+            crate::common::DeviceError::Internal("CUDA context not initialized".into())
+        })?;
+        let compiler = self.compiler.as_mut().ok_or_else(|| {
+            crate::common::DeviceError::Internal("CUDA compiler not initialized".into())
+        })?;
+        compiler.compile_jit_kernel(ctx, jit_kernel)
+    }
 }
 
 impl Default for CudaKernelLauncher {

@@ -22,6 +22,12 @@ pub const INTERPOLATOR_FILL_CL: &str = include_str!("../../kernels/opencl/interp
 /// 返回 `block_state_id` (i32) 和 `should_schedule_fluid_update` (u8)。
 pub const AQUIFER_BATCH_CL: &str = include_str!("../../kernels/opencl/aquifer_batch.cl");
 
+/// 批量含水层判定 tiled 变体：使用 local memory 协作加载 packed 数据。
+///
+/// 当 M <= 2048 时使用此 kernel 以利用 local memory 带宽优势。
+pub const AQUIFER_BATCH_TILED_CL: &str =
+    include_str!("../../kernels/opencl/aquifer_batch_tiled.cl");
+
 /// 批量 Beardifier：对每个位置遍历结构和连接点，
 /// 使用预计算的 24³ 核表累加 beard 贡献。
 pub const BEARDIFIER_BATCH_CL: &str = include_str!("../../kernels/opencl/beardifier_batch.cl");

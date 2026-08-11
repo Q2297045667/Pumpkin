@@ -52,6 +52,17 @@ pub struct GpuConfig {
     /// 默认值：`false`
     pub jit_enabled: bool,
 
+    /// 是否启用 `SoA` 数据布局优化。
+    /// 启用后位置数据以独立 X/Y/Z 数组格式上传，
+    /// 改善 GPU 内存合并访问效率。
+    /// 默认值：`false`（保持 `AoS` 交错格式以确保最大兼容性）
+    pub soa_layout: bool,
+
+    /// 是否启用 Local Memory Tiling 优化。
+    /// 对于小网格（点 ≤ 2048），将 `packed_positions` 预加载到 local memory。
+    /// 默认值：`false`（需要 GPU 硬件验证收益后开启）
+    pub local_mem_tiling: bool,
+
     /// 后端选择策略。
     ///
     /// - `"auto"`：按 `CUDA` → `OpenCL` 顺序自动探测
@@ -244,6 +255,8 @@ mod tests {
         assert!(!config.light_acceleration);
         assert!(!config.surface_acceleration);
         assert!(!config.jit_enabled);
+        assert!(!config.soa_layout);
+        assert!(!config.local_mem_tiling);
         assert_eq!(config.backend, GpuBackend::Auto);
     }
 
@@ -290,6 +303,8 @@ mod tests {
             light_acceleration: true,
             surface_acceleration: false,
             jit_enabled: true,
+            soa_layout: true,
+            local_mem_tiling: false,
             backend: GpuBackend::Cuda,
             cudarc: CudaConfig {
                 compile_ptx: String::from("compute_89"),
@@ -302,6 +317,8 @@ mod tests {
         let parsed: GpuConfig = toml::from_str(&toml_str).expect("deserialize");
         assert!(parsed.enabled);
         assert!(parsed.noise_acceleration);
+        assert!(parsed.soa_layout);
+        assert!(!parsed.local_mem_tiling);
         assert_eq!(parsed.backend, GpuBackend::Cuda);
         assert_eq!(parsed.cudarc.compile_ptx, "compute_89");
     }

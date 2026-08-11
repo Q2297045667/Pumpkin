@@ -1,5 +1,6 @@
 //! Lighting GPU 加速指纹测试。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, unused_mut)]
+#![cfg(feature = "gpu")]
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_world::light_accel::LightAccelerator;
 

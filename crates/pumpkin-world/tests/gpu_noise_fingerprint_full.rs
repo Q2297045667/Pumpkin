@@ -1,5 +1,6 @@
 //! 噪声阶段完整指纹测试 — 含三线性插值和 FlatCache。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, unused_mut)]
+#![cfg(feature = "gpu")]
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};

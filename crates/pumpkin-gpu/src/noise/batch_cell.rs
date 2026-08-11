@@ -168,6 +168,8 @@ impl GpuCellBatchSampler {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
+                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
+                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
                     args: vec![],
                     buffers: vec![],
                 })
@@ -304,6 +306,8 @@ impl GpuAquiferBatchSampler {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
+                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
+                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
                     args: vec![],
                     buffers: vec![],
                 })
@@ -405,6 +409,8 @@ impl GpuBeardifierBatchSampler {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
+                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
+                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
                     args: vec![],
                     buffers: vec![],
                 })
@@ -483,6 +489,8 @@ impl GpuVeinBatchSampler {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
+                    // GPU kernel 参数通过 kernel_launcher 内部绑定，此处无需额外 args
+                    // （当前 OpenCL 路径的 kernel 参数设置由 OpenClKernelLauncher::launch 完成）
                     args: vec![],
                     buffers: vec![],
                 })
@@ -498,17 +506,26 @@ impl GpuVeinBatchSampler {
 // CPU Fallbacks
 // ============================================================================
 
-/// CPU 回退：Cell Cache 填充（简化为零填充）。
+/// CPU 回退：Cell Cache 填充。
 ///
-/// 在实际使用中，调用方应通过 `pumpkin-util` 的
-/// `OctavePerlinNoiseSampler` 逐元素采样。
+/// 注意：这是占位实现（零填充）。完整的 DAG 求值需要在 pumpkin-world 侧调用
+/// `OctavePerlinNoiseSampler::sample()` 逐元素采样，或者通过 pumpkin-util 的噪声采样器链。
+/// 当前此函数通过 GpuCellBatchSampler 的 `try_launch` 失败流程被调用，
+/// 但实际调用链中的上层（BatchAccelerator）有自己的 CPU fallback，不会到达这里。
+#[allow(unused_variables)]
 fn cpu_cell_cache_fill(_positions: &[f64], results: &mut [f64]) {
     for item in results.iter_mut() {
         *item = 0.0;
     }
 }
 
-/// CPU 回退：插值器缓冲填充（简化为零填充）。
+/// CPU 回退：插值器缓冲填充。
+///
+/// 注意：这是占位实现（零填充）。完整的 DAG 求值需要在 pumpkin-world 侧调用
+/// `OctavePerlinNoiseSampler::sample()` 逐元素采样，或者通过 pumpkin-util 的噪声采样器链。
+/// 当前此函数通过 GpuCellBatchSampler 的 `try_launch` 失败流程被调用，
+/// 但实际调用链中的上层（BatchAccelerator）有自己的 CPU fallback，不会到达这里。
+#[allow(unused_variables)]
 fn cpu_interpolator_fill(_positions: &[f64], results: &mut [f64]) {
     for item in results.iter_mut() {
         *item = 0.0;
@@ -665,7 +682,13 @@ fn cpu_beardifier(
     }
 }
 
-/// CPU 回退：矿脉采样（简化，返回 0 = 无矿脉）。
+/// CPU 回退：矿脉采样。
+///
+/// 注意：这是占位实现（零填充 = 无矿脉）。完整的矿脉判定需要在 pumpkin-world 侧调用
+/// `VeinNoise::sample()` 逐元素采样。
+/// 当前此函数通过 GpuVeinBatchSampler 的 `try_launch` 失败流程被调用，
+/// 但实际调用链中的上层（BatchAccelerator）有自己的 CPU fallback，不会到达这里。
+#[allow(unused_variables)]
 fn cpu_vein_sample(_positions: &[f64], results: &mut [i32]) {
     for item in results.iter_mut() {
         *item = 0;

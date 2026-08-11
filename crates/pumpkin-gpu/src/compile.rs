@@ -2,6 +2,7 @@
 //!
 //! 提供 CUDA (NVRTC) 和 OpenCL 两种后端的 kernel 编译、缓存和启动功能。
 
+#[cfg(any(feature = "cuda", feature = "opencl"))]
 use crate::common::DeviceError;
 
 #[cfg(feature = "pumpkin-util")]
@@ -68,6 +69,10 @@ pub fn all_kernel_sources() -> Vec<CompiledKernel> {
             CompiledKernel {
                 name: "aquifer_batch_f64".into(),
                 source: kernels_cell::AQUIFER_BATCH_CL.into(),
+            },
+            CompiledKernel {
+                name: "aquifer_batch_tiled_f64".into(),
+                source: kernels_cell::AQUIFER_BATCH_TILED_CL.into(),
             },
             CompiledKernel {
                 name: "beardifier_batch_f64".into(),
@@ -144,6 +149,30 @@ pub mod cuda_compile {
                     }
                 }
             }
+            Ok(())
+        }
+
+        /// 编译一个 JIT 特化 kernel。
+        ///
+        /// JIT kernel 源码中不包含 `PERLIN_CORE_CL` 辅助函数，
+        /// 此处将其拼接后再通过 NVRTC 编译。
+        pub fn compile_jit_kernel(
+            &mut self,
+            ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
+            jit_kernel: &crate::jit::JitSpecializedKernel,
+        ) -> Result<(), DeviceError> {
+            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, jit_kernel.source);
+            let ptx = cudarc::nvrtc::compile_ptx(full_source).map_err(|e| {
+                DeviceError::KernelError(format!("JIT NVRTC '{}': {e:?}", jit_kernel.name))
+            })?;
+            let module = ctx.load_module(ptx).map_err(|e| {
+                DeviceError::KernelError(format!("JIT load '{}': {e:?}", jit_kernel.name))
+            })?;
+            let func = module.load_function(&jit_kernel.name).map_err(|e| {
+                DeviceError::KernelError(format!("JIT load_fn '{}': {e:?}", jit_kernel.name))
+            })?;
+            self.compiled.insert(jit_kernel.name.clone(), func);
+            tracing::info!("CUDA JIT: compiled '{}'", jit_kernel.name);
             Ok(())
         }
 
@@ -241,6 +270,23 @@ pub mod opencl_compile {
                     }
                 }
             }
+            Ok(())
+        }
+
+        /// 编译一个 JIT 特化 kernel。
+        ///
+        /// JIT kernel 源码中不包含 `PERLIN_CORE_CL` 辅助函数，
+        /// 此处将其拼接后再通过 OpenCL 运行时编译。
+        pub fn compile_jit_kernel(
+            &mut self,
+            ctx: &Context,
+            device_id: cl_device_id,
+            jit_kernel: &crate::jit::JitSpecializedKernel,
+        ) -> Result<(), DeviceError> {
+            let entry =
+                Self::compile_one(ctx, device_id, &jit_kernel.name, &jit_kernel.source, &[])?;
+            self.compiled.insert(jit_kernel.name.clone(), entry);
+            tracing::info!("OpenCL JIT: compiled '{}'", jit_kernel.name);
             Ok(())
         }
 

@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod error;
 pub mod kernel;
+pub mod layout;
 
 pub use buffer::GpuBuffer;
 pub use error::DeviceError;
@@ -124,6 +125,25 @@ impl BackendImpl {
             Self::Cuda(b) => b.kernel_launcher(),
             #[cfg(feature = "opencl")]
             Self::OpenCl(b) => b.kernel_launcher(),
+        }
+    }
+
+    /// 编译一个 JIT 特化 kernel。
+    ///
+    /// 仅在 GPU 后端（CUDA / OpenCL）下有效，CPU 后端返回错误。
+    #[cfg(feature = "pumpkin-util")]
+    pub(crate) fn compile_jit_kernel(
+        &mut self,
+        jit_kernel: &crate::jit::JitSpecializedKernel,
+    ) -> Result<(), DeviceError> {
+        match self {
+            Self::Cpu(_) => Err(DeviceError::Unsupported(
+                "JIT compilation not supported on CPU backend".into(),
+            )),
+            #[cfg(feature = "cuda")]
+            Self::Cuda(b) => b.compile_jit_kernel(jit_kernel),
+            #[cfg(feature = "opencl")]
+            Self::OpenCl(b) => b.compile_jit_kernel(jit_kernel),
         }
     }
 }

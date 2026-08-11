@@ -6,6 +6,7 @@ use pumpkin_data::{
 };
 use pumpkin_util::math::vector2::Vector2;
 
+#[cfg(feature = "gpu")]
 pub mod batch_accel;
 pub mod biome;
 pub mod block;
@@ -15,11 +16,14 @@ pub mod cylindrical_chunk_iterator;
 pub mod data;
 pub mod dimension;
 pub mod generation;
+#[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod inventory;
 pub mod level;
+#[cfg(feature = "gpu")]
 pub mod light_accel;
 pub mod lighting;
+#[cfg(feature = "gpu")]
 pub mod noise_accel;
 pub mod poi;
 pub mod tick;

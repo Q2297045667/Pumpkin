@@ -1,5 +1,6 @@
 //! 噪声阶段 GPU 加速指纹测试 (遗留兼容)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, unused_mut)]
+#![cfg(feature = "gpu")]
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};

@@ -6,6 +6,12 @@
 use crate::common::DeviceError;
 use crate::common::kernel::{KernelArg, KernelLaunch};
 
+// 注意：此分发器当前未被实际使用。
+// 各采样器模块（batch_sampler.rs / batch_cell.rs / light.rs）
+// 在检测到 DeviceType::Cpu 后直接调用内置 CPU fallback 函数，
+// 不会通过 KernelLaunch → dispatch() 路径。
+// 保留此文件作为未来统一 CPU kernel 分派的基础设施。
+
 /// 已注册的 CPU Kernel 名称集合。
 const REGISTERED_KERNELS: &[&str] = &[
     "octave_perlin_sample_f64",
@@ -124,6 +130,12 @@ fn cpu_u8_zero_fill(results: &mut [u8]) {
         *r = 0;
     }
 }
+
+// 注意：此分发器当前未被实际使用。
+// 各采样器模块（batch_sampler.rs / batch_cell.rs / light.rs）
+// 在检测到 DeviceType::Cpu 后直接调用内置 CPU fallback 函数，
+// 不会通过 KernelLaunch → dispatch() 路径。
+// 保留此文件作为未来统一 CPU kernel 分派的基础设施。
 
 /// 分派 Kernel 调用到对应的 CPU 实现。
 ///

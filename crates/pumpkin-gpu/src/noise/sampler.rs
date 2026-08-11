@@ -1,5 +1,7 @@
 //! GPU 噪声采样器。
 
+#![allow(dead_code)]
+
 use crate::GpuDevice;
 use crate::common::DeviceError;
 use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
@@ -8,14 +10,14 @@ use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 
 /// GPU 加速的噪声采样器。
-pub struct GpuNoiseSampler {
+pub(crate) struct GpuNoiseSampler {
     device: GpuDevice,
     cache: NoiseCache,
 }
 
 impl GpuNoiseSampler {
     #[must_use]
-    pub fn new(device: GpuDevice) -> Self {
+    pub(crate) fn new(device: GpuDevice) -> Self {
         Self {
             device,
             cache: NoiseCache::new(),
@@ -24,7 +26,7 @@ impl GpuNoiseSampler {
 
     /// 批量采样八度 Perlin 噪声。
     #[cfg(feature = "pumpkin-util")]
-    pub fn batch_sample_octave(
+    pub(crate) fn batch_sample_octave(
         &mut self,
         sampler: &OctavePerlinNoiseSampler,
         positions: &[f64],
@@ -117,7 +119,7 @@ impl GpuNoiseSampler {
 
 /// CPU 回退：批量采样。
 #[cfg(feature = "pumpkin-util")]
-pub fn cpu_batch_octave(
+pub(crate) fn cpu_batch_octave(
     sampler: &OctavePerlinNoiseSampler,
     positions: &[f64],
     results: &mut [f64],

@@ -6,6 +6,7 @@
     unused_mut,
     unused_variables
 )]
+#![cfg(feature = "gpu")]
 use criterion::{Criterion, criterion_group, criterion_main};
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
