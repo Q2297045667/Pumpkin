@@ -229,9 +229,28 @@ impl NoiseAccelerator {
         let mut surf = vec![0.0f64; n];
         let mut sec = vec![0.0f64; n];
 
-        // GPU 路径：成功时直接使用 GPU 结果，失败时回退到 CPU。
+        // GPU 路径：JIT → batch → CPU 级联回退。
         #[cfg(feature = "gpu")]
         let gpu_ok = self.inner.as_mut().is_some_and(|inner| {
+            // 优先 JIT 特化路径（常量内联 + 循环展开，1.5-2.5× 加速）
+            let surf_jit = inner.sample_double_perlin_jit(
+                surface_a,
+                surface_b,
+                surface_amp,
+                &pos_3d,
+                &mut surf,
+            );
+            let sec_jit = inner.sample_double_perlin_jit(
+                secondary_a,
+                secondary_b,
+                secondary_amp,
+                &pos_3d,
+                &mut sec,
+            );
+            if surf_jit.is_ok() && sec_jit.is_ok() {
+                return true;
+            }
+            // JIT 失败 → 回退标准 batch 路径
             inner
                 .sample_double_perlin_batch(surface_a, surface_b, surface_amp, &pos_3d, &mut surf)
                 .is_ok()

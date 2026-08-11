@@ -118,6 +118,7 @@ jobs:
       - run: cargo test -p pumpkin-world --features gpu --test worldgen_fingerprint
       - run: cargo test -p pumpkin-world --features gpu --test worldgen_bench
       - run: cargo test -p pumpkin-world --features gpu --test surface_noise_cache_test
+      - run: cargo test -p pumpkin-world --features gpu --test jit_numerical_consistency
 
   machete:
     name: Unused Deps
