@@ -868,6 +868,16 @@ impl ProtoChunk {
         ore_random_deriver: &XoroshiroSplitter,
         surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
     ) {
+        // GPU 加速接入点：检查批量加速器是否可用。
+        // TODO: 将 NoiseAccel / BatchAccel 接入以下内循环：
+        //   1. 收集 batch 位置数组 → batch_accel.batch_aquifer_apply()
+        //   2. noise_accel.sample_octave_batch() 批量噪声采样
+        //   3. noise_accel.batch_trilinear() 批量三线性插值
+        #[cfg(feature = "gpu")]
+        {
+            let _batch_accel = crate::gpu::get_batch_accel();
+        }
+
         let h_count = noise_sampler.horizontal_cell_block_count() as i32;
         let v_count = noise_sampler.vertical_cell_block_count() as i32;
         let horizontal_cells = CHUNK_DIM as i32 / h_count;

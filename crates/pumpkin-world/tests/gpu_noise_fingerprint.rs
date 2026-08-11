@@ -85,7 +85,10 @@ fn large() {
     accel().sample_octave(&s, &p, &mut gpu);
     let gt = t1.elapsed().as_secs_f64() * 1000.0;
     assert_eq!(fnv1a(&cpu), fnv1a(&gpu), "large");
-    println!("large: cpu={ct:.1}ms gpu={gt:.1}ms ({:.1}x)", ct / gt);
+    #[allow(clippy::print_stdout)]
+    {
+        println!("large: cpu={ct:.1}ms gpu={gt:.1}ms ({:.1}x)", ct / gt);
+    }
 }
 #[test]
 fn various_octaves() {

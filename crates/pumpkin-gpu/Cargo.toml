@@ -69,6 +69,10 @@ harness = true
 name = "jit_consistency_tests"
 harness = true
 
+[[test]]
+name = "edge_case_tests"
+harness = true
+
 [lints]
 workspace = true
 

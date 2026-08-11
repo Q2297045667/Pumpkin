@@ -116,12 +116,13 @@ impl KernelLauncher for OpenClKernelLauncher {
         for (arg_index, arg) in (0u32..).zip(launch.args.iter()) {
             match arg {
                 KernelArg::I32(v) => {
-                    // SAFETY: kernel is valid, arg_index within bounds
+                    // SAFETY: kernel is valid and compiled; arg_index is within signature bounds
                     unsafe { kernel.set_arg(arg_index, v) }.map_err(|e| {
                         DeviceError::LaunchFailed(format!("set_arg {arg_index}: {e}"))
                     })?;
                 }
                 KernelArg::F64(v) => {
+                    // SAFETY: kernel is valid and compiled; arg_index is within signature bounds
                     unsafe { kernel.set_arg(arg_index, v) }.map_err(|e| {
                         DeviceError::LaunchFailed(format!("set_arg {arg_index}: {e}"))
                     })?;
@@ -141,6 +142,7 @@ impl KernelLauncher for OpenClKernelLauncher {
                     .ok_or_else(|| {
                         DeviceError::Unsupported("Buffer is not an OpenCL buffer".into())
                     })?;
+                    // SAFETY: kernel is valid and compiled; cl_mem handle is valid for duration
                     unsafe { kernel.set_arg(arg_index, &handle) }.map_err(|e| {
                         DeviceError::LaunchFailed(format!("set_arg {arg_index} (buffer): {e}"))
                     })?;

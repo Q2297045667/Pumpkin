@@ -123,13 +123,17 @@ impl GpuCellBatchSampler {
             return Ok(());
         }
 
-        // GPU 路径：上传数据、启动 kernel、读回结果
+        // GPU 路径：上传数据、启动 kernel、读回结果。
+        // 注意：cell_cache_fill_f64 kernel 需要 component_stack、perms_data、
+        // cell_indices 等额外参数，当前尚未完全接入。
+        // 一旦 GPU 失败（当前必然失败因为参数缺失），回退 CPU。
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-
         self.device.copy_to_device(&mut d_pos, positions)?;
 
-        let ok = self.try_launch("cell_cache_fill_f64", n, vec![], vec![]);
+        // cell_cache_fill_f64 签名需要 9 个参数，当前未准备好 → 跳过 GPU 尝试
+        // TODO: 接入 component_stack / perms_data / cell_indices 后恢复 GPU 路径
+        let ok = false;
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -162,12 +166,16 @@ impl GpuCellBatchSampler {
             return Ok(());
         }
 
+        // GPU 路径：上传数据、启动 kernel、读回结果。
+        // 注意：interpolator_fill_f64 kernel 需要 dag_params、perms_data 等额外参数，
+        // 当前尚未完全接入。一旦 GPU 失败（当前必然失败因为参数缺失），回退 CPU。
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
-
         self.device.copy_to_device(&mut d_pos, positions)?;
 
-        let ok = self.try_launch("interpolator_fill_f64", n, vec![], vec![]);
+        // interpolator_fill_f64 签名需要 6 个参数，当前未准备好 → 跳过 GPU 尝试
+        // TODO: 接入 dag_params / perms_data 后恢复 GPU 路径
+        let ok = false;
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -180,6 +188,7 @@ impl GpuCellBatchSampler {
     }
 
     /// Helper: try to launch GPU kernel, return true if successful.
+    #[allow(dead_code)] // TODO: 恢复后移除
     fn try_launch(
         &self,
         name: &str,
@@ -411,7 +420,10 @@ impl GpuBeardifierBatchSampler {
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
         self.device.copy_to_device(&mut d_junct, &junct_flat)?;
 
-        let ok = self.try_launch("beardifier_batch_f64", n, vec![], vec![]);
+        // beardifier_batch_f64 签名需要 11 个参数（包括 beard_kernel、
+        // structure_to_junction 等），当前未准备好 → 跳过 GPU 尝试
+        // TODO: 接入完整参数后恢复 GPU 路径
+        let ok = false;
         if ok {
             self.device.copy_from_device(&d_res, results)?;
             self.device.free(d_pos)?;
@@ -429,6 +441,7 @@ impl GpuBeardifierBatchSampler {
         Err(DeviceError::LaunchFailed("beardifier batch failed".into()))
     }
 
+    #[allow(dead_code)] // TODO: 恢复 launch 后移除
     fn try_launch(
         &self,
         name: &str,
@@ -488,7 +501,10 @@ impl GpuVeinBatchSampler {
 
         self.device.copy_to_device(&mut d_pos, positions)?;
 
-        let ok = self.try_launch("vein_batch_f64", n, vec![], vec![]);
+        // vein_batch_f64 签名需要 9 个参数（包括 vein_noise_params、
+        // perms_data、vein_thresholds、vein_weights 等），当前未准备好 → 跳过 GPU 尝试
+        // TODO: 接入完整参数后恢复 GPU 路径
+        let ok = false;
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
@@ -500,6 +516,7 @@ impl GpuVeinBatchSampler {
         Ok(())
     }
 
+    #[allow(dead_code)] // TODO: 恢复 launch 后移除
     fn try_launch(
         &self,
         name: &str,

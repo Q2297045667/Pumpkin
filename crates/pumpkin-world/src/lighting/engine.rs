@@ -447,7 +447,28 @@ impl LightEngine {
         }
     }
 
+    /// 初始化光照（天空光 + 方块光）。
+    ///
+    /// # GPU 加速接入点
+    ///
+    /// 当 `gpu` feature 启用且光照加速器就绪时，可通过
+    /// `crate::gpu::get_light_accel()` 获取 [`LightAccelerator`]，
+    /// 在 `convert_light` 和 `propagate_light` 之前批量填充天空光：
+    ///
+    /// ```ignore
+    /// if let Some(accel) = crate::gpu::get_light_accel() {
+    ///     // 需要从 cache 打包 heightmap + opacity → accel.batch_sky_fill(...)
+    /// }
+    /// ```
     pub fn initialize_light(&mut self, cache: &mut Cache, config: &LightingEngineConfig) {
+        // GPU 加速接入点：检查光照加速器是否可用
+        #[cfg(feature = "gpu")]
+        {
+            let _light_accel = crate::gpu::get_light_accel();
+            // TODO: 将 chunk 数据（heightmap + opacity）打包为批量格式，
+            // 调用 light_accel.batch_sky_fill(&hm, &opacity, &mut sky_light, n, max_h);
+        }
+
         if *config != LightingEngineConfig::Default {
             return;
         }

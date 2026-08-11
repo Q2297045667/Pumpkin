@@ -29,7 +29,7 @@ impl CudaMemory {
         stream: &Arc<cudarc::driver::CudaStream>,
         len: usize,
     ) -> Result<GpuBuffer<f64>, DeviceError> {
-        // SAFETY: CudaStream is valid, f64 implements DeviceRepr
+        // SAFETY: CudaStream is valid and initialized; f64 implements DeviceRepr
         match unsafe { stream.alloc::<f64>(len) } {
             Ok(slice) => Ok(GpuBuffer::new_cuda(len, slice)),
             Err(e) => {
@@ -49,6 +49,7 @@ impl CudaMemory {
         if len == 0 {
             return Ok(GpuBuffer::new_cpu(Vec::new()));
         }
+        // SAFETY: CudaStream is valid and initialized; i32 implements DeviceRepr
         match unsafe { stream.alloc::<i32>(len) } {
             Ok(slice) => Ok(GpuBuffer::new_cuda(len, slice)),
             Err(e) => {
@@ -68,6 +69,7 @@ impl CudaMemory {
         if len == 0 {
             return Ok(GpuBuffer::new_cpu(Vec::new()));
         }
+        // SAFETY: CudaStream is valid and initialized; u8 implements DeviceRepr
         match unsafe { stream.alloc::<u8>(len) } {
             Ok(slice) => Ok(GpuBuffer::new_cuda(len, slice)),
             Err(e) => {
@@ -94,22 +96,17 @@ impl CudaMemory {
             return Ok(());
         }
 
-        match buffer.cuda_slice_mut() {
-            Ok(slice) => {
-                // SAFETY: slice is valid, data lives long enough
-                stream
-                    .memcpy_htod(data, slice)
-                    .map_err(|e| DeviceError::TransferFailed(format!("CUDA HtoD: {e:?}")))?;
-                Ok(())
-            }
-            Err(_) => {
-                if let Some(cpu) = buffer.cpu_data_mut() {
-                    cpu.clear();
-                    cpu.extend_from_slice(data);
-                }
-                Ok(())
-            }
+        if let Ok(slice) = buffer.cuda_slice_mut() {
+            // SAFETY: slice is valid device memory; data is a valid host slice
+            // with matching length verified above
+            stream
+                .memcpy_htod(data, slice)
+                .map_err(|e| DeviceError::TransferFailed(format!("CUDA HtoD: {e:?}")))?;
+        } else if let Some(cpu) = buffer.cpu_data_mut() {
+            cpu.clear();
+            cpu.extend_from_slice(data);
         }
+        Ok(())
     }
 
     // ── DtoH ─────────────────────────────────────────────
@@ -129,21 +126,16 @@ impl CudaMemory {
             return Ok(());
         }
 
-        match buffer.cuda_slice() {
-            Ok(slice) => {
-                // SAFETY: slice is valid, data is valid mutable host buffer
-                stream
-                    .memcpy_dtoh(slice, data)
-                    .map_err(|e| DeviceError::TransferFailed(format!("CUDA DtoH: {e:?}")))?;
-                Ok(())
-            }
-            Err(_) => {
-                if let Some(cpu) = buffer.cpu_data() {
-                    data.copy_from_slice(cpu);
-                }
-                Ok(())
-            }
+        if let Ok(slice) = buffer.cuda_slice() {
+            // SAFETY: slice is valid device memory; data is a valid mutable host buffer
+            // with matching length verified above
+            stream
+                .memcpy_dtoh(slice, data)
+                .map_err(|e| DeviceError::TransferFailed(format!("CUDA DtoH: {e:?}")))?;
+        } else if let Some(cpu) = buffer.cpu_data() {
+            data.copy_from_slice(cpu);
         }
+        Ok(())
     }
 
     // ── Free ─────────────────────────────────────────────

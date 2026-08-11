@@ -22,7 +22,7 @@ impl BatchAccelerator {
     /// 从 GPU 配置创建批量加速器。
     ///
     /// 仅在配置同时满足 `enabled` 和
-    /// `(noise_acceleration || surface_acceleration || jit_enabled)` 时
+    /// `(noise_acceleration || batch_acceleration || jit_enabled)` 时
     /// 才会在后续调用中尝试初始化 GPU 设备。
     #[must_use]
     pub fn new(config: &GpuConfig) -> Self {
@@ -39,7 +39,7 @@ impl BatchAccelerator {
     pub const fn is_active(&self) -> bool {
         self.config.enabled
             && (self.config.noise_acceleration
-                || self.config.surface_acceleration
+                || self.config.batch_acceleration
                 || self.config.jit_enabled)
     }
 
@@ -79,7 +79,9 @@ impl BatchAccelerator {
                 return;
             }
         }
-        // CPU fallback: 零填充
+        // CPU fallback: 零填充（Cell Cache 的 CPU 回退为 DAG 占位）
+        // TODO: 后续接入完整 DAG 求值引擎后替换
+        tracing::debug!("GPU cell cache fill failed — using CPU zero-fill fallback");
         results.fill(0.0);
     }
 
@@ -103,7 +105,9 @@ impl BatchAccelerator {
                 return;
             }
         }
-        // CPU fallback: 零填充
+        // CPU fallback: 零填充（Interpolator 的 CPU 回退为 DAG 占位）
+        // TODO: 后续接入完整 DAG 求值引擎后替换
+        tracing::debug!("GPU interpolator fill failed — using CPU zero-fill fallback");
         results.fill(0.0);
     }
 
@@ -195,7 +199,9 @@ impl BatchAccelerator {
                 return;
             }
         }
-        // CPU fallback: 无矿脉
+        // CPU fallback: 无矿脉（占位 — 后续应接入 OreVeinSampler）
+        // TODO: 实现基于 toggle/ridged/gap 三重噪声的 CPU 矿脉判定逻辑
+        tracing::debug!("GPU vein sample failed — using CPU no-vein fallback");
         results.fill(0);
     }
 }

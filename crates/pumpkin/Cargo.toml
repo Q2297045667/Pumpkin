@@ -133,3 +133,6 @@ gpu = ["dep:pumpkin-gpu", "pumpkin-gpu/gpu", "pumpkin-world/gpu", "pumpkin-confi
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["pumpkin-gpu"]

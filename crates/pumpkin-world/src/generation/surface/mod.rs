@@ -59,6 +59,7 @@ pub struct MaterialRuleContext<'a> {
 }
 
 impl<'a> MaterialRuleContext<'a> {
+    #[must_use]
     pub const fn new(
         min_y: i8,
         height: u16,
@@ -210,11 +211,13 @@ pub fn steep_material_condition(chunk: &ProtoChunk, block_x: i32, block_z: i32) 
 pub struct HoleMaterialCondition;
 
 impl HoleMaterialCondition {
+    #[must_use]
     pub const fn test(context: &MaterialRuleContext) -> bool {
         context.run_depth <= 0
     }
 }
 
+#[must_use]
 pub const fn test_above_y_material(
     condition: &AboveYMaterialCondition,
     context: &MaterialRuleContext,
@@ -299,6 +302,7 @@ pub fn estimate_surface_height(
 pub struct BiomeMaterialCondition;
 
 impl BiomeMaterialCondition {
+    #[must_use]
     pub fn test(biome_is: &[&'static Biome], context: &MaterialRuleContext) -> bool {
         biome_is.contains(&context.biome)
     }
@@ -344,6 +348,7 @@ pub fn test_stone_depth(
     stone_depth <= 1 + condition.offset + depth + depth_range
 }
 
+#[must_use]
 pub const fn test_water_material(
     condition: &WaterMaterialCondition,
     context: &MaterialRuleContext,
@@ -362,6 +367,7 @@ pub const fn test_water_material(
 
 // random_deriver: ThreadLocal<RefCell<LruCache<usize, RandomDeriver>>>,
 
+#[must_use]
 pub fn test_vertical_gradient(
     condition: &VerticalGradientMaterialCondition,
     context: &MaterialRuleContext,

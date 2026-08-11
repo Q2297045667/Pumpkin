@@ -224,13 +224,27 @@ pub mod cuda_compile {
 
     pub struct CudaKernelCompiler {
         pub compiled: HashMap<String, cudarc::driver::CudaFunction>,
+        compile_ptx_arch: Option<String>,
     }
 
     impl CudaKernelCompiler {
-        pub fn new() -> Self {
+        pub fn new(compile_ptx: Option<&str>) -> Self {
             Self {
                 compiled: HashMap::default(),
+                compile_ptx_arch: compile_ptx.map(String::from),
             }
+        }
+
+        /// 构建 NVRTC CompileOptions，合并架构目标和用户标志。
+        fn build_compile_opts(&self, flags: &[String]) -> cudarc::nvrtc::CompileOptions {
+            let mut opts = cudarc::nvrtc::CompileOptions::default();
+            if let Some(ref arch) = self.compile_ptx_arch {
+                opts.options.push(format!("--gpu-architecture={arch}"));
+            }
+            for flag in flags {
+                opts.options.push(flag.clone());
+            }
+            opts
         }
 
         pub fn compile_all(
@@ -238,11 +252,12 @@ pub mod cuda_compile {
             ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
             flags: &[String],
         ) -> Result<(), DeviceError> {
+            let opts = self.build_compile_opts(flags);
             for kernel in all_cuda_kernel_sources() {
                 if kernel.source.is_empty() {
                     continue;
                 }
-                match Self::compile_one(ctx, &kernel.name, &kernel.source, flags) {
+                match Self::compile_one(ctx, &kernel.name, &kernel.source, &opts) {
                     Ok(func) => {
                         self.compiled.insert(kernel.name.clone(), func);
                         tracing::info!("CUDA NVRTC: compiled '{}'", kernel.name);
@@ -272,7 +287,8 @@ pub mod cuda_compile {
             jit_kernel: &crate::jit::JitSpecializedKernel,
         ) -> Result<(), DeviceError> {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, jit_kernel.source);
-            let ptx = cudarc::nvrtc::compile_ptx(full_source).map_err(|e| {
+            let opts = self.build_compile_opts(&[]);
+            let ptx = cudarc::nvrtc::compile_ptx_with_opts(full_source, opts).map_err(|e| {
                 let msg = format!("JIT NVRTC '{}': {e:?}", jit_kernel.name);
                 crate::logging::log_fallback(
                     &crate::logging::FallbackReason::KernelCompileFailed(msg.clone()),
@@ -295,10 +311,10 @@ pub mod cuda_compile {
             ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
             name: &str,
             source: &str,
-            _flags: &[String],
+            opts: &cudarc::nvrtc::CompileOptions,
         ) -> Result<cudarc::driver::CudaFunction, DeviceError> {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, source);
-            let ptx = cudarc::nvrtc::compile_ptx(full_source)
+            let ptx = cudarc::nvrtc::compile_ptx_with_opts(full_source, opts.clone())
                 .map_err(|e| DeviceError::KernelError(format!("NVRTC '{name}': {e:?}")))?;
             let module = ctx
                 .load_module(ptx)

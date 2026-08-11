@@ -102,7 +102,9 @@ impl GpuDevice {
     /// 所有初始化失败都会通过 [`tracing::warn`] 输出日志。
     #[must_use]
     pub fn init() -> Self {
-        let device = Self::init_internal(None, None, None, false, None, None, 4, 1, false);
+        let device = Self::init_internal(
+            None, None, None, false, None, None, 4, 1, false, None, false,
+        );
         device.log_startup();
         device
     }
@@ -150,6 +152,12 @@ impl GpuDevice {
             pumpkin_config::gpu::GpuDeviceSelection::Auto => (None, None, false),
         };
 
+        let compile_ptx = if config.cudarc.compile_ptx == "auto" {
+            None
+        } else {
+            Some(config.cudarc.compile_ptx.as_str())
+        };
+
         let device = Self::init_internal(
             forced_backend,
             device_index,
@@ -160,6 +168,8 @@ impl GpuDevice {
             config.cudarc.zero_copy_threshold_kb,
             config.opencl3.pipeline_queues,
             config.cudarc.persistent_kernels,
+            compile_ptx,
+            config.cudarc.use_curand,
         );
 
         // 将配置项注入全局 OnceLock，供各模块读取
@@ -177,7 +187,7 @@ impl GpuDevice {
     }
 
     /// 内部初始化逻辑。
-    #[allow(clippy::too_many_lines)]
+    #[allow(unused_variables, clippy::too_many_arguments, clippy::too_many_lines)]
     fn init_internal(
         forced_backend: Option<DeviceType>,
         device_index: Option<usize>,
@@ -188,6 +198,8 @@ impl GpuDevice {
         zero_copy_threshold_kb: usize,
         pipeline_queues: usize,
         persistent_kernels: bool,
+        compile_ptx: Option<&str>,
+        use_curand: bool,
     ) -> Self {
         // 如果强制指定了后端，仅尝试该后端
         if let Some(forced) = forced_backend {
@@ -199,6 +211,8 @@ impl GpuDevice {
                         cuda_flags,
                         zero_copy_threshold_kb,
                         persistent_kernels,
+                        compile_ptx,
+                        use_curand,
                     ) {
                         Ok(backend) => {
                             tracing::info!("GPU 加速已启用: CUDA 后端（强制指定）");
@@ -295,6 +309,8 @@ impl GpuDevice {
                     cuda_flags,
                     zero_copy_threshold_kb,
                     persistent_kernels,
+                    compile_ptx,
+                    use_curand,
                 ) {
                     Ok(backend) => {
                         tracing::info!("GPU 加速已启用: CUDA 后端初始化成功");
@@ -407,7 +423,18 @@ impl GpuDevice {
     ///
     /// # Errors
     /// 当缓冲区大小不匹配或传输失败时返回错误。
+    #[cfg(feature = "cuda")]
     pub fn copy_to_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
+        &self,
+        buffer: &mut GpuBuffer<T>,
+        data: &[T],
+    ) -> Result<(), DeviceError> {
+        self.backend.copy_to_device(buffer, data)
+    }
+
+    /// 将数据从主机复制到设备（无 CUDA 时使用简化 trait bound）。
+    #[cfg(not(feature = "cuda"))]
+    pub fn copy_to_device<T: bytemuck::Pod>(
         &self,
         buffer: &mut GpuBuffer<T>,
         data: &[T],
@@ -419,7 +446,18 @@ impl GpuDevice {
     ///
     /// # Errors
     /// 当传输失败时返回错误。
+    #[cfg(feature = "cuda")]
     pub fn copy_from_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
+        &self,
+        buffer: &GpuBuffer<T>,
+        data: &mut [T],
+    ) -> Result<(), DeviceError> {
+        self.backend.copy_from_device(buffer, data)
+    }
+
+    /// 将数据从设备复制到主机（无 CUDA 时使用简化 trait bound）。
+    #[cfg(not(feature = "cuda"))]
+    pub fn copy_from_device<T: bytemuck::Pod>(
         &self,
         buffer: &GpuBuffer<T>,
         data: &mut [T],

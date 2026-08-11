@@ -23,6 +23,10 @@ Icon
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
 
+# GPU test result logs
+gpu_test_results.log
+gpu_edge_test_results.log
+
 # Directories potentially created on remote AFP share
 .AppleDB
 .AppleDesktop

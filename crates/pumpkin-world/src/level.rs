@@ -237,15 +237,13 @@ impl Level {
         // 初始化 GPU 加速（如果全局配置已设置且启用）
         #[cfg(feature = "gpu")]
         let gpu_compute = crate::gpu::get_gpu_config().and_then(|config| {
-            if config.enabled {
+            config.enabled.then(|| {
                 let compute = GpuCompute::new(config.clone());
                 if compute.is_gpu_active() {
                     tracing::info!("GPU 加速已启用");
                 }
-                Some(Arc::new(compute))
-            } else {
-                None
-            }
+                Arc::new(compute)
+            })
         });
 
         let chunk_saver = match &level_config.chunk {

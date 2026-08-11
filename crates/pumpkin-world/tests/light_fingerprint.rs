@@ -1,5 +1,11 @@
 //! Lighting GPU 加速指纹测试。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, unused_mut)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    unused_mut,
+    clippy::print_stdout
+)]
 #![cfg(feature = "gpu")]
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_world::light_accel::LightAccelerator;
@@ -18,7 +24,7 @@ fn make_hm_op_nb(n: usize, h: usize) -> (Vec<i32>, Vec<u8>, Vec<i32>) {
     let mut op = vec![0u8; n * h];
     let mut s = SEED;
     for c in 0..n {
-        hm[c] = ((s as u64 % 200) + 64) as i32;
+        hm[c] = ((s % 200) + 64) as i32;
         s = s.wrapping_mul(1442695040888963407);
         for y in 0..h {
             op[c * h + y] = s as u8 % 16;
@@ -49,7 +55,7 @@ fn sky_fill_consistency() {
     let mut cpu = vec![0u8; 324 * 384];
     let mut gpu = vec![0u8; 324 * 384];
     for col in 0..324 {
-        let t = hm[col] as i32;
+        let t = hm[col];
         for y in (t + 1)..384 {
             cpu[col * 384 + y as usize] = 15;
         }
@@ -69,6 +75,7 @@ fn block_scan_consistency() {
     let n = 65536;
     let mut lum = vec![0u8; n];
     let mut s = SEED;
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         lum[i] = s as u8 % 16;
         if lum[i] > 14 {
@@ -102,7 +109,6 @@ fn propagate_consistency() {
         let mut ch = false;
         for i in 0..1024 {
             let cur = cpu_lt[i];
-            let _op_v = op[i];
             let mut best = cur;
             for d in 0..6 {
                 let ni = nb[i * 6 + d] as usize;
@@ -143,7 +149,6 @@ fn perf_propagate() {
             ch = false;
             for i in 0..65536 {
                 let cur = l2[i];
-                let _op_v = op[i];
                 let mut best = cur;
                 for d in 0..6 {
                     let ni = nb[i * 6 + d] as usize;

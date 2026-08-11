@@ -240,7 +240,21 @@ impl GpuNoiseSampler {
             }
 
             // 尝试 JIT launch
-            let ok = self.try_launch(&jit_kernel.name, n, vec![KernelArg::I32(n as i32)], vec![]);
+            let ok = self.try_launch(
+                &jit_kernel.name,
+                n,
+                vec![
+                    KernelArg::BufferRef(0), // pos
+                    KernelArg::BufferRef(1), // perms
+                    KernelArg::BufferRef(2), // res
+                    KernelArg::I32(n as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
                 self.device.free(d_pos)?;

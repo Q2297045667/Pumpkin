@@ -27,15 +27,16 @@ impl CudaKernelLauncher {
     /// 初始化编译器并编译所有 Kernel。
     pub fn init(
         &mut self,
-        ctx: Arc<cudarc::driver::CudaContext>,
+        ctx: &Arc<cudarc::driver::CudaContext>,
         stream: Arc<cudarc::driver::CudaStream>,
         flags: Option<&[String]>,
         persistent_enabled: bool,
+        compile_ptx: Option<&str>,
     ) {
-        let mut compiler = CudaKernelCompiler::new();
+        let mut compiler = CudaKernelCompiler::new(compile_ptx);
         let default_flags: &[String] = &[];
         let flags = flags.unwrap_or(default_flags);
-        if let Err(e) = compiler.compile_all(&ctx, flags) {
+        if let Err(e) = compiler.compile_all(ctx, flags) {
             tracing::warn!("CUDA NVRTC kernel compilation failed: {e}. CPU fallback will be used.");
         }
         self.compiler = Some(compiler);
@@ -57,13 +58,14 @@ impl CudaKernelLauncher {
             .as_ref()
             .map(|s| s.context().clone())
             .ok_or_else(|| DeviceError::Internal("CUDA stream not initialized".into()))?;
-        if let Some(ref mut compiler) = self.compiler {
-            compiler.compile_jit_kernel(&ctx, jit_kernel)
-        } else {
-            Err(DeviceError::Unsupported(
-                "CUDA compiler not initialized".into(),
-            ))
-        }
+        self.compiler.as_mut().map_or_else(
+            || {
+                Err(DeviceError::Unsupported(
+                    "CUDA compiler not initialized".into(),
+                ))
+            },
+            |compiler| compiler.compile_jit_kernel(&ctx, jit_kernel),
+        )
     }
 }
 
@@ -152,7 +154,7 @@ impl KernelLauncher for CudaKernelLauncher {
             .local_work_size
             .map_or(256u32, |l| l[0] as u32)
             .min(n);
-        let grid_dim = (n + block_dim - 1) / block_dim;
+        let grid_dim = n.div_ceil(block_dim);
         let cfg = cudarc::driver::LaunchConfig {
             grid_dim: (grid_dim, 1, 1),
             block_dim: (block_dim, 1, 1),
@@ -166,8 +168,11 @@ impl KernelLauncher for CudaKernelLauncher {
         // GPU buffers are valid for the duration of the kernel execution.
         let result = if is_persistent {
             tracing::debug!("CUDA: launching persistent kernel '{}'", launch.name);
+            // SAFETY: kernel args match signature; cooperative launch requires SM 6.0+
+            // Config (grid/block dimensions, shared memory) is valid for this kernel.
             unsafe { builder.launch_cooperative(cfg) }
         } else {
+            // SAFETY: kernel args match signature; config (grid/block dimensions) is valid.
             unsafe { builder.launch(cfg) }
         };
 

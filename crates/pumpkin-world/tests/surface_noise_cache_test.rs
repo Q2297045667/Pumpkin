@@ -4,7 +4,8 @@
     clippy::expect_used,
     clippy::panic,
     unused_mut,
-    unused_imports
+    unused_imports,
+    clippy::print_stdout
 )]
 #![cfg(feature = "gpu")]
 use pumpkin_config::gpu::GpuConfig;

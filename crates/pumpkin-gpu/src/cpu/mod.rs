@@ -139,7 +139,9 @@ impl KernelLauncher for CpuKernelLauncher {
     fn launch(&self, _launch: crate::common::kernel::KernelLaunch<'_>) -> Result<(), DeviceError> {
         // CPU 回退不通过 KernelLaunch 路径。
         // 各采样器模块在检测到 DeviceType::Cpu 后直接调用内置 CPU fallback 函数。
-        Err(DeviceError::Unsupported("CPU backend does not use KernelLaunch".into()))
+        Err(DeviceError::Unsupported(
+            "CPU backend does not use KernelLaunch".into(),
+        ))
     }
 
     fn has_kernel(&self, _name: &str) -> bool {

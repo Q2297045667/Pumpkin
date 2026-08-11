@@ -3,6 +3,8 @@ extend-exclude = ["assets/", "crates/pumpkin-data/src/generated"]
 
 [default.extend-words]
 handled = "handled"
+thr = "thr"
+nd = "nd"
 received = "received"
 ba = "ba"
 fo = "fo"

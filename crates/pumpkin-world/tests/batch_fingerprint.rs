@@ -1,5 +1,25 @@
 //! 批量 GPU 加速指纹测试 — Cell Cache、Aquifer、Beardifier、Vein。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, unused_mut)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    unused_mut,
+    clippy::print_stdout,
+    clippy::needless_range_loop,
+    clippy::unnecessary_cast,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::semicolon_inside_block,
+    clippy::semicolon_outside_block,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::module_name_repetitions
+)]
 #![cfg(feature = "gpu")]
 
 use pumpkin_config::gpu::GpuConfig;

@@ -49,7 +49,6 @@ impl GpuLightSampler {
                         KernelArg::BufferRef(2),
                         KernelArg::I32(n as i32),
                         KernelArg::I32(max_height as i32),
-                        KernelArg::I32(0),
                     ],
                     gpu_buffers: vec![
                         GpuBufferRef::I32(&d_hm),
@@ -148,6 +147,8 @@ impl GpuLightSampler {
 
     /// GPU 迭代距离场光照传播。
     /// 重复调用 `light_propagate_u8` kernel 直到收敛。
+    /// 如果 persistent kernel 可用，使用单次 cooperative launch。
+    #[allow(clippy::too_many_lines)]
     pub fn iterative_propagate(
         &mut self,
         light: &mut [u8],
@@ -161,6 +162,51 @@ impl GpuLightSampler {
         }
 
         if let Some(l) = self.device.kernel_launcher() {
+            // 优先使用 persistent kernel（单次 cooperative launch）
+            if l.has_kernel("light_propagate_u8_persistent") {
+                let mut d_light = self.device.alloc_u8(n)?;
+                let mut d_opacity = self.device.alloc_u8(n)?;
+                let mut d_neighbors = self.device.alloc_i32(n * 6)?;
+                let mut d_converged = self.device.alloc_i32(1)?;
+                let mut d_sync_counter = self.device.alloc_i32(1)?;
+
+                self.device.copy_to_device(&mut d_light, light)?;
+                self.device.copy_to_device(&mut d_opacity, opacity)?;
+                self.device.copy_to_device(&mut d_neighbors, neighbors)?;
+                self.device.copy_to_device(&mut d_converged, &[0i32])?;
+                self.device.copy_to_device(&mut d_sync_counter, &[0i32])?;
+
+                l.launch(crate::common::kernel::KernelLaunch {
+                    name: "light_propagate_u8_persistent",
+                    global_work_size: [n, 1, 1],
+                    local_work_size: Some([256, 1, 1]),
+                    args: vec![
+                        KernelArg::BufferRef(0), // light
+                        KernelArg::BufferRef(1), // opacity
+                        KernelArg::BufferRef(2), // neighbors
+                        KernelArg::BufferRef(3), // converged flag
+                        KernelArg::BufferRef(4), // sync counter
+                        KernelArg::I32(n as i32),
+                        KernelArg::I32(max_iters as i32),
+                    ],
+                    gpu_buffers: vec![
+                        GpuBufferRef::U8(&d_light),
+                        GpuBufferRef::U8(&d_opacity),
+                        GpuBufferRef::I32(&d_neighbors),
+                        GpuBufferRef::I32(&d_converged),
+                        GpuBufferRef::I32(&d_sync_counter),
+                    ],
+                })?;
+                l.synchronize()?;
+                self.device.copy_from_device(&d_light, light)?;
+                self.device.free(d_light)?;
+                self.device.free(d_opacity)?;
+                self.device.free(d_neighbors)?;
+                self.device.free(d_converged)?;
+                self.device.free(d_sync_counter)?;
+                return Ok(1); // 单次迭代
+            }
+
             if l.has_kernel("light_propagate_u8") {
                 let mut d_light = self.device.alloc_u8(n)?;
                 let mut d_opacity = self.device.alloc_u8(n)?;

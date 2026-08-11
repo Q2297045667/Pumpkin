@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// enabled = true
 /// noise_acceleration = true
 /// light_acceleration = false
-/// surface_acceleration = false
+/// batch_acceleration = false
 /// jit_enabled = true
 /// backend = "auto"
 ///
@@ -47,10 +47,10 @@ pub struct GpuConfig {
     /// 默认值：`false`
     pub light_acceleration: bool,
 
-    /// 是否开启地表加速（地表规则匹配与替换）。
+    /// 是否开启批量加速（Cell Cache、Aquifer、Beardifier、Vein）。
     ///
     /// 默认值：`false`
-    pub surface_acceleration: bool,
+    pub batch_acceleration: bool,
 
     /// 是否启用 JIT 专用内核。
     ///
@@ -110,7 +110,7 @@ impl Default for GpuConfig {
             enabled: false,
             noise_acceleration: false,
             light_acceleration: false,
-            surface_acceleration: false,
+            batch_acceleration: false,
             jit_enabled: false,
             jit_max_unroll: 16,
             soa_layout: false,
@@ -355,7 +355,7 @@ mod tests {
         assert!(!config.enabled);
         assert!(!config.noise_acceleration);
         assert!(!config.light_acceleration);
-        assert!(!config.surface_acceleration);
+        assert!(!config.batch_acceleration);
         assert!(!config.jit_enabled);
         assert!(!config.soa_layout);
         assert_eq!(config.jit_max_unroll, 16);
@@ -410,7 +410,7 @@ mod tests {
             enabled: true,
             noise_acceleration: true,
             light_acceleration: true,
-            surface_acceleration: false,
+            batch_acceleration: false,
             jit_enabled: true,
             jit_max_unroll: 8,
             soa_layout: true,

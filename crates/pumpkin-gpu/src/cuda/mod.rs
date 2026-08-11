@@ -14,6 +14,7 @@
 //! | CPU 回退 | ✅ | 内存分配/传输失败自动回退 |
 
 mod context;
+pub mod curand;
 pub(crate) mod kernel;
 mod memory;
 
@@ -31,6 +32,9 @@ pub struct CudaBackend {
     pub(crate) launcher: kernel::CudaKernelLauncher,
     /// 零拷贝阈值（字节）
     zero_copy_threshold_bytes: usize,
+    /// cuRAND 随机数生成（⚠️ 破坏地形一致性）
+    #[allow(dead_code)]
+    use_curand: bool,
 }
 
 // SAFETY: CudaBackend's internal state is Send by cudarc specification.
@@ -42,6 +46,8 @@ impl CudaBackend {
         flags: Option<&[String]>,
         zero_copy_threshold_kb: usize,
         persistent_enabled: bool,
+        compile_ptx: Option<&str>,
+        use_curand: bool,
     ) -> Result<Self, DeviceError> {
         let idx = device_index.unwrap_or(0);
 
@@ -57,17 +63,24 @@ impl CudaBackend {
 
         tracing::info!("CUDA 设备: {name}");
         if zero_copy_threshold_kb > 0 {
-            tracing::debug!("CUDA 零拷贝阈值: {} KB", zero_copy_threshold_kb);
+            tracing::debug!(
+                "CUDA 零拷贝阈值: {} KB (功能暂未实现，使用标准分配)",
+                zero_copy_threshold_kb
+            );
+        }
+        if use_curand {
+            tracing::warn!("⚠️ cuRAND 已启用 — 随机数序列与 CPU 不同，地形一致性不保证");
         }
 
         let mut launcher = kernel::CudaKernelLauncher::new();
-        launcher.init(ctx.clone(), stream.clone(), flags, persistent_enabled);
+        launcher.init(&ctx, stream.clone(), flags, persistent_enabled, compile_ptx);
         Ok(Self {
             ctx,
             stream,
             name,
             launcher,
             zero_copy_threshold_bytes: zero_copy_threshold_kb.saturating_mul(1024),
+            use_curand,
         })
     }
 

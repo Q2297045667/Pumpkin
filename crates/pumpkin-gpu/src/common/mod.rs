@@ -69,6 +69,7 @@ impl BackendImpl {
         }
     }
 
+    #[cfg(feature = "cuda")]
     pub(crate) fn copy_to_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &mut GpuBuffer<T>,
@@ -76,13 +77,26 @@ impl BackendImpl {
     ) -> Result<(), DeviceError> {
         match self {
             Self::Cpu(b) => b.copy_to_device(buffer, data),
-            #[cfg(feature = "cuda")]
             Self::Cuda(b) => b.copy_to_device(buffer, data),
             #[cfg(feature = "opencl")]
             Self::OpenCl(b) => b.copy_to_device(buffer, data),
         }
     }
 
+    #[cfg(not(feature = "cuda"))]
+    pub(crate) fn copy_to_device<T: bytemuck::Pod>(
+        &self,
+        buffer: &mut GpuBuffer<T>,
+        data: &[T],
+    ) -> Result<(), DeviceError> {
+        match self {
+            Self::Cpu(b) => b.copy_to_device(buffer, data),
+            #[cfg(feature = "opencl")]
+            Self::OpenCl(b) => b.copy_to_device(buffer, data),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
     pub(crate) fn copy_from_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &GpuBuffer<T>,
@@ -90,8 +104,20 @@ impl BackendImpl {
     ) -> Result<(), DeviceError> {
         match self {
             Self::Cpu(b) => b.copy_from_device(buffer, data),
-            #[cfg(feature = "cuda")]
             Self::Cuda(b) => b.copy_from_device(buffer, data),
+            #[cfg(feature = "opencl")]
+            Self::OpenCl(b) => b.copy_from_device(buffer, data),
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub(crate) fn copy_from_device<T: bytemuck::Pod>(
+        &self,
+        buffer: &GpuBuffer<T>,
+        data: &mut [T],
+    ) -> Result<(), DeviceError> {
+        match self {
+            Self::Cpu(b) => b.copy_from_device(buffer, data),
             #[cfg(feature = "opencl")]
             Self::OpenCl(b) => b.copy_from_device(buffer, data),
         }

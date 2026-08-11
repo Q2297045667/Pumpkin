@@ -41,13 +41,9 @@ pub fn init_cuda(device_index: usize) -> Result<Arc<cudarc::driver::CudaContext>
 }
 
 /// 检查 NVIDIA CUDA 驱动是否已安装（文件系统检查，不调用任何 CUDA API）。
-pub(crate) fn cuda_driver_available() -> bool {
+pub fn cuda_driver_available() -> bool {
     #[cfg(target_os = "windows")]
     {
-        let _candidates = [
-            r"C:\Windows\System32\nvcuda.dll",
-            r"C:\Windows\System32\cudart64_*.dll",
-        ];
         // 检查 nvcuda.dll（NVIDIA 显示驱动自带的 CUDA 驱动）
         if std::path::Path::new(r"C:\Windows\System32\nvcuda.dll").exists() {
             return true;
