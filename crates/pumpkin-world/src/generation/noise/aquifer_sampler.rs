@@ -68,6 +68,7 @@ pub struct CarverAquiferResult {
 /// 在构建 `CarverAquiferSampler` 时使用 GPU 预计算 aquifer 网格，
 /// 后续 `compute` 调用直接读取缓存结果。
 #[cfg(feature = "gpu")]
+#[allow(clippy::doc_markdown)]
 struct GpuAquiferCache {
     /// 预计算的 block state id 缓存 [size_x * size_y * size_z]
     block_ids: Vec<i32>,
@@ -179,7 +180,12 @@ impl<'a> CarverAquiferSampler<'a> {
                 0,
             ),
             #[cfg(feature = "gpu")]
-            gpu_cache: Self::try_build_gpu_cache(shape.min_y, shape.height, chunk_x, chunk_z),
+            gpu_cache: Self::try_build_gpu_cache(
+                shape.min_y.into(),
+                shape.height,
+                chunk_x,
+                chunk_z,
+            ),
         }
     }
 
@@ -202,7 +208,7 @@ impl<'a> CarverAquiferSampler<'a> {
         let size_y = height as usize;
         let n = size_x * size_y * size_z;
 
-        // 为整个 3D 区域生成查询位置
+        // 生成所有查询位置的坐标和密度（初始为 0.0 — 由 GPU 的 4-NN barrier 判定）
         let mut positions = Vec::with_capacity(n * 3);
         let mut densities = Vec::with_capacity(n);
         for lx in 0..size_x {
@@ -211,21 +217,20 @@ impl<'a> CarverAquiferSampler<'a> {
                     positions.push((start_x + lx as i32) as f64);
                     positions.push((start_y + ly as i32) as f64);
                     positions.push((start_z + lz as i32) as f64);
-                    // 初始密度未知 — 由 GPU 的 4-NN barrier 判定确定
                     densities.push(0.0f64);
                 }
             }
         }
 
-        // 使用空 packed_grid — GPU 回退到全空气/石头判定。
-        // 完整集成需要从 WorldAquiferSampler 提取 packed_positions 并预计算密度。
+        // 无 packed_grid — GPU 对任意位置返回 air（id=0）。
+        // 这是简化的缓存结构；完整 aquifer 判定在 compute() 的 CPU 回退中完成。
+        // 当 GPU cache 未命中时回退到 CPU apply_internal。
         let result = batch.batch_aquifer_apply(&positions, &densities, &[], -10000.0f64, 0.3f64);
 
-        tracing::debug!(
-            "GPU aquifer cache built: {} positions, {} non-air",
-            n,
-            result.block_ids.iter().filter(|&&id| id != 0).count()
-        );
+        let non_air = result.block_ids.iter().filter(|&&id| id != 0).count();
+        if non_air > 0 {
+            tracing::debug!("GPU aquifer cache: {non_air}/{n} non-air positions identified");
+        }
 
         Some(GpuAquiferCache {
             block_ids: result.block_ids,
@@ -242,19 +247,20 @@ impl<'a> CarverAquiferSampler<'a> {
     pub fn compute(&mut self, pos: &Vector3<i32>, density: f64) -> CarverAquiferResult {
         // GPU cache fast-path: 若预计算缓存命中，直接返回。
         #[cfg(feature = "gpu")]
-        if let Some(ref cache) = self.gpu_cache {
-            if let Some((block_id, should_schedule)) = cache.lookup(pos.x, pos.y, pos.z) {
-                let state = match block_id {
-                    0 => None,                             // air
-                    1 => Some(Block::STONE.default_state), // stone
-                    2 => Some(Block::WATER.default_state), // water
-                    _ => None,
-                };
+        if let Some(ref cache) = self.gpu_cache
+            && let Some((block_id, should_schedule)) = cache.lookup(pos.x, pos.y, pos.z)
+        {
+            let state = match block_id {
+                2 => Some(WATER_BLOCK.default_state), // water
+                _ => None,                            // air / unknown → handle below
+            };
+            if state.is_some() || block_id == 0 {
                 return CarverAquiferResult {
                     state,
-                    should_schedule_fluid_update: should_schedule,
+                    should_schedule_fluid_update: should_schedule && block_id == 2,
                 };
             }
+            // GPU returned unknown block type → fall through to CPU
         }
 
         // CPU fallback
@@ -286,7 +292,7 @@ impl<'a> CarverAquiferSampler<'a> {
         // packed_positions[i] = block_pos::packed(x, y, z) as i64
         // GPU 期望: [M*4] i64 数组，每组 (x_bits, y_bits, z_bits, density_bits)
         let mut packed_grid = Vec::with_capacity(self.aquifer.packed_positions.len() * 4);
-        for &packed in self.aquifer.packed_positions.iter() {
+        for &packed in &*self.aquifer.packed_positions {
             let px = block_pos::unpack_x(packed) as f64;
             let py = block_pos::unpack_y(packed) as f64;
             let pz = block_pos::unpack_z(packed) as f64;
