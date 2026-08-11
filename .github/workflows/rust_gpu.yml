@@ -103,11 +103,21 @@ jobs:
           sudo apt-get install -y nvidia-cuda-toolkit
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p pumpkin-gpu --features gpu --lib
+      - run: cargo test -p pumpkin-gpu --features gpu --test jit_tests
+      - run: cargo test -p pumpkin-gpu --features gpu --test jit_consistency_tests
+      - run: cargo test -p pumpkin-gpu --features gpu --test kernel_tests
+      - run: cargo test -p pumpkin-gpu --features gpu --test boundary_tests
+      - run: cargo test -p pumpkin-gpu --features gpu --test edge_case_tests
       - run: cargo test -p pumpkin-world --features gpu --test batch_fingerprint
       - run: cargo test -p pumpkin-world --features gpu --test gpu_pipeline_integration
       - run: cargo test -p pumpkin-world --features gpu --test gpu_noise_fingerprint
+      - run: cargo test -p pumpkin-world --features gpu --test gpu_noise_fingerprint_full
       - run: cargo test -p pumpkin-world --features gpu --test noise_accel_consistency
       - run: cargo test -p pumpkin-world --features gpu --test light_fingerprint
+      - run: cargo test -p pumpkin-world --features gpu --test light_accel_consistency
+      - run: cargo test -p pumpkin-world --features gpu --test worldgen_fingerprint
+      - run: cargo test -p pumpkin-world --features gpu --test worldgen_bench
+      - run: cargo test -p pumpkin-world --features gpu --test surface_noise_cache_test
 
   machete:
     name: Unused Deps
