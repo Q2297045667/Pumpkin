@@ -453,12 +453,18 @@ impl<'a> ChunkNoiseRouter<'a> {
                         if let Some(ChunkNoiseFunctionComponent::Chunk(
                             ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache),
                         )) = component.first_mut()
+                            && cell_cache.cache.len() == gpu_results.len()
                         {
-                            if cell_cache.cache.len() == gpu_results.len() {
-                                cell_cache.cache.copy_from_slice(&gpu_results);
-                            }
+                            cell_cache.cache.copy_from_slice(&gpu_results);
                         }
                     }
+
+                    // 回填噪声缓存：将 GPU 计算中使用的 Perlin 采样结果
+                    // 写入线程本地缓存，加速后续 CPU DAG 求值。
+                    if let Some(&cell_idx) = self.cell_indices.first() {
+                        self.backfill_noise_cache(&positions, cell_idx);
+                    }
+
                     return;
                 }
             }
@@ -551,6 +557,12 @@ impl<'a> ChunkNoiseRouter<'a> {
                             }
                         }
                     }
+
+                    // 回填噪声缓存
+                    if let Some(&interp_idx) = self.interpolator_indices.first() {
+                        self.backfill_noise_cache(&positions, interp_idx);
+                    }
+
                     return;
                 }
             }
@@ -616,6 +628,52 @@ impl<'a> ChunkNoiseRouter<'a> {
         }
     }
 
+    /// 回填线程本地噪声缓存。
+    ///
+    /// 在 GPU 批量计算完成后，对每个 Perlin 噪声采样器，
+    /// 用 CPU 计算所有位置的噪声值并写入线程本地缓存。
+    /// 后续 `OctavePerlinNoiseSampler::sample` 调用将命中缓存，
+    /// 避免重复计算。
+    #[cfg(feature = "gpu")]
+    fn backfill_noise_cache(&self, positions: &[f64], start_index: usize) {
+        use std::collections::HashSet;
+
+        let mut visited = HashSet::new();
+        let samplers = self.collect_noise_samplers(start_index, &mut visited);
+        if samplers.is_empty() {
+            return;
+        }
+
+        let n = positions.len() / 3;
+        if n == 0 {
+            return;
+        }
+
+        // 收集所有采样器-位置对的噪声值，合并写入一次缓存
+        let mut cache_entries: std::collections::HashMap<(u64, i64, i64, i64), f64> =
+            std::collections::HashMap::with_capacity(samplers.len() * n);
+
+        for info in &samplers {
+            if info.sampler_id == 0 {
+                continue;
+            }
+            for idx in 0..n {
+                let x = positions[idx * 3];
+                let y = positions[idx * 3 + 1];
+                let z = positions[idx * 3 + 2];
+                let value = info.sampler.sample(x, y, z);
+                let ix = (x * 1_000_000.0) as i64;
+                let iy = (y * 1_000_000.0) as i64;
+                let iz = (z * 1_000_000.0) as i64;
+                cache_entries.insert((info.sampler_id, ix, iy, iz), value);
+            }
+        }
+
+        if !cache_entries.is_empty() {
+            pumpkin_util::noise::perlin::set_noise_cache(cache_entries);
+        }
+    }
+
     pub fn interpolate_y(&mut self, delta: f64) {
         let indices = &self.interpolator_indices;
         let components = &mut self.component_stack;
@@ -673,7 +731,7 @@ impl<'a> ChunkNoiseRouter<'a> {
             if n > 0 {
                 // Collect 8 corner values (first_pass) from all interpolators
                 let mut corners = Vec::with_capacity(n * 8);
-                for idx in self.interpolator_indices.iter() {
+                for idx in &self.interpolator_indices {
                     if let ChunkNoiseFunctionComponent::Chunk(
                         ChunkSpecificNoiseFunctionComponent::DensityInterpolator(di),
                     ) = &self.component_stack[*idx]
@@ -905,11 +963,12 @@ impl<'a> ChunkNoiseRouter<'a> {
     /// Recursively walk the component stack from `start_index` collecting all
     /// reachable leaf noise samplers.
     #[cfg(feature = "gpu")]
+    #[allow(clippy::too_many_lines)]
     fn collect_noise_samplers(
         &self,
         start_index: usize,
         visited: &mut std::collections::HashSet<usize>,
-    ) -> Vec<NoiseSamplerInfo> {
+    ) -> Vec<NoiseSamplerInfo<'_>> {
         if !visited.insert(start_index) {
             return Vec::new();
         }
@@ -1050,10 +1109,14 @@ impl<'a> ChunkNoiseRouter<'a> {
 
 /// Noise sampler configuration extracted from the DAG.
 #[cfg(feature = "gpu")]
-struct NoiseSamplerInfo {
+struct NoiseSamplerInfo<'a> {
+    /// Reference to the actual sampler (for noise cache backfill).
+    sampler: &'a pumpkin_util::noise::perlin::OctavePerlinNoiseSampler,
+    /// Unique sampler identifier for noise cache lookups.
+    sampler_id: u64,
     /// 0=Noise, 1=ShiftA, 2=ShiftB, 3=InterpolatedNoise
     sampler_type: i32,
-    /// Number of octaves in the OctavePerlinNoiseSampler
+    /// Number of octaves in the `OctavePerlinNoiseSampler`
     num_octaves: i32,
     /// Per-octave amplitudes (already multiplied by persistence and parent amplitude)
     amplitudes: Vec<f64>,
@@ -1061,9 +1124,9 @@ struct NoiseSamplerInfo {
     lacunarities: Vec<f64>,
     /// Flattened per-octave origins [x0, y0, z0, x1, y1, z1, ...]
     origins: Vec<f64>,
-    /// XZ scale from NoiseData (for interpolator encoding)
+    /// XZ scale from `NoiseData` (for interpolator encoding)
     xz_scale: Option<f64>,
-    /// Y scale from NoiseData (for interpolator encoding)
+    /// Y scale from `NoiseData` (for interpolator encoding)
     y_scale: Option<f64>,
 }
 
@@ -1080,13 +1143,13 @@ fn extract_double_perlin_config(
     sampler_type: i32,
     xz_scale: Option<f64>,
     y_scale: Option<f64>,
-) -> NoiseSamplerInfo {
+) -> NoiseSamplerInfo<'_> {
     let num_octaves = octave_sampler.samplers.len() as i32;
     let mut amplitudes = Vec::with_capacity(num_octaves as usize);
     let mut lacunarities = Vec::with_capacity(num_octaves as usize);
     let mut origins = Vec::with_capacity(num_octaves as usize * 3);
 
-    for sd in octave_sampler.samplers.iter() {
+    for sd in &octave_sampler.samplers {
         // GPU kernel multiplies amp * sample_perlin, so bake persistence and
         // parent amplitude into the stored amplitude.
         amplitudes.push(sd.amplitude * sd.persistence * parent_amplitude);
@@ -1097,6 +1160,8 @@ fn extract_double_perlin_config(
     }
 
     NoiseSamplerInfo {
+        sampler: octave_sampler,
+        sampler_id: octave_sampler.sampler_id,
         sampler_type,
         num_octaves,
         amplitudes,
@@ -1113,13 +1178,13 @@ fn extract_double_perlin_config(
 #[cfg(feature = "gpu")]
 fn extract_interpolated_noise_config(
     interp: &super::density_function::noise::InterpolatedNoiseSampler,
-) -> NoiseSamplerInfo {
+) -> NoiseSamplerInfo<'_> {
     let num_octaves = interp.noise.samplers.len() as i32;
     let mut amplitudes = Vec::with_capacity(num_octaves as usize);
     let mut lacunarities = Vec::with_capacity(num_octaves as usize);
     let mut origins = Vec::with_capacity(num_octaves as usize * 3);
 
-    for sd in interp.noise.samplers.iter() {
+    for sd in &interp.noise.samplers {
         // InterpolatedNoise uses the noise sampler directly within
         // a complex weighted sum; amplitude here is per-octave weight.
         amplitudes.push(sd.amplitude * sd.persistence);
@@ -1130,6 +1195,8 @@ fn extract_interpolated_noise_config(
     }
 
     NoiseSamplerInfo {
+        sampler: &interp.noise,
+        sampler_id: interp.noise.sampler_id,
         sampler_type: 3, // InterpolatedNoise
         num_octaves,
         amplitudes,

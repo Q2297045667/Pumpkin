@@ -124,8 +124,9 @@ impl GpuCellBatchSampler {
         assert_eq!(positions.len(), n * 3);
 
         if self.device.device_type() == crate::DeviceType::Cpu {
-            cpu_cell_cache_fill(positions, results);
-            return Ok(());
+            return Err(DeviceError::LaunchFailed(
+                "CPU device — use BatchAccelerator fallback".into(),
+            ));
         }
 
         // 提取 cell cache 参数
@@ -246,10 +247,12 @@ impl GpuCellBatchSampler {
         assert_eq!(positions.len(), n * 3);
 
         if self.device.device_type() == crate::DeviceType::Cpu {
-            cpu_interpolator_fill(positions, results);
-            return Ok(());
+            return Err(DeviceError::LaunchFailed(
+                "CPU device — use BatchAccelerator fallback".into(),
+            ));
         }
 
+        // 提取 interpolator fill 参数
         // 提取插值器参数：使用第一个采样器的配置
         let total_octaves: i32 = sampler_params.num_octaves.iter().sum();
         if total_octaves == 0 || sampler_params.perlin_configs.is_empty() {
@@ -508,6 +511,7 @@ impl GpuBeardifierBatchSampler {
     /// 批量 Beardifier 计算。
     ///
     /// 对每个位置累加来自结构和连接点的 beard 贡献。
+    #[allow(clippy::too_many_lines)]
     pub fn batch_beardifier(
         &mut self,
         positions: &[f64],
@@ -515,6 +519,9 @@ impl GpuBeardifierBatchSampler {
         junctions: &[BeardifierJunctionData],
         results: &mut [f64],
     ) -> Result<(), DeviceError> {
+        const KERNEL_SIZE: usize = 24;
+        const KERNEL_VOLUME: usize = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE; // 13824
+
         let n = results.len();
         if n == 0 {
             return Ok(());
@@ -528,12 +535,9 @@ impl GpuBeardifierBatchSampler {
             ));
         }
 
-        const KERNEL_SIZE: usize = 24;
-        const KERNEL_VOLUME: usize = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE; // 13824
-
         // 构建预计算的 beard kernel (24³三线性采样核)。
         // 指数衰减：exp(-dist² / 16)
-        let mut beard_kernel = [0.0f64; KERNEL_VOLUME];
+        let mut beard_kernel = vec![0.0f64; KERNEL_VOLUME].into_boxed_slice();
         let ksh = KERNEL_SIZE as f64 * 0.5;
         for zi in 0..KERNEL_SIZE {
             for xi in 0..KERNEL_SIZE {
@@ -674,6 +678,7 @@ impl GpuVeinBatchSampler {
     /// - 1 = 矿石
     /// - 2 = 粗矿
     /// - 3 = 围岩
+    #[allow(clippy::too_many_lines)]
     pub fn batch_vein_sample(
         &mut self,
         positions: &[f64],
@@ -687,10 +692,12 @@ impl GpuVeinBatchSampler {
         assert_eq!(positions.len(), n * 3);
 
         if self.device.device_type() == crate::DeviceType::Cpu {
-            cpu_vein_sample(positions, results);
-            return Ok(());
+            return Err(DeviceError::LaunchFailed(
+                "CPU device — use BatchAccelerator fallback".into(),
+            ));
         }
 
+        // 提取矿脉参数
         let octaves_per_vein = (vein_params.toggle_config.len() / 8) as i32;
         if octaves_per_vein == 0 {
             return Err(DeviceError::LaunchFailed(
@@ -826,52 +833,6 @@ fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
         *p = (h ^ (h >> 24)) as u8;
     }
     perm
-}
-
-// ============================================================================
-// CPU Fallbacks
-// ============================================================================
-
-/// CPU 占位：Cell Cache 零填充（不会被实际调用）。
-///
-/// 这是一个零填充占位实现，**永远不会在正常执行路径中被调用**。
-/// 完整的 DAG 求值由上层 [`BatchAccelerator`] 的 CPU fallback 处理。
-/// 此处保留仅用于：
-/// - 编译期类型检查（确保签名与 GPU kernel 一致）
-/// - 极端回退场景（GPU 不可用且上层未提供 fallback）的安全网
-#[allow(unused_variables)]
-fn cpu_cell_cache_fill(_positions: &[f64], results: &mut [f64]) {
-    for item in results.iter_mut() {
-        *item = 0.0;
-    }
-}
-
-/// CPU 占位：插值器缓冲零填充（不会被实际调用）。
-///
-/// 这是一个零填充占位实现，**永远不会在正常执行路径中被调用**。
-/// 完整的 DAG 求值由上层 [`BatchAccelerator`] 的 CPU fallback 处理。
-/// 此处保留仅用于：
-/// - 编译期类型检查（确保签名与 GPU kernel 一致）
-/// - 极端回退场景（GPU 不可用且上层未提供 fallback）的安全网
-#[allow(unused_variables)]
-fn cpu_interpolator_fill(_positions: &[f64], results: &mut [f64]) {
-    for item in results.iter_mut() {
-        *item = 0.0;
-    }
-}
-
-/// CPU 占位：矿脉零填充（不会被实际调用）。
-///
-/// 这是一个零填充占位实现（零填充 = 无矿脉），**永远不会在正常执行路径中被调用**。
-/// 完整的矿脉判定由上层 [`BatchAccelerator`] 的 CPU fallback 处理。
-/// 此处保留仅用于：
-/// - 编译期类型检查（确保签名与 GPU kernel 一致）
-/// - 极端回退场景（GPU 不可用且上层未提供 fallback）的安全网
-#[allow(unused_variables)]
-fn cpu_vein_sample(_positions: &[f64], results: &mut [i32]) {
-    for item in results.iter_mut() {
-        *item = 0;
-    }
 }
 
 // ============================================================================

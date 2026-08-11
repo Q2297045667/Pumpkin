@@ -12,9 +12,10 @@ use super::{
 const BEARD_KERNEL_RADIUS: i32 = 12;
 const BEARD_KERNEL_SIZE: i32 = 24;
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) static BEARD_KERNEL: OnceLock<[f64; 13824]> = OnceLock::new();
 
-#[expect(clippy::large_stack_arrays)]
+#[expect(clippy::large_stack_arrays, clippy::redundant_pub_crate)]
 /// 返回或初始化预计算的 24×24×24 beard kernel 表。
 /// GPU beardifier kernel 需要此表进行三线性采样。
 pub(crate) fn get_beard_kernel() -> &'static [f64; 13824] {

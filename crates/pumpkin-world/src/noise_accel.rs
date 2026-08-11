@@ -218,25 +218,36 @@ impl NoiseAccelerator {
         let mut surf = vec![0.0f64; n];
         let mut sec = vec![0.0f64; n];
 
+        // GPU 路径：成功时直接使用 GPU 结果，失败时回退到 CPU。
         #[cfg(feature = "gpu")]
-        if let Some(ref mut inner) = self.inner {
-            let _ = inner.sample_double_perlin_batch(
-                surface_a,
-                surface_b,
-                surface_amp,
-                &pos_3d,
-                &mut surf,
-            );
-            let _ = inner.sample_double_perlin_batch(
-                secondary_a,
-                secondary_b,
-                secondary_amp,
-                &pos_3d,
-                &mut sec,
-            );
-        }
+        let gpu_ok = self.inner.as_mut().is_some_and(|inner| {
+            inner
+                .sample_double_perlin_batch(surface_a, surface_b, surface_amp, &pos_3d, &mut surf)
+                .is_ok()
+                && inner
+                    .sample_double_perlin_batch(
+                        secondary_a,
+                        secondary_b,
+                        secondary_amp,
+                        &pos_3d,
+                        &mut sec,
+                    )
+                    .is_ok()
+        });
         #[cfg(not(feature = "gpu"))]
-        {
+        let gpu_ok = false;
+
+        // CPU 回退（GPU 不可用或失败时）
+        if !gpu_ok {
+            #[cfg(feature = "gpu")]
+            if self.inner.is_some() {
+                pumpkin_gpu::logging::log_fallback(
+                    &pumpkin_gpu::logging::FallbackReason::UnsupportedOperation(
+                        "GPU surface precompute failed".into(),
+                    ),
+                    "noise_accel::precompute_surface",
+                );
+            }
             let c = 1.0181268882175227f64;
             for i in 0..n {
                 let x = pos_3d[i * 3];

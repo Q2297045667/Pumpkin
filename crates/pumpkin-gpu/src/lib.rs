@@ -175,7 +175,13 @@ impl GpuDevice {
         // 将配置项注入全局 OnceLock，供各模块读取
         #[cfg(feature = "pumpkin-util")]
         {
-            crate::jit::set_jit_max_unroll(config.jit_max_unroll);
+            // 当 JIT 未启用时，将 max_unroll 设为 0 以完全禁用 JIT 路径
+            let effective_unroll = if config.jit_enabled {
+                config.jit_max_unroll
+            } else {
+                0
+            };
+            crate::jit::set_jit_max_unroll(effective_unroll);
             crate::noise::batch_cell::set_aquifer_tile_threshold(
                 config.opencl3.local_mem_tile_threshold,
             );

@@ -65,9 +65,9 @@ impl OreVeinSampler {
 }
 
 pub struct VeinType {
-    ore: Block,
-    raw_ore: Block,
-    stone: Block,
+    pub(crate) ore: Block,
+    pub(crate) raw_ore: Block,
+    pub(crate) stone: Block,
     min_y: i32,
     max_y: i32,
 }

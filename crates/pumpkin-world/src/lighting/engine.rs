@@ -710,8 +710,6 @@ impl LightEngine {
         let center_z = cache.z + (cache.size / 2);
         let start_x = center_x * 16 - 1;
         let start_z = center_z * 16 - 1;
-        let end_x = start_x + 18;
-        let end_z = start_z + 18;
         let min_y = cache.bottom_y() as i32;
         let max_y = min_y + cache.height() as i32;
         let height = (max_y - min_y) as usize;

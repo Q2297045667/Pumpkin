@@ -879,6 +879,12 @@ impl ProtoChunk {
         let delta_x_z_step = 1.0 / h_count as f64;
 
         noise_sampler.sample_start_density();
+
+        // GPU 批量矿脉预计算：一次性收集所有位置并调用 GPU。
+        // 后续 sample_block_state 将直接从缓存读取，绕过 CPU DAG。
+        #[cfg(feature = "gpu")]
+        noise_sampler.precompute_gpu_veins();
+
         for cell_x in 0..horizontal_cells {
             noise_sampler.sample_end_density(cell_x);
             let sample_start_x = (self.start_cell_x(h_count) + cell_x) * h_count;

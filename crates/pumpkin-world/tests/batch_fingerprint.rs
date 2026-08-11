@@ -251,8 +251,8 @@ fn cell_cache_fill_consistency() {
     let (perlin_configs, num_octaves) = extract_cell_params_from_sampler(&sampler);
 
     let params = CellFillParams {
-        perlin_configs: perlin_configs.clone(),
-        num_octaves: num_octaves.clone(),
+        perlin_configs,
+        num_octaves,
         sampler_types: vec![0],
     };
 
@@ -287,8 +287,8 @@ fn interpolator_fill_consistency() {
     let (perlin_configs, num_octaves) = extract_interp_params_from_sampler(&sampler, 0.25, 0.125);
 
     let params = CellFillParams {
-        perlin_configs: perlin_configs.clone(),
-        num_octaves: num_octaves.clone(),
+        perlin_configs,
+        num_octaves,
         sampler_types: vec![0],
     };
 
@@ -796,13 +796,13 @@ fn extract_cell_params_from_sampler(sampler: &OctavePerlinNoiseSampler) -> (Vec<
     let num_octaves = sampler.samplers.len() as i32;
     let mut config = Vec::with_capacity(1 + num_octaves as usize * 5);
     config.push(num_octaves as f64);
-    for sd in sampler.samplers.iter() {
+    for sd in &sampler.samplers {
         config.push(sd.amplitude * sd.persistence);
     }
-    for sd in sampler.samplers.iter() {
+    for sd in &sampler.samplers {
         config.push(sd.lacunarity);
     }
-    for sd in sampler.samplers.iter() {
+    for sd in &sampler.samplers {
         config.push(sd.sampler.x_origin());
         config.push(sd.sampler.y_origin());
         config.push(sd.sampler.z_origin());
@@ -820,7 +820,7 @@ fn extract_interp_params_from_sampler(
 ) -> (Vec<f64>, Vec<i32>) {
     let num_octaves = sampler.samplers.len() as i32;
     let mut config = Vec::with_capacity(num_octaves as usize * 8);
-    for sd in sampler.samplers.iter() {
+    for sd in &sampler.samplers {
         config.push(sd.amplitude * sd.persistence);
         config.push(sd.lacunarity);
         config.push(sd.sampler.x_origin());

@@ -47,22 +47,6 @@ pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
                 source: kernels::SHIFT_B_SAMPLE_CL.into(),
             },
             CompiledKernel {
-                name: "shifted_noise_sample_f64".into(),
-                source: kernels::SHIFTED_NOISE_SAMPLE_CL.into(),
-            },
-            CompiledKernel {
-                name: "interpolated_noise_sample_f64".into(),
-                source: kernels::INTERPOLATED_NOISE_SAMPLE_CL.into(),
-            },
-            CompiledKernel {
-                name: "vein_noise_sample_f64".into(),
-                source: kernels::VEIN_NOISE_SAMPLE_CL.into(),
-            },
-            CompiledKernel {
-                name: "batch_density_sample_f64".into(),
-                source: kernels::DENSITY_SAMPLE_CL.into(),
-            },
-            CompiledKernel {
                 name: "cell_cache_fill_f64".into(),
                 source: kernels_cell::CELL_CACHE_FILL_CL.into(),
             },
@@ -140,22 +124,6 @@ pub(crate) fn all_cuda_kernel_sources() -> Vec<CompiledKernel> {
             CompiledKernel {
                 name: "shift_b_sample_f64".into(),
                 source: kernels::SHIFT_B_SAMPLE_CU.into(),
-            },
-            CompiledKernel {
-                name: "shifted_noise_sample_f64".into(),
-                source: kernels::SHIFTED_NOISE_SAMPLE_CU.into(),
-            },
-            CompiledKernel {
-                name: "interpolated_noise_sample_f64".into(),
-                source: kernels::INTERPOLATED_NOISE_SAMPLE_CU.into(),
-            },
-            CompiledKernel {
-                name: "vein_noise_sample_f64".into(),
-                source: kernels::VEIN_NOISE_SAMPLE_CU.into(),
-            },
-            CompiledKernel {
-                name: "batch_density_sample_f64".into(),
-                source: kernels::DENSITY_SAMPLE_CU.into(),
             },
             CompiledKernel {
                 name: "cell_cache_fill_f64".into(),
