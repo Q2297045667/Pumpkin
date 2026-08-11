@@ -9,3 +9,11 @@ pub const BLOCK_LIGHT_SCAN_CL: &str = include_str!("../../kernels/opencl/light_b
 
 /// 光照传播单步迭代（迭代式距离场替代 BFS）。
 pub const LIGHT_PROPAGATE_CL: &str = include_str!("../../kernels/opencl/light_propagate.cl");
+
+pub const SKY_LIGHT_FILL_CU: &str = include_str!("../../kernels/cuda/light_sky.cu");
+pub const BLOCK_LIGHT_SCAN_CU: &str = include_str!("../../kernels/cuda/light_block.cu");
+pub const LIGHT_PROPAGATE_CU: &str = include_str!("../../kernels/cuda/light_propagate.cu");
+
+/// 光照传播 Persistent Kernel（CUDA 专用，内部迭代直至收敛）。
+pub const LIGHT_PROPAGATE_PERSISTENT_CU: &str =
+    include_str!("../../kernels/cuda/light_propagate_persistent.cu");

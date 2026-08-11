@@ -102,7 +102,7 @@ impl GpuDevice {
     /// 所有初始化失败都会通过 [`tracing::warn`] 输出日志。
     #[must_use]
     pub fn init() -> Self {
-        let device = Self::init_internal(None, None, None, false, None, None);
+        let device = Self::init_internal(None, None, None, false, None, None, 4, 1, false);
         device.log_startup();
         device
     }
@@ -157,6 +157,9 @@ impl GpuDevice {
             prefer_integrated,
             Some(&config.cudarc.flags),
             Some(&config.opencl3.flags),
+            config.cudarc.zero_copy_threshold_kb,
+            config.opencl3.pipeline_queues,
+            config.cudarc.persistent_kernels,
         );
 
         // 将配置项注入全局 OnceLock，供各模块读取
@@ -166,6 +169,7 @@ impl GpuDevice {
             crate::noise::batch_cell::set_aquifer_tile_threshold(
                 config.opencl3.local_mem_tile_threshold,
             );
+            crate::noise::batch_sampler::set_soa_layout(config.soa_layout);
         };
 
         device.log_startup();
@@ -181,13 +185,21 @@ impl GpuDevice {
         prefer_integrated: bool,
         cuda_flags: Option<&[String]>,
         opencl_flags: Option<&[String]>,
+        zero_copy_threshold_kb: usize,
+        pipeline_queues: usize,
+        persistent_kernels: bool,
     ) -> Self {
         // 如果强制指定了后端，仅尝试该后端
         if let Some(forced) = forced_backend {
             match forced {
                 #[cfg(feature = "cuda")]
                 DeviceType::Cuda => {
-                    match crate::cuda::CudaBackend::try_init(device_index, cuda_flags) {
+                    match crate::cuda::CudaBackend::try_init(
+                        device_index,
+                        cuda_flags,
+                        zero_copy_threshold_kb,
+                        persistent_kernels,
+                    ) {
                         Ok(backend) => {
                             tracing::info!("GPU 加速已启用: CUDA 后端（强制指定）");
                             return Self {
@@ -212,6 +224,7 @@ impl GpuDevice {
                             device_name_filter,
                             prefer_integrated,
                             opencl_flags,
+                            pipeline_queues,
                         ) {
                             Ok(backend) => {
                                 tracing::info!("GPU 加速已启用: OpenCL 后端（强制指定）");
@@ -275,55 +288,71 @@ impl GpuDevice {
         // Auto 模式：按 CUDA → OpenCL → CPU 探测
         #[cfg(feature = "cuda")]
         {
-            match crate::cuda::CudaBackend::try_init(device_index, cuda_flags) {
-                Ok(backend) => {
-                    tracing::info!("GPU 加速已启用: CUDA 后端初始化成功");
-                    return Self {
-                        device_type: DeviceType::Cuda,
-                        backend: BackendImpl::Cuda(backend),
-                    };
+            // 预检 CUDA 驱动 — 避免在无 GPU 系统上触发 segfault
+            if crate::cuda::cuda_driver_available() {
+                match crate::cuda::CudaBackend::try_init(
+                    device_index,
+                    cuda_flags,
+                    zero_copy_threshold_kb,
+                    persistent_kernels,
+                ) {
+                    Ok(backend) => {
+                        tracing::info!("GPU 加速已启用: CUDA 后端初始化成功");
+                        return Self {
+                            device_type: DeviceType::Cuda,
+                            backend: BackendImpl::Cuda(backend),
+                        };
+                    }
+                    Err(e) => {
+                        tracing::warn!("CUDA 后端初始化失败 ({e}), 尝试 OpenCL...");
+                        crate::logging::log_fallback(
+                            &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                            "GpuDevice::init_internal::auto_cuda",
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("CUDA 后端初始化失败 ({e}), 尝试 OpenCL...");
-                    crate::logging::log_fallback(
-                        &crate::logging::FallbackReason::InitFailed(e.to_string()),
-                        "GpuDevice::init_internal::auto_cuda",
-                    );
-                }
+            } else {
+                tracing::debug!("NVIDIA CUDA 驱动未安装，跳过 CUDA 后端");
             }
         }
 
         #[cfg(feature = "opencl")]
         {
-            // 预检：探测 OpenCL 驱动是否已安装，避免不必要的 DLL 加载尝试
-            if crate::opencl::is_opencl_available() {
-                match crate::opencl::OpenClBackend::try_init(
+            // 使用 catch_unwind 保护 — OpenCL DLL 可能损坏导致 segfault
+            let opencl_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if !crate::opencl::is_opencl_available() {
+                    return Err(DeviceError::InitFailed("OpenCL 驱动未安装".into()));
+                }
+                crate::opencl::OpenClBackend::try_init(
                     device_index,
                     device_name_filter,
                     prefer_integrated,
                     opencl_flags,
-                ) {
-                    Ok(backend) => {
-                        tracing::info!("GPU 加速已启用: OpenCL 后端初始化成功");
-                        return Self {
-                            device_type: DeviceType::OpenCl,
-                            backend: BackendImpl::OpenCl(backend),
-                        };
-                    }
-                    Err(e) => {
-                        tracing::warn!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
-                        crate::logging::log_fallback(
-                            &crate::logging::FallbackReason::InitFailed(e.to_string()),
-                            "GpuDevice::init_internal::auto_opencl",
-                        );
-                    }
+                    pipeline_queues,
+                )
+            }));
+            match opencl_result {
+                Ok(Ok(backend)) => {
+                    tracing::info!("GPU 加速已启用: OpenCL 后端初始化成功");
+                    return Self {
+                        device_type: DeviceType::OpenCl,
+                        backend: BackendImpl::OpenCl(backend),
+                    };
                 }
-            } else {
-                tracing::info!("OpenCL 驱动未安装，跳过 OpenCL 后端");
-                crate::logging::log_fallback(
-                    &crate::logging::FallbackReason::DriverNotFound,
-                    "GpuDevice::init_internal::auto_opencl",
-                );
+                Ok(Err(e)) => {
+                    tracing::warn!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
+                    crate::logging::log_fallback(
+                        &crate::logging::FallbackReason::InitFailed(e.to_string()),
+                        "GpuDevice::init_internal::auto_opencl",
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!("OpenCL 后端初始化时发生崩溃, 回退到 CPU...");
+                    crate::logging::log_fallback(
+                        &crate::logging::FallbackReason::DriverNotFound,
+                        "GpuDevice::init_internal::auto_opencl_crash",
+                    );
+                }
             }
         }
 
@@ -378,7 +407,7 @@ impl GpuDevice {
     ///
     /// # Errors
     /// 当缓冲区大小不匹配或传输失败时返回错误。
-    pub fn copy_to_device<T: bytemuck::Pod>(
+    pub fn copy_to_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &mut GpuBuffer<T>,
         data: &[T],
@@ -390,7 +419,7 @@ impl GpuDevice {
     ///
     /// # Errors
     /// 当传输失败时返回错误。
-    pub fn copy_from_device<T: bytemuck::Pod>(
+    pub fn copy_from_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &GpuBuffer<T>,
         data: &mut [T],

@@ -2,31 +2,22 @@
 //!
 //! # 实现状态
 //!
-//! | 功能 | 状态 | 阻塞条件 |
-//! |------|------|---------|
-//! | 驱动初始化 | ✅ 已完成 | |
-//! | NVRTC kernel 编译 | ⚠️ 需要 CUDA kernel 源码 | 当前 kernel 为 OpenCL C 语法，NVRTC 无法编译 |
-//! | GPU 内存分配 | ❌ 使用 CPU fallback | 需实现 `CudaSlice` 分配 |
-//! | Kernel 启动 | ❌ 硬编码 Unsupported | 需 GPU 硬件 + CUDA kernel 源码 |
-//! | 设备选择 (ByIndex) | ✅ 已完成 | |
-//! | 设备选择 (ByName) | ⚠️ 部分完成 | 需 CUDA 设备枚举 API |
-//! | CPU 回退 | ✅ 已完成 | |
-//!
-//! # CUDA ↔ OpenCL 对齐状态
-//!
-//! | 特性 | CUDA | OpenCL |
-//! |------|------|--------|
-//! | 设备初始化 | ✅ (cudarc driver API) | ✅ (opencl3 platform API) |
-//! | GPU 内存分配 | ❌ (CPU fallback) | ✅ (Buffer::create) |
-//! | HtoD/DtoH 拷贝 | ❌ (CPU fallback) | ✅ (enqueue_read/write) |
-//! | Kernel 编译 | ⚠️ (NVRTC 编译 OpenCL 语法失败) | ✅ (create_from_source + build) |
-//! | Kernel 启动 | ❌ (硬编码 Unsupported) | ⚠️ (标量参数已绑定，buffer 参数需接线) |
-//! | f64 支持 | ✅ (CUDA 原生) | ✅ (cl_khr_f64) |
-//! | 设备选择 | ✅ (ByIndex) | ✅ (ByIndex/ByName/Integrated) |
-//! | CPU 回退 | ✅ | ✅ |
+//! | 功能 | 状态 | 说明 |
+//! |------|------|------|
+//! | 驱动初始化 | ✅ | cudarc driver API |
+//! | NVRTC kernel 编译 | ✅ | CUDA .cu kernel 源码 |
+//! | GPU 内存分配 (标准) | ✅ | `CudaStream::alloc` → `CudaSlice` |
+//! | GPU 内存分配 (零拷贝) | ⚠️ | PinnedHostSlice 框架就绪 |
+//! | HtoD/DtoH 拷贝 | ✅ | `memcpy_htod` / `memcpy_dtoh` |
+//! | Kernel 启动 | ⚠️ | `LaunchArgs` builder 框架就绪 |
+//! | 设备选择 ByIndex | ✅ | |
+//! | CPU 回退 | ✅ | 内存分配/传输失败自动回退 |
 
 mod context;
 pub(crate) mod kernel;
+mod memory;
+
+pub(crate) use context::cuda_driver_available;
 
 use crate::common::{DeviceError, GpuBuffer, KernelLauncher};
 use std::sync::Arc;
@@ -35,33 +26,48 @@ use std::sync::Arc;
 pub struct CudaBackend {
     #[allow(dead_code)]
     pub(crate) ctx: Arc<cudarc::driver::CudaContext>,
+    pub(crate) stream: Arc<cudarc::driver::CudaStream>,
     pub(crate) name: String,
     pub(crate) launcher: kernel::CudaKernelLauncher,
+    /// 零拷贝阈值（字节）
+    zero_copy_threshold_bytes: usize,
 }
 
-// SAFETY: CudaBackend's internal state (Arc<CudaContext>) is Send by cudarc specification.
+// SAFETY: CudaBackend's internal state is Send by cudarc specification.
 unsafe impl Send for CudaBackend {}
 
 impl CudaBackend {
     pub fn try_init(
         device_index: Option<usize>,
         flags: Option<&[String]>,
+        zero_copy_threshold_kb: usize,
+        persistent_enabled: bool,
     ) -> Result<Self, DeviceError> {
         let idx = device_index.unwrap_or(0);
+
+        // 初始化 CUDA 驱动
         let ctx =
             context::init_cuda(idx).map_err(|e| DeviceError::InitFailed(format!("CUDA: {e}")))?;
 
+        // 获取设备名称和默认流（可能在无 GPU 时失败）
         let name = ctx
             .name()
             .unwrap_or_else(|_| String::from("Unknown CUDA Device"));
+        let stream = ctx.default_stream();
 
         tracing::info!("CUDA 设备: {name}");
+        if zero_copy_threshold_kb > 0 {
+            tracing::debug!("CUDA 零拷贝阈值: {} KB", zero_copy_threshold_kb);
+        }
+
         let mut launcher = kernel::CudaKernelLauncher::new();
-        launcher.init(ctx.clone(), flags);
+        launcher.init(ctx.clone(), stream.clone(), flags, persistent_enabled);
         Ok(Self {
             ctx,
+            stream,
             name,
             launcher,
+            zero_copy_threshold_bytes: zero_copy_threshold_kb.saturating_mul(1024),
         })
     }
 
@@ -69,65 +75,42 @@ impl CudaBackend {
         &self.name
     }
 
-    // NOTE: Memory and transfer APIs need a CUDA-capable machine for final verification.
-    // Until then, CPU fallback ensures correct behavior.
     pub fn alloc_f64(&self, len: usize) -> Result<GpuBuffer<f64>, DeviceError> {
-        Ok(GpuBuffer::new_cpu(vec![0.0f64; len]))
+        memory::CudaMemory::alloc_f64(&self.stream, len, self.zero_copy_threshold_bytes)
     }
+
     pub fn alloc_i32(&self, len: usize) -> Result<GpuBuffer<i32>, DeviceError> {
-        Ok(GpuBuffer::new_cpu(vec![0i32; len]))
+        memory::CudaMemory::alloc_i32(&self.stream, len, self.zero_copy_threshold_bytes)
     }
+
     pub fn alloc_u8(&self, len: usize) -> Result<GpuBuffer<u8>, DeviceError> {
-        Ok(GpuBuffer::new_cpu(vec![0u8; len]))
+        memory::CudaMemory::alloc_u8(&self.stream, len, self.zero_copy_threshold_bytes)
     }
-    pub fn copy_to_device<T: bytemuck::Pod>(
+
+    pub fn copy_to_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &mut GpuBuffer<T>,
         data: &[T],
     ) -> Result<(), DeviceError> {
-        if buffer.len() != data.len() {
-            return Err(DeviceError::SizeMismatch {
-                buffer_len: buffer.len(),
-                data_len: data.len(),
-            });
-        }
-        if buffer.is_empty() {
-            return Ok(());
-        }
-        if let Some(cpu) = buffer.cpu_data_mut() {
-            cpu.clear();
-            cpu.extend_from_slice(data);
-        }
-        Ok(())
+        memory::CudaMemory::copy_to_device::<T>(&self.stream, buffer, data)
     }
-    pub fn copy_from_device<T: bytemuck::Pod>(
+
+    pub fn copy_from_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &GpuBuffer<T>,
         data: &mut [T],
     ) -> Result<(), DeviceError> {
-        if buffer.len() != data.len() {
-            return Err(DeviceError::SizeMismatch {
-                buffer_len: buffer.len(),
-                data_len: data.len(),
-            });
-        }
-        if buffer.is_empty() {
-            return Ok(());
-        }
-        if let Some(cpu) = buffer.cpu_data() {
-            data.copy_from_slice(cpu);
-        }
-        Ok(())
+        memory::CudaMemory::copy_from_device::<T>(&self.stream, buffer, data)
     }
+
     pub fn free<T: bytemuck::Pod>(&self, buffer: GpuBuffer<T>) -> Result<(), DeviceError> {
-        drop(buffer);
-        Ok(())
+        memory::CudaMemory::free(buffer)
     }
+
     pub fn kernel_launcher(&self) -> Option<&dyn KernelLauncher> {
         Some(&self.launcher)
     }
 
-    /// 编译一个 JIT 特化 kernel。
     #[cfg(feature = "pumpkin-util")]
     pub fn compile_jit_kernel(
         &mut self,

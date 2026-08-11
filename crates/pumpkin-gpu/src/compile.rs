@@ -31,6 +31,10 @@ pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
                 source: kernels::OCTAVE_PERLIN_SAMPLE_CL.into(),
             },
             CompiledKernel {
+                name: "octave_perlin_sample_soa_f64".into(),
+                source: kernels::OCTAVE_PERLIN_SAMPLE_SOA_CL.into(),
+            },
+            CompiledKernel {
                 name: "double_perlin_sample_f64".into(),
                 source: kernels::DOUBLE_PERLIN_SAMPLE_CL.into(),
             },
@@ -110,6 +114,105 @@ pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
     }
 }
 
+/// 返回所有已知 CUDA kernel 的名称和源码（CUDA C++ 格式）。
+#[must_use]
+#[cfg(feature = "cuda")]
+pub(crate) fn all_cuda_kernel_sources() -> Vec<CompiledKernel> {
+    #[cfg(feature = "pumpkin-util")]
+    {
+        vec![
+            CompiledKernel {
+                name: "octave_perlin_sample_f64".into(),
+                source: kernels::OCTAVE_PERLIN_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "octave_perlin_sample_soa_f64".into(),
+                source: kernels::OCTAVE_PERLIN_SAMPLE_SOA_CU.into(),
+            },
+            CompiledKernel {
+                name: "double_perlin_sample_f64".into(),
+                source: kernels::DOUBLE_PERLIN_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "shift_a_sample_f64".into(),
+                source: kernels::SHIFT_A_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "shift_b_sample_f64".into(),
+                source: kernels::SHIFT_B_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "shifted_noise_sample_f64".into(),
+                source: kernels::SHIFTED_NOISE_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "interpolated_noise_sample_f64".into(),
+                source: kernels::INTERPOLATED_NOISE_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "vein_noise_sample_f64".into(),
+                source: kernels::VEIN_NOISE_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "batch_density_sample_f64".into(),
+                source: kernels::DENSITY_SAMPLE_CU.into(),
+            },
+            CompiledKernel {
+                name: "cell_cache_fill_f64".into(),
+                source: kernels_cell::CELL_CACHE_FILL_CU.into(),
+            },
+            CompiledKernel {
+                name: "interpolator_fill_f64".into(),
+                source: kernels_cell::INTERPOLATOR_FILL_CU.into(),
+            },
+            CompiledKernel {
+                name: "aquifer_batch_f64".into(),
+                source: kernels_cell::AQUIFER_BATCH_CU.into(),
+            },
+            CompiledKernel {
+                name: "aquifer_batch_tiled_f64".into(),
+                source: kernels_cell::AQUIFER_BATCH_TILED_CU.into(),
+            },
+            CompiledKernel {
+                name: "beardifier_batch_f64".into(),
+                source: kernels_cell::BEARDIFIER_BATCH_CU.into(),
+            },
+            CompiledKernel {
+                name: "vein_batch_f64".into(),
+                source: kernels_cell::VEIN_BATCH_CU.into(),
+            },
+            CompiledKernel {
+                name: "trilinear_interpolate_f64".into(),
+                source: kernels_extra::TRILINEAR_INTERPOLATE_CU.into(),
+            },
+            CompiledKernel {
+                name: "flatcache_precompute_f64".into(),
+                source: kernels_extra::FLATCACHE_PRECOMPUTE_CU.into(),
+            },
+            CompiledKernel {
+                name: "sky_light_fill_u8".into(),
+                source: kernels_light::SKY_LIGHT_FILL_CU.into(),
+            },
+            CompiledKernel {
+                name: "block_light_scan_u8".into(),
+                source: kernels_light::BLOCK_LIGHT_SCAN_CU.into(),
+            },
+            CompiledKernel {
+                name: "light_propagate_u8".into(),
+                source: kernels_light::LIGHT_PROPAGATE_CU.into(),
+            },
+            CompiledKernel {
+                name: "light_propagate_u8_persistent".into(),
+                source: kernels_light::LIGHT_PROPAGATE_PERSISTENT_CU.into(),
+            },
+        ]
+    }
+    #[cfg(not(feature = "pumpkin-util"))]
+    {
+        vec![]
+    }
+}
+
 // ============================================================================
 // CUDA (NVRTC)
 // ============================================================================
@@ -135,7 +238,7 @@ pub mod cuda_compile {
             ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
             flags: &[String],
         ) -> Result<(), DeviceError> {
-            for kernel in all_kernel_sources() {
+            for kernel in all_cuda_kernel_sources() {
                 if kernel.source.is_empty() {
                     continue;
                 }
@@ -168,7 +271,7 @@ pub mod cuda_compile {
             ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
             jit_kernel: &crate::jit::JitSpecializedKernel,
         ) -> Result<(), DeviceError> {
-            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, jit_kernel.source);
+            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, jit_kernel.source);
             let ptx = cudarc::nvrtc::compile_ptx(full_source).map_err(|e| {
                 let msg = format!("JIT NVRTC '{}': {e:?}", jit_kernel.name);
                 crate::logging::log_fallback(
@@ -194,7 +297,7 @@ pub mod cuda_compile {
             source: &str,
             _flags: &[String],
         ) -> Result<cudarc::driver::CudaFunction, DeviceError> {
-            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, source);
+            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, source);
             let ptx = cudarc::nvrtc::compile_ptx(full_source)
                 .map_err(|e| DeviceError::KernelError(format!("NVRTC '{name}': {e:?}")))?;
             let module = ctx
@@ -210,26 +313,10 @@ pub mod cuda_compile {
             self.compiled.contains_key(name)
         }
 
-        /// CUDA kernel 启动（需要 GPU 硬件）。
-        ///
-        /// 当前在非 CUDA 环境下返回 `Unsupported`。
-        /// 在装有 CUDA 驱动的系统上，可通过 `CudaFunction` 调用 NVRTC 编译好的 PTX kernel。
-        pub fn launch(&self, name: &str, n: usize) -> Result<(), DeviceError> {
-            if !self.compiled.contains_key(name) {
-                return Err(DeviceError::KernelError(format!("'{name}' not compiled")));
-            }
-            let _ = n;
-            // CUDA kernel launch 需要 GPU 硬件验证参数类型和内存布局。
-            // 连接 NVIDIA GPU 后取消注释以下代码即可启用：
-            crate::logging::log_fallback(
-                &crate::logging::FallbackReason::UnsupportedOperation(
-                    "CUDA kernel launch not yet verified on GPU hardware".into(),
-                ),
-                "cuda_compile::launch",
-            );
-            Err(DeviceError::Unsupported(
-                "CUDA kernel launch not yet verified on GPU hardware".into(),
-            ))
+        /// 获取已编译的 `CudaFunction` 引用。
+        #[must_use]
+        pub fn get_function(&self, name: &str) -> Option<&cudarc::driver::CudaFunction> {
+            self.compiled.get(name)
         }
     }
 }

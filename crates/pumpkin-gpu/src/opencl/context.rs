@@ -130,7 +130,11 @@ fn probe_unix_opencl() -> bool {
     false
 }
 
-/// 初始化 OpenCL 并选择最佳可用设备。返回 (context, queue, device, name)。
+/// 初始化 OpenCL 并选择最佳可用设备。返回 (context, queues, device, name)。
+///
+/// `pipeline_queues` 控制创建的 CommandQueue 数量。
+/// 设为 1 时与之前行为一致。
+/// 设为 N > 1 时创建 N 个队列用于流水线并行。
 ///
 /// # Errors
 ///
@@ -139,7 +143,8 @@ pub fn init_opencl(
     device_index: Option<usize>,
     device_name_filter: Option<&str>,
     prefer_integrated: bool,
-) -> Result<(Context, CommandQueue, Device, String), String> {
+    pipeline_queues: usize,
+) -> Result<(Context, Vec<CommandQueue>, Device, String), String> {
     let device = find_best_device(device_index, device_name_filter, prefer_integrated)?;
 
     let name = device
@@ -148,10 +153,19 @@ pub fn init_opencl(
 
     let ctx = Context::from_device(&device).map_err(|e| format!("创建 OpenCL 上下文失败: {e}"))?;
 
-    let queue = CommandQueue::create_default(&ctx, device.id() as u64)
-        .map_err(|e| format!("创建 OpenCL 命令队列失败: {e}"))?;
+    let n_queues = pipeline_queues.max(1);
+    let mut queues = Vec::with_capacity(n_queues);
+    for i in 0..n_queues {
+        let q = CommandQueue::create_default(&ctx, device.id() as u64)
+            .map_err(|e| format!("创建 OpenCL 命令队列 [{i}/{n_queues}] 失败: {e}"))?;
+        queues.push(q);
+    }
 
-    Ok((ctx, queue, device, name))
+    if n_queues > 1 {
+        tracing::info!("OpenCL: 已创建 {n_queues} 个命令队列（流水线模式）");
+    }
+
+    Ok((ctx, queues, device, name))
 }
 
 fn find_best_device(

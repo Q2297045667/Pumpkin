@@ -30,14 +30,19 @@ impl OpenClBackend {
         device_name_filter: Option<&str>,
         prefer_integrated: bool,
         flags: Option<&[String]>,
+        pipeline_queues: usize,
     ) -> Result<Self, DeviceError> {
-        let (ctx, queue, device, name) =
-            context::init_opencl(device_index, device_name_filter, prefer_integrated)
-                .map_err(|e| DeviceError::InitFailed(format!("OpenCL: {e}")))?;
+        let (ctx, queues, device, name) = context::init_opencl(
+            device_index,
+            device_name_filter,
+            prefer_integrated,
+            pipeline_queues,
+        )
+        .map_err(|e| DeviceError::InitFailed(format!("OpenCL: {e}")))?;
 
         tracing::info!("OpenCL 设备: {name}");
         let mut launcher = kernel::OpenClKernelLauncher::new();
-        launcher.init(&ctx, &device, queue, flags);
+        launcher.init(&ctx, &device, queues, flags);
         Ok(Self {
             ctx,
             device,

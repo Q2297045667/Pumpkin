@@ -69,7 +69,7 @@ impl BackendImpl {
         }
     }
 
-    pub(crate) fn copy_to_device<T: bytemuck::Pod>(
+    pub(crate) fn copy_to_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &mut GpuBuffer<T>,
         data: &[T],
@@ -83,7 +83,7 @@ impl BackendImpl {
         }
     }
 
-    pub(crate) fn copy_from_device<T: bytemuck::Pod>(
+    pub(crate) fn copy_from_device<T: bytemuck::Pod + cudarc::driver::DeviceRepr>(
         &self,
         buffer: &GpuBuffer<T>,
         data: &mut [T],

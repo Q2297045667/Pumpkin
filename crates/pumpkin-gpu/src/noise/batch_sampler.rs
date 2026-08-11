@@ -5,7 +5,8 @@
 #![allow(
     clippy::separated_literal_suffix,
     clippy::as_ptr_cast_mut,
-    clippy::ptr_as_ptr
+    clippy::ptr_as_ptr,
+    clippy::too_many_lines
 )]
 
 use crate::GpuDevice;
@@ -16,6 +17,20 @@ use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
 
 #[cfg(feature = "pumpkin-util")]
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
+
+/// SoA 布局是否启用 — 由 `from_config()` 通过 `set_soa_layout()` 注入。
+static SOA_LAYOUT_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 设置 SoA 布局开关（在初始化时调用一次）。
+pub fn set_soa_layout(enabled: bool) {
+    SOA_LAYOUT_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 读取当前 SoA 布局开关。
+pub fn use_soa_layout() -> bool {
+    SOA_LAYOUT_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// GPU 噪声批量采样器。
 pub struct GpuNoiseSampler {
@@ -63,14 +78,12 @@ impl GpuNoiseSampler {
         drop(guard);
 
         let m = config.num_octaves();
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
         let mut d_perm = self.device.alloc_u8(m * 256)?;
         let mut d_amp = self.device.alloc_f64(m)?;
         let mut d_lac = self.device.alloc_f64(m)?;
         let mut d_org = self.device.alloc_f64(m * 3)?;
 
-        self.device.copy_to_device(&mut d_pos, positions)?;
         self.device
             .copy_to_device(&mut d_perm, &config.packed_permutations())?;
         self.device
@@ -80,35 +93,88 @@ impl GpuNoiseSampler {
         self.device
             .copy_to_device(&mut d_org, &config.packed_origins())?;
 
-        let ok = self.try_launch(
-            "octave_perlin_sample_f64",
-            n,
-            vec![
-                KernelArg::BufferRef(0),
-                KernelArg::BufferRef(1),
-                KernelArg::BufferRef(2),
-                KernelArg::BufferRef(3),
-                KernelArg::BufferRef(4),
-                KernelArg::BufferRef(5),
-                KernelArg::I32(n as i32),
-                KernelArg::I32(m as i32),
-            ],
-            vec![
-                GpuBufferRef::F64(&d_pos),
-                GpuBufferRef::U8(&d_perm),
-                GpuBufferRef::F64(&d_amp),
-                GpuBufferRef::F64(&d_lac),
-                GpuBufferRef::F64(&d_org),
-                GpuBufferRef::F64(&d_res),
-            ],
-        );
-        if ok {
-            self.device.copy_from_device(&d_res, results)?;
+        // SoA 路径：当启用 soa_layout 且数据量足够大时，使用独立 X/Y/Z 数组
+        let use_soa = use_soa_layout() && n >= 64;
+        if use_soa {
+            let (x, y, z) = crate::common::layout::aos3d_to_soa(positions);
+            let mut d_x = self.device.alloc_f64(n)?;
+            let mut d_y = self.device.alloc_f64(n)?;
+            let mut d_z = self.device.alloc_f64(n)?;
+            self.device.copy_to_device(&mut d_x, &x)?;
+            self.device.copy_to_device(&mut d_y, &y)?;
+            self.device.copy_to_device(&mut d_z, &z)?;
+
+            let ok = self.try_launch(
+                "octave_perlin_sample_soa_f64",
+                n,
+                vec![
+                    KernelArg::BufferRef(0),
+                    KernelArg::BufferRef(1),
+                    KernelArg::BufferRef(2),
+                    KernelArg::BufferRef(3),
+                    KernelArg::BufferRef(4),
+                    KernelArg::BufferRef(5),
+                    KernelArg::BufferRef(6),
+                    KernelArg::BufferRef(7),
+                    KernelArg::I32(n as i32),
+                    KernelArg::I32(m as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_x),
+                    GpuBufferRef::F64(&d_y),
+                    GpuBufferRef::F64(&d_z),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_amp),
+                    GpuBufferRef::F64(&d_lac),
+                    GpuBufferRef::F64(&d_org),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+            } else {
+                cpu_octave_batch(sampler, positions, results);
+            }
+
+            self.device.free(d_x)?;
+            self.device.free(d_y)?;
+            self.device.free(d_z)?;
         } else {
-            cpu_octave_batch(sampler, positions, results);
+            // 标准 AoS 路径
+            let mut d_pos = self.device.alloc_f64(n * 3)?;
+            self.device.copy_to_device(&mut d_pos, positions)?;
+
+            let ok = self.try_launch(
+                "octave_perlin_sample_f64",
+                n,
+                vec![
+                    KernelArg::BufferRef(0),
+                    KernelArg::BufferRef(1),
+                    KernelArg::BufferRef(2),
+                    KernelArg::BufferRef(3),
+                    KernelArg::BufferRef(4),
+                    KernelArg::BufferRef(5),
+                    KernelArg::I32(n as i32),
+                    KernelArg::I32(m as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_amp),
+                    GpuBufferRef::F64(&d_lac),
+                    GpuBufferRef::F64(&d_org),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+            } else {
+                cpu_octave_batch(sampler, positions, results);
+            }
+
+            self.device.free(d_pos)?;
         }
 
-        self.device.free(d_pos)?;
         self.device.free(d_res)?;
         self.device.free(d_perm)?;
         self.device.free(d_amp)?;

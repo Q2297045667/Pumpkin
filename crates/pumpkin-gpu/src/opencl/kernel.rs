@@ -1,6 +1,7 @@
 //! OpenCL Kernel 启动器。
 //!
 //! 集成 OpenCL kernel 编译、参数设置和命令入队。
+//! 支持多 CommandQueue 流水线：`pipeline_queues > 1` 时使用轮转分配。
 
 use crate::common::DeviceError;
 use crate::common::kernel::{GpuBufferRef, KernelArg, KernelLaunch, KernelLauncher};
@@ -8,10 +9,13 @@ use crate::compile::opencl_compile::OpenClKernelCompiler;
 use opencl3::command_queue::CommandQueue;
 use opencl3::context::Context;
 use opencl3::device::Device;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct OpenClKernelLauncher {
     compiler: Option<OpenClKernelCompiler>,
-    queue: Option<CommandQueue>,
+    queues: Vec<CommandQueue>,
+    /// 轮转计数器，用于多队列流水线
+    next_queue: AtomicUsize,
 }
 
 impl OpenClKernelLauncher {
@@ -19,18 +23,20 @@ impl OpenClKernelLauncher {
     pub fn new() -> Self {
         Self {
             compiler: None,
-            queue: None,
+            queues: Vec::new(),
+            next_queue: AtomicUsize::new(0),
         }
     }
 
     /// 初始化启动器：编译所有 kernel 并保存命令队列。
     ///
-    /// `queue` 的所有权被移入启动器。
+    /// `queues` 的所有权被移入启动器。
+    /// 当 `queues.len() > 1` 时启用轮转流水线模式。
     pub fn init(
         &mut self,
         ctx: &Context,
         device: &Device,
-        queue: CommandQueue,
+        queues: Vec<CommandQueue>,
         flags: Option<&[String]>,
     ) {
         let mut compiler = OpenClKernelCompiler::new();
@@ -41,14 +47,14 @@ impl OpenClKernelLauncher {
         if let Err(e) = compiler.compile_all(ctx, device.id(), &flags) {
             tracing::warn!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
         }
+        if queues.len() > 1 {
+            tracing::debug!("OpenCL 流水线: {} 个命令队列（轮转模式）", queues.len());
+        }
         self.compiler = Some(compiler);
-        self.queue = Some(queue);
+        self.queues = queues;
     }
 
     /// 编译一个 JIT 特化 kernel。
-    ///
-    /// 在首次使用 JIT 路径时调用。需要 `Context` 和 `device`。
-    /// `OpenClBackend` 通过公共方法暴露编译入口。
     #[cfg(feature = "pumpkin-util")]
     pub fn compile_jit_kernel(
         &mut self,
@@ -63,15 +69,29 @@ impl OpenClKernelLauncher {
     }
 
     /// 获取命令队列引用（供 `OpenClBackend` 的 buffer 操作使用）。
+    /// 返回第一个队列（buffer 操作不需要流水线）。
     ///
     /// # Panics
     ///
     /// 如果在 `init()` 之前调用会 panic。
     #[allow(clippy::expect_used)]
     pub fn queue(&self) -> &CommandQueue {
-        self.queue
-            .as_ref()
+        self.queues
+            .first()
             .expect("OpenClKernelLauncher::queue() called before init()")
+    }
+
+    /// 获取当前轮转索引的命令队列。
+    /// 在流水线模式下每次调用返回不同的队列（round-robin）。
+    fn next_queue(&self) -> &CommandQueue {
+        let idx = self.next_queue.fetch_add(1, Ordering::Relaxed) % self.queues.len();
+        &self.queues[idx]
+    }
+
+    /// 获取指定索引的命令队列。若 `pipeline_queues <= 1` 永远返回 0 号队列。
+    #[allow(dead_code)]
+    fn queue_at(&self, index: usize) -> &CommandQueue {
+        &self.queues[index % self.queues.len()]
     }
 }
 
@@ -86,10 +106,7 @@ impl KernelLauncher for OpenClKernelLauncher {
         let compiler = self.compiler.as_ref().ok_or_else(|| {
             DeviceError::Unsupported("OpenCL kernel compiler not initialized".into())
         })?;
-        let queue = self
-            .queue
-            .as_ref()
-            .ok_or_else(|| DeviceError::Internal("OpenCL queue not initialized".into()))?;
+        let queue = self.next_queue();
 
         let kernel = compiler
             .get_kernel(launch.name)
@@ -105,7 +122,6 @@ impl KernelLauncher for OpenClKernelLauncher {
                     })?;
                 }
                 KernelArg::F64(v) => {
-                    // SAFETY: kernel is valid, arg_index within bounds
                     unsafe { kernel.set_arg(arg_index, v) }.map_err(|e| {
                         DeviceError::LaunchFailed(format!("set_arg {arg_index}: {e}"))
                     })?;
@@ -125,12 +141,10 @@ impl KernelLauncher for OpenClKernelLauncher {
                     .ok_or_else(|| {
                         DeviceError::Unsupported("Buffer is not an OpenCL buffer".into())
                     })?;
-                    // SAFETY: kernel is valid, arg_index within bounds
                     unsafe { kernel.set_arg(arg_index, &handle) }.map_err(|e| {
                         DeviceError::LaunchFailed(format!("set_arg {arg_index} (buffer): {e}"))
                     })?;
                 }
-                // CPU-only args (slice): 在 GPU 路径下不支持
                 KernelArg::F64Slice(_)
                 | KernelArg::F64SliceMut(_)
                 | KernelArg::U8Slice(_)
@@ -140,10 +154,6 @@ impl KernelLauncher for OpenClKernelLauncher {
                 | KernelArg::USize(_)
                 | KernelArg::U32(_) => {
                     let msg = format!("Arg type not supported on OpenCL GPU path: {arg:?}");
-                    crate::logging::log_fallback(
-                        &crate::logging::FallbackReason::UnsupportedOperation(msg.clone()),
-                        "OpenClKernelLauncher::launch",
-                    );
                     return Err(DeviceError::Unsupported(msg));
                 }
             }
@@ -176,7 +186,7 @@ impl KernelLauncher for OpenClKernelLauncher {
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {
-        if let Some(ref q) = self.queue {
+        for q in &self.queues {
             q.finish()
                 .map_err(|e| DeviceError::TransferFailed(format!("finish: {e}")))?;
         }

@@ -37,3 +37,10 @@ pub const BEARDIFIER_BATCH_CL: &str = include_str!("../../kernels/opencl/beardif
 ///
 /// 返回值：0 = 无矿脉，1 = 矿石，2 = 粗矿，3 = 围岩。
 pub const VEIN_BATCH_CL: &str = include_str!("../../kernels/opencl/vein_batch.cl");
+
+pub const CELL_CACHE_FILL_CU: &str = include_str!("../../kernels/cuda/cell_cache.cu");
+pub const INTERPOLATOR_FILL_CU: &str = include_str!("../../kernels/cuda/interpolator_fill.cu");
+pub const AQUIFER_BATCH_CU: &str = include_str!("../../kernels/cuda/aquifer_batch.cu");
+pub const AQUIFER_BATCH_TILED_CU: &str = include_str!("../../kernels/cuda/aquifer_batch_tiled.cu");
+pub const BEARDIFIER_BATCH_CU: &str = include_str!("../../kernels/cuda/beardifier_batch.cu");
+pub const VEIN_BATCH_CU: &str = include_str!("../../kernels/cuda/vein_batch.cu");

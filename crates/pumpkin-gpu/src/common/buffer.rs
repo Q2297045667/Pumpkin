@@ -131,6 +131,18 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         }
     }
 
+    #[allow(dead_code)]
+    #[cfg(feature = "cuda")]
+    #[must_use]
+    pub(crate) fn cuda_slice_mut(
+        &mut self,
+    ) -> Result<&mut cudarc::driver::CudaSlice<T>, &'static str> {
+        match &mut self.raw {
+            RawBuffer::Cuda(holder) => Ok(&mut holder.slice),
+            _ => Err("不是 CUDA 缓冲区"),
+        }
+    }
+
     /// 获取字节大小。
     #[must_use]
     pub fn size_bytes(&self) -> usize {
