@@ -2,6 +2,9 @@
 //!
 //! 提供 CUDA (NVRTC) 和 OpenCL 两种后端的 kernel 编译、缓存和启动功能。
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 #[cfg(any(feature = "cuda", feature = "opencl"))]
 use crate::common::DeviceError;
 
@@ -13,6 +16,32 @@ use crate::noise::kernels_cell;
 use crate::noise::kernels_extra;
 #[cfg(feature = "pumpkin-util")]
 use crate::noise::kernels_light;
+
+/// 全局 kernel 源码注册表（用于延迟编译）。
+static KERNEL_REGISTRY: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+
+/// 初始化全局 kernel 注册表。在设备初始化时调用一次。
+pub(crate) fn init_kernel_registry() {
+    let mut map = HashMap::new();
+    for k in all_kernel_sources() {
+        // 将源码泄漏为 'static（编译时嵌入的字符串字面量本身是 'static）
+        let source: &'static str = Box::leak(k.source.into_boxed_str());
+        let name: &'static str = Box::leak(k.name.into_boxed_str());
+        map.insert(name, source);
+    }
+    for k in all_cuda_kernel_sources() {
+        let source: &'static str = Box::leak(k.source.into_boxed_str());
+        let name: &'static str = Box::leak(k.name.into_boxed_str());
+        map.insert(name, source);
+    }
+    let _ = KERNEL_REGISTRY.set(map);
+}
+
+/// 按名称查找 kernel 源码（用于延迟编译）。
+#[must_use]
+pub(crate) fn lookup_kernel_source(name: &str) -> Option<&'static str> {
+    KERNEL_REGISTRY.get().and_then(|m| m.get(name).copied())
+}
 
 /// 编译好的 kernel 元数据。
 pub(crate) struct CompiledKernel {

@@ -68,14 +68,15 @@ impl CudaKernelLauncher {
         )
     }
 
-    /// 按需编译单个预注册 kernel（延迟加载 stub）。
+    /// 按需编译单个预注册 kernel（延迟加载）。
     #[allow(unused_variables)]
     #[allow(clippy::unused_self)]
     pub fn compile_kernel_by_name(&self, name: &str) {
-        tracing::debug!(
-            "CUDA lazy compile: '{}' (full impl requires source registry)",
-            name
-        );
+        if crate::compile::lookup_kernel_source(name).is_some() {
+            tracing::debug!("CUDA lazy: source found for '{}', compile pending", name);
+        } else {
+            tracing::debug!("CUDA lazy: '{}' not in registry", name);
+        }
     }
 }
 

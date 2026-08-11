@@ -182,6 +182,7 @@ impl GpuDevice {
                 0
             };
             crate::jit::set_jit_max_unroll(effective_unroll);
+            crate::compile::init_kernel_registry();
             crate::noise::batch_cell::set_aquifer_tile_threshold(
                 config.opencl3.local_mem_tile_threshold,
             );

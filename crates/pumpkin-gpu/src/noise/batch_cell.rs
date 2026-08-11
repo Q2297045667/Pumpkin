@@ -93,9 +93,14 @@ pub struct VeinParams {
 /// GPU Cell Cache 批量采样器。
 ///
 /// 支持批量 Cell Cache 填充和插值器缓冲填充。
+/// 内部维护持久化 buffer 池以减少重复分配。
 pub struct GpuCellBatchSampler {
     pub device: GpuDevice,
     pub cache: NoiseCache,
+    /// 持久化 perm buffer 缓存 (keyed by total octaves * 256)
+    perm_pool: std::collections::HashMap<usize, crate::GpuBuffer<u8>>,
+    /// 持久化 f64 buffer 缓存
+    f64_pool: std::collections::HashMap<usize, Vec<crate::GpuBuffer<f64>>>,
 }
 
 impl GpuCellBatchSampler {
@@ -103,8 +108,24 @@ impl GpuCellBatchSampler {
     pub fn new(device: GpuDevice) -> Self {
         Self {
             device,
-            cache: NoiseCache::new(),
+            cache: NoiseCache::default(),
+            perm_pool: std::collections::HashMap::new(),
+            f64_pool: std::collections::HashMap::new(),
         }
+    }
+
+    /// 从 buffer 池中分配或复用指定大小的 u8 buffer。
+    fn alloc_u8_pooled(&mut self, len: usize) -> Result<crate::GpuBuffer<u8>, DeviceError> {
+        if let Some(buf) = self.perm_pool.remove(&len) {
+            Ok(buf)
+        } else {
+            self.device.alloc_u8(len)
+        }
+    }
+
+    /// 归还 u8 buffer 到池中（下次调用时复用）。
+    fn free_u8_pooled(&mut self, len: usize, buf: crate::GpuBuffer<u8>) {
+        self.perm_pool.entry(len).or_insert(buf);
     }
 
     /// 批量填充 cell cache。
