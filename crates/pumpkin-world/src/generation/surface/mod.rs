@@ -32,6 +32,14 @@ pub mod terrain;
 
 pub use cache::CachedSurfaceNoise;
 
+/// 表面噪声来源：直接采样或使用预计算缓存。
+pub enum SurfaceNoiseSource<'a> {
+    /// 逐次采样（CPU 路径）。
+    Direct(&'a DoublePerlinNoiseSampler),
+    /// 预计算的 256 列缓存（GPU 或批量 CPU 路径）。
+    Cached(f64, f64),
+}
+
 pub struct MaterialRuleContext<'a> {
     pub min_y: i8,
     pub height: u16,
@@ -56,6 +64,9 @@ pub struct MaterialRuleContext<'a> {
     pub terrain_builder: &'a SurfaceTerrainBuilder,
     pub sea_level: i32,
     steep_material_condition: Option<bool>,
+    /// 可选的预计算表面噪声缓存（GPU 加速路径）。
+    /// 为 `Some` 时，`sample_run_depth` 和 `get_secondary_depth` 将直接查表而非实时采样。
+    pub surface_noise_cache: Option<CachedSurfaceNoise>,
 }
 
 impl<'a> MaterialRuleContext<'a> {
@@ -94,13 +105,19 @@ impl<'a> MaterialRuleContext<'a> {
             stone_depth_above: 0,
             sea_level,
             steep_material_condition: None,
+            surface_noise_cache: None,
         }
     }
 
     fn sample_run_depth(&self) -> i32 {
-        let noise =
+        let noise = if let Some(ref cache) = self.surface_noise_cache {
+            let local_x = self.block_pos_x & 15;
+            let local_z = self.block_pos_z & 15;
+            cache.surface_at(local_x, local_z)
+        } else {
             self.surface_noise
-                .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64);
+                .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64)
+        };
         (noise * 2.75
             + 3.0
             + self
@@ -133,9 +150,14 @@ impl<'a> MaterialRuleContext<'a> {
     pub fn get_secondary_depth(&mut self) -> f64 {
         if self.last_unique_horizontal_pos_value != self.unique_horizontal_pos_value {
             self.last_unique_horizontal_pos_value = self.unique_horizontal_pos_value;
-            self.secondary_depth =
+            self.secondary_depth = if let Some(ref cache) = self.surface_noise_cache {
+                let local_x = self.block_pos_x & 15;
+                let local_z = self.block_pos_z & 15;
+                cache.secondary_at(local_x, local_z)
+            } else {
                 self.secondary_noise
-                    .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64);
+                    .sample(self.block_pos_x as f64, 0.0, self.block_pos_z as f64)
+            };
         }
         self.secondary_depth
     }

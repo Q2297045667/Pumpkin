@@ -449,26 +449,10 @@ impl LightEngine {
 
     /// 初始化光照（天空光 + 方块光）。
     ///
-    /// # GPU 加速接入点
-    ///
-    /// 当 `gpu` feature 启用且光照加速器就绪时，可通过
-    /// `crate::gpu::get_light_accel()` 获取 [`LightAccelerator`]，
-    /// 在 `convert_light` 和 `propagate_light` 之前批量填充天空光：
-    ///
-    /// ```ignore
-    /// if let Some(accel) = crate::gpu::get_light_accel() {
-    ///     // 需要从 cache 打包 heightmap + opacity → accel.batch_sky_fill(...)
-    /// }
-    /// ```
+    /// GPU 加速：当 `gpu` feature 启用且光照加速器就绪时，
+    /// 天空光的初始填充使用 GPU 批量路径（256 列并行衰减计算），
+    /// 仅保留水平传播在 CPU 端完成。GPU 不可用时自动回退 CPU 路径。
     pub fn initialize_light(&mut self, cache: &mut Cache, config: &LightingEngineConfig) {
-        // GPU 加速接入点：检查光照加速器是否可用
-        #[cfg(feature = "gpu")]
-        {
-            let _light_accel = crate::gpu::get_light_accel();
-            // TODO: 将 chunk 数据（heightmap + opacity）打包为批量格式，
-            // 调用 light_accel.batch_sky_fill(&hm, &opacity, &mut sky_light, n, max_h);
-        }
-
         if *config != LightingEngineConfig::Default {
             return;
         }
@@ -481,11 +465,187 @@ impl LightEngine {
             return;
         }
 
-        self.sky_light.convert_light(cache);
+        // 尝试 GPU 加速天空光填充；若不可用则回退到 CPU 路径。
+        #[cfg(feature = "gpu")]
+        let gpu_did_sky = {
+            if let Some(mut light_accel) = crate::gpu::get_light_accel() {
+                Self::try_gpu_sky_fill(cache, &mut light_accel)
+            } else {
+                false
+            }
+        };
+        #[cfg(not(feature = "gpu"))]
+        let gpu_did_sky = false;
+
+        if gpu_did_sky {
+            // GPU 已完成天空光填充；执行水平传播。
+            Self::sky_horizontal_propagate(self, cache);
+        } else {
+            // CPU 路径：完整天空光初始化。
+            self.sky_light.convert_light(cache);
+        }
+
         self.block_light.propagate_light(cache);
 
         self.block_light.clear();
         self.sky_light.clear();
+    }
+
+    /// 在 GPU 天空光填充后执行水平传播（替代 convert_light 的第二步）。
+    fn sky_horizontal_propagate(&mut self, cache: &mut Cache) {
+        let center_x = cache.x + (cache.size / 2);
+        let center_z = cache.z + (cache.size / 2);
+        let start_x = center_x * 16 - 1;
+        let start_z = center_z * 16 - 1;
+        let end_x = start_x + 18;
+        let end_z = start_z + 18;
+        let bottom_y = cache.bottom_y() as i32;
+
+        let mut surface_heights: FastHashMap<(i32, i32), i32> =
+            FastHashMap::with_capacity_and_hasher(
+                ((end_x - start_x) * (end_z - start_z)) as usize,
+                rustc_hash::FxBuildHasher,
+            );
+        for z in start_z..end_z {
+            for x in start_x..end_x {
+                let top_y = cache.get_top_y(&HeightMap::WorldSurface, x, z);
+                surface_heights.insert((x, z), top_y);
+            }
+        }
+
+        for z in start_z..end_z {
+            for x in start_x..end_x {
+                let top_y = surface_heights[&(x, z)];
+                let north_top = surface_heights.get(&(x, z - 1)).copied().unwrap_or(top_y);
+                let south_top = surface_heights.get(&(x, z + 1)).copied().unwrap_or(top_y);
+                let west_top = surface_heights.get(&(x - 1, z)).copied().unwrap_or(top_y);
+                let east_top = surface_heights.get(&(x + 1, z)).copied().unwrap_or(top_y);
+                let max_check_y = top_y
+                    .max(north_top)
+                    .max(south_top)
+                    .max(west_top)
+                    .max(east_top);
+                for y in (bottom_y..=max_check_y).rev() {
+                    let pos = BlockPos(Vector3::new(x, y, z));
+                    let light = get_sky_light(cache, pos);
+                    if light == 0 {
+                        if y <= top_y {
+                            break;
+                        }
+                        continue;
+                    }
+                    let is_at_surface = y == top_y;
+                    let below_neighbor =
+                        y < north_top || y < south_top || y < west_top || y < east_top;
+                    if (is_at_surface || below_neighbor) && self.sky_light.visited.insert(pos) {
+                        let skip_dir = (y >= top_y).then_some(BlockDirection::Up);
+                        self.sky_light.queue.push_back(PropagationEntry {
+                            pos,
+                            skip_direction: skip_dir,
+                        });
+                    }
+                }
+            }
+        }
+
+        self.sky_light.propagate(cache);
+        self.sky_light.clear();
+    }
+
+    /// 尝试使用 GPU 加速器批量填充天空光。
+    /// 返回 `true` 表示 GPU 路径成功执行。
+    #[cfg(feature = "gpu")]
+    fn try_gpu_sky_fill(
+        cache: &mut Cache,
+        light_accel: &mut crate::light_accel::LightAccelerator,
+    ) -> bool {
+        let center_idx = (cache.size / 2) * cache.size + (cache.size / 2);
+        let center_x = cache.x + (cache.size / 2);
+        let center_z = cache.z + (cache.size / 2);
+        let start_x = center_x * 16;
+        let start_z = center_z * 16;
+        let n_cols = 256usize;
+        let height = cache.height() as usize;
+
+        let mut hm = vec![0i32; n_cols];
+        let mut opacity = vec![0u8; n_cols * height];
+        let mut sky_light_out = vec![0u8; n_cols * height];
+
+        for lx in 0..16 {
+            for lz in 0..16 {
+                let col_idx = (lx * 16 + lz) as usize;
+                let world_x = start_x + lx;
+                let world_z = start_z + lz;
+                let top_y = cache.get_top_y(&HeightMap::WorldSurface, world_x, world_z);
+                hm[col_idx] = top_y;
+
+                let bottom_y = cache.bottom_y() as i32;
+                for y in bottom_y..(bottom_y + height as i32) {
+                    let local_y = (y - bottom_y) as usize;
+                    let pos_vec = Vector3::new(world_x, y, world_z);
+                    let state = cache.get_block_state(&pos_vec);
+                    opacity[col_idx * height + local_y] = state.to_state().opacity;
+                }
+            }
+        }
+
+        light_accel.batch_sky_fill(&hm, &opacity, &mut sky_light_out, n_cols, height);
+
+        let chunk = &mut cache.chunks[center_idx as usize];
+        match chunk {
+            crate::chunk_system::Chunk::Proto(proto) => {
+                for lx in 0..16 {
+                    for lz in 0..16 {
+                        let col_idx = (lx * 16 + lz) as usize;
+                        for ly in 0..height {
+                            let light_val = sky_light_out[col_idx * height + ly];
+                            if light_val == 0 {
+                                continue;
+                            }
+                            let section_idx = ly >> 4;
+                            let local_y = ly & 15;
+                            if section_idx < proto.light.sky_light.len() {
+                                proto.light.sky_light[section_idx].set(
+                                    lx as usize,
+                                    local_y,
+                                    lz as usize,
+                                    light_val,
+                                );
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            crate::chunk_system::Chunk::Level(level) => {
+                let mut light_engine = level
+                    .light_engine
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for lx in 0..16 {
+                    for lz in 0..16 {
+                        let col_idx = (lx * 16 + lz) as usize;
+                        for ly in 0..height {
+                            let light_val = sky_light_out[col_idx * height + ly];
+                            if light_val == 0 {
+                                continue;
+                            }
+                            let section_idx = ly >> 4;
+                            let local_y = ly & 15;
+                            if section_idx < light_engine.sky_light.len() {
+                                light_engine.sky_light[section_idx].set(
+                                    lx as usize,
+                                    local_y,
+                                    lz as usize,
+                                    light_val,
+                                );
+                            }
+                        }
+                    }
+                }
+                true
+            }
+        }
     }
 
     pub fn update_block_light(

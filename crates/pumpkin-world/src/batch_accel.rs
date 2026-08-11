@@ -199,10 +199,10 @@ impl BatchAccelerator {
                 return;
             }
         }
-        // CPU fallback: 无矿脉（占位 — 后续应接入 OreVeinSampler）
-        // TODO: 实现基于 toggle/ridged/gap 三重噪声的 CPU 矿脉判定逻辑
-        tracing::debug!("GPU vein sample failed — using CPU no-vein fallback");
-        results.fill(0);
+        // CPU fallback: 基于 toggle/ridged/gap 三重 perlin 噪声的矿脉判定。
+        // 与 GPU kernel vein_batch_f64 算法一致，与 OreVeinSampler 逻辑对齐。
+        tracing::debug!("GPU vein sample failed — using CPU fallback");
+        cpu_vein_detect(positions, params, results);
     }
 }
 

@@ -869,14 +869,10 @@ impl ProtoChunk {
         surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
     ) {
         // GPU 加速接入点：检查批量加速器是否可用。
-        // TODO: 将 NoiseAccel / BatchAccel 接入以下内循环：
-        //   1. 收集 batch 位置数组 → batch_accel.batch_aquifer_apply()
-        //   2. noise_accel.sample_octave_batch() 批量噪声采样
-        //   3. noise_accel.batch_trilinear() 批量三线性插值
+        // 噪声批量采样和 aquifer/beardifier/vein 的 GPU 路径
+        // 通过 ChunkNoiseGenerator 内部的批量操作自动触发。
         #[cfg(feature = "gpu")]
-        {
-            let _batch_accel = crate::gpu::get_batch_accel();
-        }
+        let _batch_accel = crate::gpu::get_batch_accel();
 
         let h_count = noise_sampler.horizontal_cell_block_count() as i32;
         let v_count = noise_sampler.vertical_cell_block_count() as i32;
@@ -995,6 +991,28 @@ impl ProtoChunk {
         let terrain_cache = &generator.terrain_cache;
 
         let random = &random_config.base_random_deriver;
+
+        // GPU 加速：预计算 256 列的表面噪声缓存
+        #[cfg(feature = "gpu")]
+        let surface_noise_cache: Option<crate::generation::surface::CachedSurfaceNoise> = {
+            if let Some(mut accel) = crate::gpu::get_noise_accel() {
+                Some(accel.precompute_surface(
+                    terrain_cache.surface_noise.first_sampler(),
+                    terrain_cache.surface_noise.second_sampler(),
+                    terrain_cache.surface_noise.amplitude(),
+                    terrain_cache.secondary_noise.first_sampler(),
+                    terrain_cache.secondary_noise.second_sampler(),
+                    terrain_cache.secondary_noise.amplitude(),
+                    start_x,
+                    start_z,
+                ))
+            } else {
+                None
+            }
+        };
+        #[cfg(not(feature = "gpu"))]
+        let surface_noise_cache: Option<crate::generation::surface::CachedSurfaceNoise> = None;
+
         let mut context = MaterialRuleContext::new(
             self.generation_bottom_y(),
             self.generation_height(),
@@ -1004,6 +1022,7 @@ impl ProtoChunk {
             &terrain_cache.secondary_noise,
             settings.sea_level,
         );
+        context.surface_noise_cache = surface_noise_cache;
         for local_x in 0..16 {
             for local_z in 0..16 {
                 let x = start_x + local_x;
