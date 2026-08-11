@@ -1,6 +1,6 @@
 //! # pumpkin-gpu
 //!
-//! GPU 加速计算模块。
+//! GPU 加速计算模块，为 Pumpkin 世界生成提供可选的 GPU 后端支持。
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![allow(
     clippy::missing_const_for_fn,
@@ -10,14 +10,9 @@
     clippy::double_must_use,
     clippy::missing_fields_in_debug,
     clippy::tuple_array_conversions,
-    clippy::explicit_iter_loop
+    clippy::explicit_iter_loop,
+    clippy::needless_pass_by_ref_mut
 )]
-//! GPU 加速计算模块，为 Pumpkin 世界生成提供可选的 GPU 后端支持。
-//!
-//! ## 架构
-//!
-//! 本 crate 采用枚举派发（enum dispatch）设计，避免 trait object 的 dyn 兼容问题：
-//!
 //! - `common` — 平台无关的共享类型、错误类型、缓冲区抽象和后端枚举
 //! - `cuda`   — CUDA 后端 ([`cudarc`])，通过 `features = ["cuda"]` 启用
 //! - `opencl` — OpenCL 后端 ([`opencl3`])，通过 `features = ["opencl"]` 启用
@@ -53,6 +48,7 @@
 //! ```
 
 pub mod common;
+pub mod compile;
 pub mod cpu;
 #[cfg(feature = "pumpkin-util")]
 pub mod noise;

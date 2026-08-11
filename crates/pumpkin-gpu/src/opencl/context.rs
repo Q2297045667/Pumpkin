@@ -4,8 +4,8 @@ use opencl3::command_queue::CommandQueue;
 use opencl3::context::Context;
 use opencl3::device::Device;
 
-/// 初始化 OpenCL 并选择最佳可用设备。
-pub fn init_opencl() -> Result<(Context, CommandQueue, String), String> {
+/// 初始化 OpenCL 并选择最佳可用设备。返回 (context, queue, device, name)。
+pub fn init_opencl() -> Result<(Context, CommandQueue, Device, String), String> {
     let device = find_best_device()?;
 
     let name = device
@@ -17,12 +17,10 @@ pub fn init_opencl() -> Result<(Context, CommandQueue, String), String> {
     let queue = CommandQueue::create_default(&ctx, device.id() as u64)
         .map_err(|e| format!("创建 OpenCL 命令队列失败: {e}"))?;
 
-    Ok((ctx, queue, name))
+    Ok((ctx, queue, device, name))
 }
 
-/// 查找最佳设备：优先 GPU，回退 CPU。
 fn find_best_device() -> Result<Device, String> {
-    // opencl3 0.12: platform::get_platforms() is a free function
     let platforms =
         opencl3::platform::get_platforms().map_err(|e| format!("获取 OpenCL 平台失败: {e}"))?;
 
@@ -30,10 +28,7 @@ fn find_best_device() -> Result<Device, String> {
         return Err("未检测到 OpenCL 平台".into());
     }
 
-    tracing::debug!("检测到 {} 个 OpenCL 平台", platforms.len());
-
     for platform in &platforms {
-        // get_devices takes CL_DEVICE_TYPE and returns Vec<cl_device_id>
         let gpu_ids = platform
             .get_devices(opencl3::device::CL_DEVICE_TYPE_GPU)
             .map_err(|e| format!("获取 GPU 设备失败: {e}"))?;

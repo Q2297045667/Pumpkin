@@ -26,8 +26,11 @@ use super::{
     },
 };
 
+pub mod cache;
 pub mod rule;
 pub mod terrain;
+
+pub use cache::CachedSurfaceNoise;
 
 pub struct MaterialRuleContext<'a> {
     pub min_y: i8,

@@ -46,10 +46,12 @@ impl CudaBackend {
             .unwrap_or_else(|_| String::from("Unknown CUDA Device"));
 
         tracing::info!("CUDA 设备: {name}");
+        let mut launcher = kernel::CudaKernelLauncher::new();
+        launcher.init(ctx.clone());
         Ok(Self {
             ctx,
             name,
-            launcher: kernel::CudaKernelLauncher::new(),
+            launcher,
         })
     }
 

@@ -75,6 +75,24 @@ impl DoublePerlinNoiseSampler {
 
         (self.first_sampler.sample(x, y, z) + self.second_sampler.sample(d, e, f)) * self.amplitude
     }
+
+    /// 返回第一个八度采样器的引用（用于批量 GPU 加速）。
+    #[must_use]
+    pub const fn first_sampler(&self) -> &OctavePerlinNoiseSampler {
+        &self.first_sampler
+    }
+
+    /// 返回第二个八度采样器的引用（用于批量 GPU 加速）。
+    #[must_use]
+    pub const fn second_sampler(&self) -> &OctavePerlinNoiseSampler {
+        &self.second_sampler
+    }
+
+    /// 返回振幅系数。
+    #[must_use]
+    pub const fn amplitude(&self) -> f64 {
+        self.amplitude
+    }
 }
 
 #[cfg(test)]

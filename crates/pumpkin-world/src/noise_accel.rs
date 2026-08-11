@@ -139,4 +139,73 @@ impl NoiseAccelerator {
             results[i] = s.sample(xz[i * 2], 0.0, xz[i * 2 + 1]);
         }
     }
+
+    /// 预计算 Surface 阶段噪声缓存（256 列批量 DoublePerlin 采样）。
+    pub fn precompute_surface(
+        &mut self,
+        surface_a: &OctavePerlinNoiseSampler,
+        surface_b: &OctavePerlinNoiseSampler,
+        surface_amp: f64,
+        secondary_a: &OctavePerlinNoiseSampler,
+        secondary_b: &OctavePerlinNoiseSampler,
+        secondary_amp: f64,
+        start_x: i32,
+        start_z: i32,
+    ) -> crate::generation::surface::CachedSurfaceNoise {
+        let n = 256usize;
+        let mut xz_flat = Vec::with_capacity(n * 2);
+        for lx in 0i32..16 {
+            for lz in 0i32..16 {
+                xz_flat.push((start_x + lx) as f64);
+                xz_flat.push((start_z + lz) as f64);
+            }
+        }
+        let pos_3d: Vec<f64> = (0..n)
+            .flat_map(|i| {
+                let x = xz_flat[i * 2];
+                let z = xz_flat[i * 2 + 1];
+                [x, 0.0f64, z]
+            })
+            .collect();
+
+        let mut surf = vec![0.0f64; n];
+        let mut sec = vec![0.0f64; n];
+
+        #[cfg(feature = "gpu")]
+        if let Some(ref mut inner) = self.inner {
+            let _ = inner.sample_double_perlin_batch(
+                surface_a,
+                surface_b,
+                surface_amp,
+                &pos_3d,
+                &mut surf,
+            );
+            let _ = inner.sample_double_perlin_batch(
+                secondary_a,
+                secondary_b,
+                secondary_amp,
+                &pos_3d,
+                &mut sec,
+            );
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let c = 1.0181268882175227f64;
+            for i in 0..n {
+                let x = pos_3d[i * 3];
+                let z = pos_3d[i * 3 + 2];
+                surf[i] = (surface_a.sample(x, 0.0, z) + surface_b.sample(x * c, 0.0, z * c))
+                    * surface_amp;
+                sec[i] = (secondary_a.sample(x, 0.0, z) + secondary_b.sample(x * c, 0.0, z * c))
+                    * secondary_amp;
+            }
+        }
+
+        let mut cache = crate::generation::surface::CachedSurfaceNoise::new_empty();
+        for i in 0..n {
+            cache.surface[i] = surf[i];
+            cache.secondary[i] = sec[i];
+        }
+        cache
+    }
 }

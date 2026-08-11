@@ -12,6 +12,7 @@ use opencl3::context::Context;
 pub struct OpenClBackend {
     pub(crate) ctx: Context,
     pub(crate) queue: CommandQueue,
+    pub(crate) device: opencl3::device::Device,
     pub(crate) name: String,
     pub(crate) launcher: kernel::OpenClKernelLauncher,
 }
@@ -21,15 +22,18 @@ unsafe impl Send for OpenClBackend {}
 impl OpenClBackend {
     /// 尝试初始化 OpenCL 后端。
     pub fn try_init() -> Result<Self, DeviceError> {
-        let (ctx, queue, name) =
+        let (ctx, queue, device, name) =
             context::init_opencl().map_err(|e| DeviceError::InitFailed(format!("OpenCL: {e}")))?;
 
         tracing::info!("OpenCL 设备: {name}");
+        let mut launcher = kernel::OpenClKernelLauncher::new();
+        launcher.init(&ctx, &device);
         Ok(Self {
             ctx,
             queue,
+            device,
             name,
-            launcher: kernel::OpenClKernelLauncher::new(),
+            launcher,
         })
     }
 

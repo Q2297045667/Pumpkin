@@ -1,21 +1,28 @@
 //! OpenCL Kernel 启动器。
-//!
-//! 管理 OpenCL Program 和 Kernel 的加载与启动。
 
 use crate::common::DeviceError;
 use crate::common::kernel::{KernelLaunch, KernelLauncher};
+use crate::compile::opencl_compile::OpenClKernelCompiler;
+use opencl3::context::Context;
+use opencl3::device::Device;
 
-/// OpenCL Kernel 启动器（存根实现）。
-///
-/// 当前阶段仅提供框架代码，不加载实际的 OpenCL 程序。
-/// 后续迭代将在此处集成 SPIR-V 或 OpenCL C 源码的编译。
-pub struct OpenClKernelLauncher;
+pub struct OpenClKernelLauncher {
+    compiler: Option<OpenClKernelCompiler>,
+}
 
 impl OpenClKernelLauncher {
-    /// 创建新的 OpenCL Kernel 启动器。
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self { compiler: None }
+    }
+
+    pub fn init(&mut self, ctx: &Context, device: &Device) {
+        let mut compiler = OpenClKernelCompiler::new();
+        let flags = vec!["-cl-fp32-correctly-rounded-divide-sqrt".to_string()];
+        if let Err(e) = compiler.compile_all(ctx, device.id(), &flags) {
+            tracing::warn!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
+        }
+        self.compiler = Some(compiler);
     }
 }
 
@@ -26,22 +33,18 @@ impl Default for OpenClKernelLauncher {
 }
 
 impl KernelLauncher for OpenClKernelLauncher {
-    fn launch(&self, launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
-        // TODO: 编译 OpenCL 程序并启动 Kernel
-        let _ = launch;
-        Err(DeviceError::Unsupported(format!(
-            "OpenCL Kernel '{}' 尚未实现",
-            launch.name
-        )))
+    fn launch(&self, _launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
+        if let Some(ref c) = self.compiler {
+            return c.launch(_launch.name, _launch.global_work_size[0]);
+        }
+        Err(DeviceError::Unsupported(
+            "OpenCL kernel compiler not initialized".into(),
+        ))
     }
-
     fn has_kernel(&self, name: &str) -> bool {
-        let _ = name;
-        false
+        self.compiler.as_ref().is_some_and(|c| c.has(name))
     }
-
     fn synchronize(&self) -> Result<(), DeviceError> {
-        // TODO: 调用 clFinish
         Ok(())
     }
 }

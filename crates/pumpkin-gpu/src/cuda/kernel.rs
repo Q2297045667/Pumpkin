@@ -1,21 +1,39 @@
-//! CUDA Kernel 启动器。
-//!
-//! 管理 CUDA Kernel 的加载和启动。
+//! CUDA Kernel 启动器 — 集成 NVRTC 编译。
 
 use crate::common::DeviceError;
 use crate::common::kernel::{KernelLaunch, KernelLauncher};
+use crate::compile::cuda_compile::CudaKernelCompiler;
+use crate::noise::kernels;
 
-/// CUDA Kernel 启动器（存根实现）。
-///
-/// 当前阶段仅提供框架代码，不加载实际的 PTX。
-/// 后续迭代将在此处集成 NVRTC 编译或预编译 PTX 加载。
-pub struct CudaKernelLauncher;
+/// CUDA Kernel 启动器。
+pub struct CudaKernelLauncher {
+    compiler: Option<CudaKernelCompiler>,
+    device_ctx: Option<std::sync::Arc<cudarc::driver::CudaContext>>,
+}
 
 impl CudaKernelLauncher {
-    /// 创建新的 CUDA Kernel 启动器。
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            compiler: None,
+            device_ctx: None,
+        }
+    }
+
+    /// 初始化编译器并编译所有 Kernel。
+    pub fn init(&mut self, ctx: std::sync::Arc<cudarc::driver::CudaContext>) {
+        let mut compiler = CudaKernelCompiler::new();
+        let flags = vec![
+            "--fmad=false".to_string(),
+            "--ftz=false".to_string(),
+            "--prec-div=true".to_string(),
+            "--prec-sqrt=true".to_string(),
+        ];
+        if let Err(e) = compiler.compile_all(&ctx, &flags) {
+            tracing::warn!("CUDA NVRTC kernel compilation failed: {e}. CPU fallback will be used.");
+        }
+        self.compiler = Some(compiler);
+        self.device_ctx = Some(ctx);
     }
 }
 
@@ -26,24 +44,22 @@ impl Default for CudaKernelLauncher {
 }
 
 impl KernelLauncher for CudaKernelLauncher {
-    fn launch(&self, launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
-        // TODO: 加载 PTX 模块并启动 Kernel
-        // 当前返回 "未实现" 错误，等待后续版本补充
-        let _ = launch;
-        Err(DeviceError::Unsupported(format!(
-            "CUDA Kernel '{}' 尚未实现",
-            launch.name
-        )))
+    fn launch(&self, _launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
+        if let Some(ref compiler) = self.compiler {
+            let n = _launch.global_work_size[0];
+            return compiler.launch(_launch.name, n);
+        }
+        Err(DeviceError::Unsupported(
+            "CUDA kernel compiler not initialized".into(),
+        ))
     }
 
     fn has_kernel(&self, name: &str) -> bool {
-        // 当前未加载任何 Kernel
-        let _ = name;
-        false
+        self.compiler.as_ref().is_some_and(|c| c.has(name))
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {
-        // TODO: 调用 cuCtxSynchronize
+        // CUDA streams are implicitly synchronized on dtoh copy
         Ok(())
     }
 }
