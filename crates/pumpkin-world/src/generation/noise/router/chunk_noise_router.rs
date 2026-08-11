@@ -447,13 +447,13 @@ impl<'a> ChunkNoiseRouter<'a> {
         mapper: &impl IndexToNoisePos,
         sample_options: &mut ChunkNoiseFunctionSampleOptions,
     ) {
-        // GPU 批量加速：预填充所有 Cell Cache
-        // 通过 DAG 提取 perlin 配置，调用 GPU kernel 批量计算噪声密度。
+        // GPU 批量加速：所有 CellCache 共享相同的噪声配置和位置网格，
+        // 仅需一次 GPU launch 填充，结果分发到各 CellCache。
         #[cfg(feature = "gpu")]
         if let Some(accel) = crate::gpu::get_batch_accel() {
             let params = self.build_cell_fill_params();
             if !params.perlin_configs.is_empty() && !params.num_octaves.is_empty() {
-                // 从 mapper 提取所有世界坐标
+                // 各 CellCache 共享相同的位置网格 — 从第一个获取位置数量。
                 let total_positions = self
                     .cell_indices
                     .first()
@@ -483,22 +483,26 @@ impl<'a> ChunkNoiseRouter<'a> {
                     let mut gpu_results = vec![0.0f64; total_positions];
                     accel.batch_fill_cell_caches(&positions, &params, &mut gpu_results);
 
-                    // 将 GPU 结果写回 CellCache 数组
-                    let indices = &self.cell_indices;
+                    // 将 GPU 结果写入所有 CellCache（大小必须匹配）
                     let components = &mut self.component_stack;
-                    for cell_cache_index in indices {
+                    for cell_cache_index in &self.cell_indices {
                         let (_, component) = components.split_at_mut(*cell_cache_index);
                         if let Some(ChunkNoiseFunctionComponent::Chunk(
                             ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache),
                         )) = component.first_mut()
-                            && cell_cache.cache.len() == gpu_results.len()
                         {
-                            cell_cache.cache.copy_from_slice(&gpu_results);
+                            if cell_cache.cache.len() == total_positions {
+                                cell_cache.cache.copy_from_slice(&gpu_results);
+                            } else {
+                                tracing::warn!(
+                                    "CellCache size mismatch: expected {total_positions}, got {}",
+                                    cell_cache.cache.len()
+                                );
+                            }
                         }
                     }
 
-                    // 回填噪声缓存：将 GPU 计算中使用的 Perlin 采样结果
-                    // 写入线程本地缓存，加速后续 CPU DAG 求值。
+                    // 回填噪声缓存
                     if let Some(&cell_idx) = self.cell_indices.first() {
                         self.backfill_noise_cache(&positions, cell_idx);
                     }

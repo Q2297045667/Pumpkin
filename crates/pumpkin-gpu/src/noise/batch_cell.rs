@@ -159,14 +159,15 @@ impl GpuCellBatchSampler {
         self.i32_pool.entry(len).or_insert(buf);
     }
 
-    /// 批量填充 cell cache。
+    /// 批量填充 cell cache — 支持自定义 cell_indices。
     ///
-    /// GPU 路径尝试 launch `cell_cache_fill_f64` kernel，
-    /// 失败时回退到上层 `BatchAccelerator` 的 CPU fallback。
-    pub fn batch_fill_cell_caches(
+    /// 与 `batch_fill_cell_caches` 的区别：接受预构建的 `cell_indices`，
+    /// 允许不同位置组使用不同的 sampler 配置。用于合并多次调用为单次 GPU launch。
+    pub fn batch_fill_cell_caches_indexed(
         &mut self,
         positions: &[f64],
         sampler_params: &CellFillParams,
+        cell_indices: &[i32],
         results: &mut [f64],
     ) -> Result<(), DeviceError> {
         let n = results.len();
@@ -174,6 +175,7 @@ impl GpuCellBatchSampler {
             return Ok(());
         }
         assert_eq!(positions.len(), n * 3);
+        assert_eq!(cell_indices.len(), n);
 
         if self.device.device_type() == crate::DeviceType::Cpu {
             return Err(DeviceError::LaunchFailed(
@@ -181,7 +183,6 @@ impl GpuCellBatchSampler {
             ));
         }
 
-        // 提取 cell cache 参数
         let total_octaves: i32 = sampler_params.num_octaves.iter().sum();
         if total_octaves == 0 || sampler_params.perlin_configs.is_empty() {
             return Err(DeviceError::LaunchFailed(
@@ -189,7 +190,6 @@ impl GpuCellBatchSampler {
             ));
         }
 
-        // 用第一个采样器的八度数计算偏移
         let num_octaves_0 = sampler_params.num_octaves.first().copied().unwrap_or(0) as usize;
         if num_octaves_0 == 0 {
             return Err(DeviceError::LaunchFailed(
@@ -205,10 +205,8 @@ impl GpuCellBatchSampler {
             ));
         }
 
-        // 构建 component_stack：展平 perlin_configs
         let component_stack: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
 
-        // 构建 perms_data
         let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves as usize * 256);
         for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
             for o in 0..no as usize {
@@ -217,14 +215,10 @@ impl GpuCellBatchSampler {
             }
         }
 
-        // cell_indices: 每个位置指向 sampler 0（简化：所有位置使用同一 sampler）
-        let cell_indices: Vec<i32> = vec![0i32; n];
-
         let amps_offset: i32 = 1;
         let lacs_offset: i32 = 1 + num_octaves_0 as i32;
         let orgs_offset: i32 = 1 + (num_octaves_0 * 2) as i32;
 
-        // GPU 内存分配（pos/res 按需分配，stack/perms/indices 池化复用）
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
         let mut d_stack = self.alloc_f64_pooled(component_stack.len())?;
@@ -234,17 +228,17 @@ impl GpuCellBatchSampler {
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_stack, &component_stack)?;
         self.device.copy_to_device(&mut d_perms, &perms_data)?;
-        self.device.copy_to_device(&mut d_indices, &cell_indices)?;
+        self.device.copy_to_device(&mut d_indices, cell_indices)?;
 
         let ok = self.try_launch(
             "cell_cache_fill_f64",
             n,
             vec![
-                KernelArg::BufferRef(0), // pos
-                KernelArg::BufferRef(1), // component_stack
-                KernelArg::BufferRef(2), // perms_data
-                KernelArg::BufferRef(3), // cell_indices
-                KernelArg::BufferRef(4), // densities (output)
+                KernelArg::BufferRef(0),
+                KernelArg::BufferRef(1),
+                KernelArg::BufferRef(2),
+                KernelArg::BufferRef(3),
+                KernelArg::BufferRef(4),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(config_stride as i32),
                 KernelArg::I32(amps_offset),
@@ -269,8 +263,7 @@ impl GpuCellBatchSampler {
             self.free_u8_pooled(perms_data.len(), d_perms);
             self.free_i32_pooled(cell_indices.len(), d_indices);
             return Err(DeviceError::LaunchFailed(
-                "cell cache fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
-                    .into(),
+                "cell cache fill: GPU kernel launch failed".into(),
             ));
         }
 
@@ -280,6 +273,21 @@ impl GpuCellBatchSampler {
         self.free_u8_pooled(perms_data.len(), d_perms);
         self.free_i32_pooled(cell_indices.len(), d_indices);
         Ok(())
+    }
+
+    /// 批量填充 cell cache（默认所有位置使用 sampler 0）。
+    pub fn batch_fill_cell_caches(
+        &mut self,
+        positions: &[f64],
+        sampler_params: &CellFillParams,
+        results: &mut [f64],
+    ) -> Result<(), DeviceError> {
+        let n = results.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let cell_indices: Vec<i32> = vec![0i32; n];
+        self.batch_fill_cell_caches_indexed(positions, sampler_params, &cell_indices, results)
     }
 
     /// 批量填充插值器缓冲区。
