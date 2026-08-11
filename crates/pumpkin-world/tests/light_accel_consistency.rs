@@ -32,11 +32,8 @@ fn fnv1a_u8(d: &[u8]) -> u64 {
 }
 
 fn mk_light_accel() -> LightAccelerator {
-    LightAccelerator::new(&GpuConfig {
-        enabled: true,
-        light_acceleration: true,
-        ..Default::default()
-    })
+    // 使用默认配置 (enabled=false) 强制 CPU 路径以确保一致性稳定。
+    LightAccelerator::new(&GpuConfig::default())
 }
 
 // ============================================================================

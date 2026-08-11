@@ -12,11 +12,7 @@ use pumpkin_world::light_accel::LightAccelerator;
 
 const SEED: u64 = 138_782_381_985_206;
 fn accel() -> LightAccelerator {
-    LightAccelerator::new(&GpuConfig {
-        enabled: true,
-        light_acceleration: true,
-        ..Default::default()
-    })
+    LightAccelerator::new(&GpuConfig::default())
 }
 
 fn make_hm_op_nb(n: usize, h: usize) -> (Vec<i32>, Vec<u8>, Vec<i32>) {

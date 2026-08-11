@@ -120,6 +120,9 @@ impl LightAccelerator {
             );
         }
         let mut it = 0;
+        if n == 0 {
+            return it;
+        }
         for _ in 0..max_iters {
             let mut ch = false;
             for i in 0..n {
