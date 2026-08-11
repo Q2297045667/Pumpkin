@@ -10,18 +10,18 @@ use std::collections::HashMap;
 
 /// GPU 缓冲区池，按长度分组回收。
 pub struct GpuBufferPool {
-    f64_bufs: HashMap<usize, Vec<GpuBuffer<f64>>>,
-    u8_bufs: HashMap<usize, Vec<GpuBuffer<u8>>>,
-    i32_bufs: HashMap<usize, Vec<GpuBuffer<i32>>>,
+    f64: HashMap<usize, Vec<GpuBuffer<f64>>>,
+    u8: HashMap<usize, Vec<GpuBuffer<u8>>>,
+    i32: HashMap<usize, Vec<GpuBuffer<i32>>>,
 }
 
 impl GpuBufferPool {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            f64_bufs: HashMap::default(),
-            u8_bufs: HashMap::default(),
-            i32_bufs: HashMap::default(),
+            f64: HashMap::default(),
+            u8: HashMap::default(),
+            i32: HashMap::default(),
         }
     }
 
@@ -31,17 +31,16 @@ impl GpuBufferPool {
         device: &GpuDevice,
         len: usize,
     ) -> Result<GpuBuffer<f64>, DeviceError> {
-        if let Some(buf) = self.f64_bufs.get_mut(&len).and_then(|v| v.pop()) {
-            Ok(buf)
-        } else {
-            device.alloc_f64(len)
-        }
+        self.f64
+            .get_mut(&len)
+            .and_then(Vec::pop)
+            .map_or_else(|| device.alloc_f64(len), Ok)
     }
 
     /// 将 f64 buffer 归还池中。
     pub fn put_f64(&mut self, buf: GpuBuffer<f64>) {
         let len = buf.len();
-        self.f64_bufs.entry(len).or_default().push(buf);
+        self.f64.entry(len).or_default().push(buf);
     }
 
     /// 从池中取一个 u8 buffer（复用或新建）。
@@ -50,17 +49,16 @@ impl GpuBufferPool {
         device: &GpuDevice,
         len: usize,
     ) -> Result<GpuBuffer<u8>, DeviceError> {
-        if let Some(buf) = self.u8_bufs.get_mut(&len).and_then(|v| v.pop()) {
-            Ok(buf)
-        } else {
-            device.alloc_u8(len)
-        }
+        self.u8
+            .get_mut(&len)
+            .and_then(Vec::pop)
+            .map_or_else(|| device.alloc_u8(len), Ok)
     }
 
     /// 将 u8 buffer 归还池中。
     pub fn put_u8(&mut self, buf: GpuBuffer<u8>) {
         let len = buf.len();
-        self.u8_bufs.entry(len).or_default().push(buf);
+        self.u8.entry(len).or_default().push(buf);
     }
 
     /// 从池中取一个 i32 buffer（复用或新建）。
@@ -69,17 +67,16 @@ impl GpuBufferPool {
         device: &GpuDevice,
         len: usize,
     ) -> Result<GpuBuffer<i32>, DeviceError> {
-        if let Some(buf) = self.i32_bufs.get_mut(&len).and_then(|v| v.pop()) {
-            Ok(buf)
-        } else {
-            device.alloc_i32(len)
-        }
+        self.i32
+            .get_mut(&len)
+            .and_then(Vec::pop)
+            .map_or_else(|| device.alloc_i32(len), Ok)
     }
 
     /// 将 i32 buffer 归还池中。
     pub fn put_i32(&mut self, buf: GpuBuffer<i32>) {
         let len = buf.len();
-        self.i32_bufs.entry(len).or_default().push(buf);
+        self.i32.entry(len).or_default().push(buf);
     }
 
     /// 上传数据到 buffer（使用 device 的 copy_to_device）。
@@ -102,17 +99,17 @@ impl GpuBufferPool {
 
     /// 一次性释放池中所有 buffer。
     pub fn free_all(self, device: &GpuDevice) -> Result<(), DeviceError> {
-        for (_, bufs) in self.f64_bufs {
+        for (_, bufs) in self.f64 {
             for buf in bufs {
                 device.free(buf)?;
             }
         }
-        for (_, bufs) in self.u8_bufs {
+        for (_, bufs) in self.u8 {
             for buf in bufs {
                 device.free(buf)?;
             }
         }
-        for (_, bufs) in self.i32_bufs {
+        for (_, bufs) in self.i32 {
             for buf in bufs {
                 device.free(buf)?;
             }
