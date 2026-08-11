@@ -19,6 +19,10 @@ use pumpkin_gpu::{
 /// GPU 不可用时自动回退到 CPU。
 pub struct BatchAccelerator {
     config: GpuConfig,
+    /// 缓存的 GPU 设备（懒初始化一次，避免每次调用都重建设备）。
+    /// 通过 Mutex 包装以提供 Sync（GPU 设备本身非线程安全）。
+    #[cfg(feature = "gpu")]
+    cached_device: std::sync::Mutex<Option<GpuDevice>>,
 }
 
 impl BatchAccelerator {
@@ -31,6 +35,8 @@ impl BatchAccelerator {
     pub fn new(config: &GpuConfig) -> Self {
         Self {
             config: config.clone(),
+            #[cfg(feature = "gpu")]
+            cached_device: std::sync::Mutex::new(None),
         }
     }
 
@@ -46,16 +52,28 @@ impl BatchAccelerator {
                 || self.config.jit_enabled)
     }
 
-    /// 尝试创建 GPU 设备。
-    ///
-    /// 仅在配置激活且探测到非 CPU 后端时返回 `Some`。
+    /// 临时取出 GPU 设备执行操作，完成后归还。
+    /// 保证即使闭包 panic 也不会丢失设备（当 Mutex 未被污染时）。
     #[cfg(feature = "gpu")]
-    fn make_device(&self) -> Option<GpuDevice> {
-        if !self.is_active() {
-            return None;
+    fn with_gpu<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(GpuDevice) -> (GpuDevice, R),
+    {
+        let mut guard = self.cached_device.lock().ok()?;
+        if guard.is_none() && self.is_active() {
+            let device = GpuDevice::from_config(&self.config);
+            if device.device_type() != pumpkin_gpu::DeviceType::Cpu {
+                *guard = Some(device);
+            }
         }
-        let device = GpuDevice::from_config(&self.config);
-        (device.device_type() != pumpkin_gpu::DeviceType::Cpu).then_some(device)
+        let dev = guard.take()?;
+        drop(guard);
+        let (dev, result) = f(dev);
+        // 归还设备（忽略 Mutex 污染的情况）
+        if let Ok(mut g) = self.cached_device.lock() {
+            *g = Some(dev);
+        }
+        Some(result)
     }
 
     // --------------------------------------------------------------------------
@@ -73,17 +91,19 @@ impl BatchAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if let Some(device) = self.make_device() {
-            let mut sampler = GpuCellBatchSampler::new(device);
-            if sampler
-                .batch_fill_cell_caches(positions, params, results)
-                .is_ok()
-            {
-                return;
-            }
+        if self
+            .with_gpu(|device| {
+                let mut sampler = GpuCellBatchSampler::new(device);
+                let ok = sampler
+                    .batch_fill_cell_caches(positions, params, results)
+                    .is_ok();
+                (sampler.device, ok)
+            })
+            .unwrap_or(false)
+        {
+            return;
         }
-        // CPU fallback: 基于 perlin_configs 中的噪声配置计算 cell cache 密度值。
-        // 当 perlin_configs 为空或八度数为 0 时，视为未配置，返回零。
+        // CPU fallback
         tracing::debug!("GPU cell cache fill failed — using CPU fallback");
         cpu_cell_cache_fill_impl(positions, params, results);
     }
@@ -99,17 +119,19 @@ impl BatchAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if let Some(device) = self.make_device() {
-            let mut sampler = GpuCellBatchSampler::new(device);
-            if sampler
-                .batch_fill_interpolators(positions, params, results)
-                .is_ok()
-            {
-                return;
-            }
+        if self
+            .with_gpu(|device| {
+                let mut sampler = GpuCellBatchSampler::new(device);
+                let ok = sampler
+                    .batch_fill_interpolators(positions, params, results)
+                    .is_ok();
+                (sampler.device, ok)
+            })
+            .unwrap_or(false)
+        {
+            return;
         }
-        // CPU fallback: 基于 perlin_configs 中的噪声配置计算插值器密度值。
-        // 当 perlin_configs 为空或八度数为 0 时，视为未配置，返回零。
+        // CPU fallback
         tracing::debug!("GPU interpolator fill failed — using CPU fallback");
         cpu_interpolator_fill_impl(positions, params, results);
     }
@@ -132,16 +154,20 @@ impl BatchAccelerator {
         barrier_scale: f64,
     ) -> AquiferBatchResult {
         #[cfg(feature = "gpu")]
-        if let Some(device) = self.make_device() {
-            let mut sampler = GpuAquiferBatchSampler::new(device);
-            if let Ok(result) = sampler.batch_aquifer_apply(
-                positions,
-                densities,
-                packed_grid,
-                fluid_level,
-                barrier_scale,
-            ) {
-                return result;
+        {
+            let gpu_result = self.with_gpu(|device| {
+                let mut sampler = GpuAquiferBatchSampler::new(device);
+                let r = sampler.batch_aquifer_apply(
+                    positions,
+                    densities,
+                    packed_grid,
+                    fluid_level,
+                    barrier_scale,
+                );
+                (sampler.device, r)
+            });
+            if let Some(Ok(aquifer_result)) = gpu_result {
+                return aquifer_result;
             }
         }
         // CPU fallback: 4-NN 搜索
@@ -170,16 +196,19 @@ impl BatchAccelerator {
         results: &mut [f64],
     ) {
         #[cfg(feature = "gpu")]
-        if let Some(device) = self.make_device() {
-            let mut sampler = GpuBeardifierBatchSampler::new(device);
-            if sampler
-                .batch_beardifier(positions, structures, junctions, results)
-                .is_ok()
-            {
-                return;
-            }
+        if self
+            .with_gpu(|device| {
+                let mut sampler = GpuBeardifierBatchSampler::new(device);
+                let ok = sampler
+                    .batch_beardifier(positions, structures, junctions, results)
+                    .is_ok();
+                (sampler.device, ok)
+            })
+            .unwrap_or(false)
+        {
+            return;
         }
-        // CPU fallback: 遍历结构/连接点
+        // CPU fallback
         cpu_beardifier(positions, structures, junctions, results);
     }
 
@@ -193,17 +222,19 @@ impl BatchAccelerator {
     /// 失败或不可用时回退到默认值（无矿脉）。
     pub fn batch_vein_sample(&self, positions: &[f64], params: &VeinParams, results: &mut [i32]) {
         #[cfg(feature = "gpu")]
-        if let Some(device) = self.make_device() {
-            let mut sampler = GpuVeinBatchSampler::new(device);
-            if sampler
-                .batch_vein_sample(positions, params, results)
-                .is_ok()
-            {
-                return;
-            }
+        if self
+            .with_gpu(|device| {
+                let mut sampler = GpuVeinBatchSampler::new(device);
+                let ok = sampler
+                    .batch_vein_sample(positions, params, results)
+                    .is_ok();
+                (sampler.device, ok)
+            })
+            .unwrap_or(false)
+        {
+            return;
         }
-        // CPU fallback: 基于 toggle/ridged/gap 三重 perlin 噪声的矿脉判定。
-        // 与 GPU kernel vein_batch_f64 算法一致，与 OreVeinSampler 逻辑对齐。
+        // CPU fallback
         tracing::debug!("GPU vein sample failed — using CPU fallback");
         cpu_vein_detect(positions, params, results);
     }
@@ -219,11 +250,15 @@ impl BatchAccelerator {
     /// 失败或不可用时回退到 CPU 路径。
     pub fn batch_trilinear(&self, corners: &[f64], deltas: &[f64], results: &mut [f64]) {
         #[cfg(feature = "gpu")]
-        if let Some(device) = self.make_device() {
-            let mut sampler = GpuNoiseSampler::new(device);
-            if sampler.batch_trilinear(corners, deltas, results).is_ok() {
-                return;
-            }
+        if self
+            .with_gpu(|device| {
+                let mut sampler = GpuNoiseSampler::new(device);
+                let ok = sampler.batch_trilinear(corners, deltas, results).is_ok();
+                (sampler.device, ok)
+            })
+            .unwrap_or(false)
+        {
+            return;
         }
         // CPU fallback: 标准三线性插值
         tracing::debug!("GPU trilinear failed — using CPU fallback");
