@@ -247,6 +247,7 @@ impl BasicConfiguration {
 
 impl AdvancedConfiguration {
     /// Validates advanced configuration options.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn validate(&self) {
         #[cfg(feature = "gpu")]
         self.gpu.validate();
