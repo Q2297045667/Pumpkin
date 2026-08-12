@@ -1,6 +1,7 @@
 # Pumpkin 项目全方位检查报告
 
 生成日期: 2026-08-12
+更新日期: 2026-08-13（GPU 模块四轮修复，见第 12 节）
 项目: Pumpkin GPU 加速管线
 
 ---
@@ -108,6 +109,10 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | Vein | `cpu_vein_detect` | `batch_vein_sample` | ✅ |
 | Trilinear | `cpu_trilinear_impl` | `batch_trilinear` | ✅ |
 
+> 注（2026-08-13）：上表覆盖通用批量 API 的一致性（仍然有效）。worldgen 集成路径已改用
+> vanilla 语义的 spec 批量（§12.3）；CellCache/Interpolator 的 CPU fallback 已重写为 GPU
+> kernel 逐行镜像（§12.2）。
+
 ### 光照
 
 | 测试 | CPU | GPU | 结果 |
@@ -163,8 +168,8 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | 功能 | 状态 | 接入点 |
 |------|------|--------|
 | 噪声采样 (JIT + batch) | ✅ | `NoiseAccelerator` → `GpuNoiseSampler` |
-| Cell Cache 填充 | ✅ | `ChunkNoiseRouter::fill_cell_caches` |
-| Interpolator 填充 | ✅ | `ChunkNoiseRouter::fill_interpolator_buffers` |
+| Cell Cache 填充 | ⚠️ 门控 | `ChunkNoiseRouter::fill_cell_caches` — 简单 `Noise` DAG 逐位等价 vanilla；1.21.x 复杂 DAG 回退 CPU（§12.3） |
+| Interpolator 填充 | ⚠️ 门控 | `ChunkNoiseRouter::fill_interpolator_buffers` — 同上 |
 | Trilinear 插值 | ✅ | `ChunkNoiseRouter::interpolate_xyz` |
 | FlatCache | ✅ | `CacheFlat` 构造时 |
 | Surface 噪声 | ✅ | `precompute_surface` (JIT→batch→CPU) |
@@ -172,10 +177,10 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | 天空光水平 | ✅ | `LightEngine::try_gpu_sky_horizontal` |
 | 方块光扫描 | ✅ | `LightEngine::try_gpu_block_propagate` |
 | Beardifier | ✅ | `beardifier_batch_f64` |
-| Vein | ✅ | `vein_batch_f64` |
+| Vein | ⚠️ 门控 | `precompute_gpu_veins` — 1.21.x DAG 含 Interpolated/Linear，回退 CPU（§12.4） |
 | Aquifer 缓存 | ✅ | `GpuAquiferCache` |
 | 噪声缓存回填 | ✅ | `backfill_noise_cache` (本次会话) |
-| JIT fmad/opt 分离 | ✅ | 常规 kernel 用配置标志，JIT 用 fmad=true+O3 |
+| JIT fmad/opt 分离 | ✅ | 常规与 JIT kernel 均 `--fmad=false --prec-div/sqrt=true`（§12.1），JIT 保留 O3 |
 | 缓冲池统一 | ✅ | `GpuBufferPool` |
 
 ---
@@ -198,11 +203,11 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 
 ### 已知限制 (非本次引入)
 
-| 问题 | 级别 |
+| 问题 | 状态 (2026-08-13 更新) |
 |------|------|
-| `GpuDevice::init()` 不初始化 kernel registry | ⚠️ 低 (仅影响 lib 测试) |
-| OpenCL `light_propagate_u8_persistent` 不可行 | ℹ️ 不可行 |
-| CellCache GPU 算法使用 gen_perm_table 而非 vanilla ImprovedNoise | ℹ️ 设计选择 |
+| `GpuDevice::init()` 不初始化 kernel registry | ✅ 已修复（§12.0） |
+| OpenCL `light_propagate_u8_persistent` 不可行 | ℹ️ 确认不可行（OpenCL 无 grid-wide 栅栏；另记录 CUDA 端 `persistent_enabled` 配置检查隐患） |
+| CellCache GPU 算法使用 gen_perm_table 而非 vanilla ImprovedNoise | ✅ 已修复（§12.2 真实 vanilla 置换表） |
 
 ---
 
@@ -220,3 +225,66 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | GPU 管线完整性 | ✅ 核心功能全部接入 |
 | 测试覆盖 | ✅ 262 测试, 0 failures |
 | 死代码 | ✅ 4 项已清理 |
+
+---
+
+## 12. 后续修复记录 (2026-08-13, 真 GPU 环境验证)
+
+本机环境: Tesla T10 (CUDA 可用)，全部结果在真 GPU 上验证。
+
+### 12.0 GpuDevice::init() kernel registry
+
+- `init()` 现与 `from_config()` 一致地初始化全局 kernel 注册表；`init_kernel_registry` 改为 `OnceLock::get_or_init` 幂等实现（避免重复泄漏）
+- 回归测试: `init_initializes_kernel_registry`
+
+### 12.1 数值一致性修复
+
+真 GPU 上 `octave/double_perlin/shift_a/shift_b_consistency` 全部 hash 不一致，定位到两个根因：
+
+| 根因 | 修复 |
+|------|------|
+| 振幅×持续性结合顺序：CPU `(amp*sample)*pers` vs GPU 预乘 `(amp*pers)*sample` | 10 个 kernel（CUDA+OpenCL ×5 族）加 `pers` 参数，计算 `(amps[o]*s)*pers[o]`；`packed_amplitudes` 返回原始 amplitude；JIT 生成器同步烘焙 `({amp} * core(...)) * {pers}` |
+| NVRTC 标志：`init()` 无 flags 时默认 `--fmad=true` + `--use_fast_math` → FMA 融合/近似除法 | 默认精度选项 `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`，移除 `--use_fast_math`；JIT 同样改精度优先 |
+
+验证：真 GPU 上 4 个一致性测试全部通过；CPU 回退模式全套件无回归。
+
+### 12.2 置换表替换（第一层）
+
+- `CellFillParams` 新增 `perms: Vec<u8>`（sampler-major→octave-major，每表 256B）；`compute_cell_fill_params`/`compute_interpolator_fill_params` 从 `sampler.samplers[o].sampler.permutation()` 序列化**真实 vanilla 表**；缺失时回退 `gen_perm_table`（兼容旧参数构造）
+- **CPU fallback 重写**：原 `sample_perlin` 本身是坏的（Perlin-2002 梯度 + `lerp3` 参数错位），重写为 GPU `sample_no_fade_core` 的逐行镜像（vanilla 16 梯度表、fade、lerp 顺序、maintain_precision）
+- 新增 `cell_cache_fill_vanilla_table_parity` / `interpolator_fill_vanilla_table_parity`（batch vs 独立参考实现逐位一致，GPU/CPU 两条路径同锁）
+
+### 12.3 多噪声映射（第二层）
+
+**关键发现**：1.21.x vanilla overworld router 实际只有 **1 个 CellCache**，且 DAG 为
+`Add(Add(Unary, RangeChoice), Beardifier)`；vein DAG 为 Interpolated/Linear 结构——**均无法用简单 kernel 表达**。
+旧 GPU 路径在这些 DAG 上把"第一个噪声采样器的八度和"复制给所有 cache，输出与 vanilla 无关（静默错误）。
+
+修复（正确性优先）：
+
+| 改动 | 说明 |
+|------|------|
+| `CellCacheFillSpec` + `batch_fill_cell_caches_vanilla` | 每 cache 一组 DoublePerlin（两采样器）+ NoiseData 缩放，复用已逐位一致的 `double_perlin_sample_f64` kernel |
+| `build_cell_cache_fill_specs` / `build_interpolator_fill_specs` / `build_vein_fill_specs` | 仅当每个 DAG 根都是独立 `Noise` 时返回 `Some`，否则 `None` → CPU DAG 求值 |
+| `fill_cell_caches` / `fill_interpolator_buffers` / `precompute_gpu_cell_caches` / `on_sampled_cell_corners` | 按 cache 分发结果（布局 `[cache][position]`），不再一份数据复制给所有 cache |
+| `copy_to_cell_caches` → `copy_to_cell_cache(cache_index, data)` | 逐 cache 切片复制 |
+
+- 新增 `cell_cache_fill_vanilla_double_perlin_parity`（多 cache，真 GPU 逐位一致）
+- 新增 `overworld_cell_caches_are_batchable`：钉住 overworld 回退行为，未来数据结构简化导致 `Some` 时**故意失败**提醒审查
+
+### 12.4 vein 门控 + 旧 API 清理标记
+
+- `precompute_gpu_veins` 增加 `build_vein_fill_specs().is_none()` 门控——1.21.x overworld 矿脉回退 CPU（正确性恢复；GPU 矿脉路径待完整 DAG kernel 后重启）
+- 旧 API 标记：`build_cell_fill_params`、`build_interpolator_fill_params` 加 `#[deprecated]`（指向 spec 版本）；`build_vein_params` 文档注明近似协议
+
+### 12.5 当前状态与遗留
+
+| 项 | 状态 |
+|------|------|
+| GPU/CPU 数值一致性（噪声五族 + JIT + double） | ✅ 真 GPU 逐位一致 |
+| CellCache/Interpolator/Vein 正确性（1.21.x overworld） | ✅ 复杂 DAG 干净回退 CPU，简单 `Noise` DAG 逐位等价 vanilla |
+| 真 GPU 上 worldgen 级加速 | ⏳ 需完整密度函数 DAG 移植（Beardifier/Binary/RangeChoice/Interpolated 等）——独立工程 |
+| 旧八度和近似 API（`batch_fill_cell_caches` 等） | ℹ️ 保留供测试/插件，worldgen 不再使用 |
+| vein GPU kernel 近似实现 | ⚠️ 待完整 DAG kernel 后重启 |
+| 验证：pumpkin-world 全套件 (gpu feature, 串行) | ✅ 150 lib + 全部集成测试通过 |
+| 验证：pumpkin-gpu 全套件 (gpu feature, 真 GPU) | ✅ 全绿 |

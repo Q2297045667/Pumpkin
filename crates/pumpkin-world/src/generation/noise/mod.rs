@@ -522,12 +522,22 @@ impl<'a> ChunkNoiseGenerator<'a> {
     /// 将结果写入内部缓存。后续 `sample_block_state` 调用将直接查表
     /// 绕过 CPU DAG 矿脉噪声计算。
     ///
+    /// 矿脉 DAG 不可精确批量化时（1.21.x overworld 的 vein_toggle/ridged 含
+    /// Interpolated/Linear 结构）直接跳过，回退 CPU DAG 求值。
+    ///
     /// 仅在 `gpu` feature 启用且 `batch_accel` 可用时生效。
     #[cfg(feature = "gpu")]
     pub fn precompute_gpu_veins(&mut self) {
         let Some(accel) = self.batch_accel else {
             return;
         };
+
+        // 仅当三个矿脉噪声的 DAG 根均为独立 Noise 时才可批量；否则回退 CPU。
+        // 注：当前 vanilla 1.21.x 路由均不满足（见 build_vein_fill_specs 文档），
+        // 该 GPU 路径实际处于待启用状态，待矿脉 kernel 支持完整 DAG 后重启。
+        if self.router.build_vein_fill_specs().is_none() {
+            return;
+        }
 
         let h_blocks = self.horizontal_cell_block_count() as i32;
         let v_blocks = self.vertical_cell_block_count() as i32;

@@ -910,12 +910,30 @@ impl<'a> ChunkNoiseRouter<'a> {
     // DAG context-driven CellFillParams extraction (GPU feature)
     // ========================================================================
 
+    /// 构建 CellFillParams（旧八度和近似协议，已无 worldgen 调用方）。
+    ///
+    /// worldgen 已改用 [`Self::build_cell_cache_fill_specs`]（vanilla `Noise` 语义）。
+    /// 此方法保留供旧测试/插件使用，计划移除。
     #[cfg(feature = "gpu")]
     #[must_use]
+    #[deprecated(note = "改用 build_cell_cache_fill_specs（vanilla 语义）")]
     pub fn build_cell_fill_params(&self) -> pumpkin_gpu::noise::batch_cell::CellFillParams {
         self.cached_cell_params
             .get_or_init(|| self.compute_cell_fill_params())
             .clone()
+    }
+
+    /// 构建矿脉三个噪声（toggle/ridged/gap）的 vanilla `Noise` 填充规格。
+    ///
+    /// 仅当三个 DAG 根都是独立 `Noise`（DoublePerlin）时返回 `Some`。
+    /// 1.21.x overworld 的 vein DAG 含 Interpolated/Linear 结构，返回 `None` → CPU DAG 求值。
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub fn build_vein_fill_specs(&self) -> Option<[crate::batch_accel::CellCacheFillSpec<'_>; 3]> {
+        let toggle = self.extract_noise_spec(self.vein_toggle)?;
+        let ridged = self.extract_noise_spec(self.vein_ridged)?;
+        let gap = self.extract_noise_spec(self.vein_gap)?;
+        Some([toggle, ridged, gap])
     }
 
     /// 构建逐 cache 的 vanilla `Noise` 填充规格。
@@ -1031,8 +1049,13 @@ impl<'a> ChunkNoiseRouter<'a> {
         }
     }
 
+    /// 构建插值器填充参数（旧八度和近似协议，已无 worldgen 调用方）。
+    ///
+    /// worldgen 已改用 [`Self::build_interpolator_fill_specs`]（vanilla `Noise` 语义）。
+    /// 此方法保留供旧测试/插件使用，计划移除。
     #[cfg(feature = "gpu")]
     #[must_use]
+    #[deprecated(note = "改用 build_interpolator_fill_specs（vanilla 语义）")]
     pub fn build_interpolator_fill_params(&self) -> pumpkin_gpu::noise::batch_cell::CellFillParams {
         self.cached_interp_params
             .get_or_init(|| self.compute_interpolator_fill_params())
@@ -1087,11 +1110,15 @@ impl<'a> ChunkNoiseRouter<'a> {
         }
     }
 
-    /// Extract vein noise parameters from the DAG for GPU-accelerated vein sampling.
+    /// Extract vein noise parameters from the DAG for GPU-accelerated vein sampling（旧近似协议）。
     ///
     /// Walks from `vein_toggle`, `vein_ridged`, and `vein_gap` component indices
     /// to extract perlin configurations. Uses the same 8-double-per-octave
     /// encoding as interpolator fills.
+    ///
+    /// 注意：此协议基于八度和近似 + `gen_perm_table`，与 vanilla DAG 求值不一致。
+    /// 新路径 [`Self::build_vein_fill_specs`] 仅能表达简单 `Noise` DAG，
+    /// 1.21.x overworld 矿脉 DAG（Interpolated/Linear）两者均不可用，回退 CPU。
     #[cfg(feature = "gpu")]
     #[must_use]
     pub fn build_vein_params(&self) -> pumpkin_gpu::noise::batch_cell::VeinParams {
