@@ -68,3 +68,33 @@ fn overworld_density_fingerprint_is_stable() {
         "Overworld density fingerprint changed"
     );
 }
+
+/// overworld router 的 cell cache / interpolator 批量化检查。
+///
+/// 当前（1.21.x）overworld router 的 cell cache DAG 包含 Beardifier/Binary 等复杂结构，
+/// 预期不可批量化（回退 CPU DAG 求值，保证正确性）。若未来 vanilla 数据结构简化导致
+/// `Some`，必须同步验证 GPU 规格求值与 DAG 一致（此断言会提醒审查）。
+#[test]
+#[cfg(feature = "gpu")]
+fn overworld_cell_caches_are_batchable() {
+    let random_config = GlobalRandomConfig::new(0, false);
+    let proto_routers = ProtoNoiseRouters::generate(&OVERWORLD_BASE_NOISE_ROUTER, &random_config);
+
+    let builder_options =
+        ChunkNoiseFunctionBuilderOptions::new(4, 8, 48, 4, 0, 0, 4, Vec::new(), Vec::new(), None);
+    let router = ChunkNoiseRouter::generate(&proto_routers.noise, &builder_options);
+
+    assert!(
+        router.cell_cache_count() >= 1,
+        "overworld 应至少有 1 个 cell cache，got {}",
+        router.cell_cache_count()
+    );
+    assert!(
+        router.build_cell_cache_fill_specs().is_none(),
+        "overworld cell cache DAG 包含复杂结构，应回退 CPU；若变为 Some，请验证 GPU 规格求值"
+    );
+    assert!(
+        router.build_interpolator_fill_specs().is_none(),
+        "overworld interpolator DAG 包含复杂结构，应回退 CPU；若变为 Some，请验证 GPU 规格求值"
+    );
+}

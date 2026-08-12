@@ -395,13 +395,20 @@ impl<'a> ChunkNoiseGenerator<'a> {
             let hb = self.horizontal_cell_block_count() as usize;
             let vb = self.vertical_cell_block_count() as usize;
             let hc = self.horizontal_cell_count;
+            let vc = self.vertical_cell_count as usize;
             let ppc = hb * hb * vb; // positions per cell
+            let total_cells = hc * hc * vc;
+            let per_cache = ppc * total_cells;
+            let n_caches = self.router.cell_cache_count();
             // 展平 cell 索引：cy → cx → cz（与 precompute 收集顺序一致）
             let cell_flat = cell_y as usize * hc * hc + cell_x as usize * hc + cell_z as usize;
-            let offset = cell_flat * ppc;
-            if offset + ppc <= chunk_cache.len() {
-                let slice = &chunk_cache[offset..offset + ppc];
-                self.router.copy_to_cell_caches(slice);
+            let base = cell_flat * ppc;
+            if chunk_cache.len() == per_cache * n_caches && base + ppc <= per_cache {
+                for cache_index in 0..n_caches {
+                    let start = cache_index * per_cache + base;
+                    let slice = &chunk_cache[start..start + ppc];
+                    self.router.copy_to_cell_cache(cache_index, slice);
+                }
                 self.cache_fill_unique_id += 1;
                 return;
             }
@@ -575,10 +582,11 @@ impl<'a> ChunkNoiseGenerator<'a> {
         let Some(accel) = self.batch_accel else {
             return;
         };
-        let params = self.router.build_cell_fill_params();
-        if params.perlin_configs.is_empty() || params.num_octaves.is_empty() {
+        // 仅支持 DAG 根为独立 Noise 的 router（其余回退 CPU 路径）
+        let Some(specs) = self.router.build_cell_cache_fill_specs() else {
             return;
-        }
+        };
+        let n_caches = specs.len();
 
         let hb = self.horizontal_cell_block_count() as i32;
         let vb = self.vertical_cell_block_count() as i32;
@@ -616,8 +624,9 @@ impl<'a> ChunkNoiseGenerator<'a> {
             }
         }
 
-        let mut results = vec![0.0f64; total];
-        accel.batch_fill_cell_caches(&positions, &params, &mut results);
+        // 布局：[cache_index][cell 按生成顺序][局部索引]
+        let mut results = vec![0.0f64; total * n_caches];
+        accel.batch_fill_cell_caches_vanilla(&positions, &specs, &mut results);
         self.gpu_cell_cache = Some(results);
     }
 

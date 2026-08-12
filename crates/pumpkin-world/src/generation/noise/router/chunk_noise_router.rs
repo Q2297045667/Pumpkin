@@ -447,12 +447,11 @@ impl<'a> ChunkNoiseRouter<'a> {
         mapper: &impl IndexToNoisePos,
         sample_options: &mut ChunkNoiseFunctionSampleOptions,
     ) {
-        // GPU 批量加速：所有 CellCache 共享相同的噪声配置和位置网格，
-        // 仅需一次 GPU launch 填充，结果分发到各 CellCache。
+        // GPU 批量加速：每个 CellCache 用自己的 DoublePerlin 规格逐位计算
+        // （与 vanilla `Noise.compute` 一致），仅支持 DAG 根为独立 `Noise` 组件的场景。
         #[cfg(feature = "gpu")]
         if let Some(accel) = crate::gpu::get_batch_accel() {
-            let params = self.build_cell_fill_params();
-            if !params.perlin_configs.is_empty() && !params.num_octaves.is_empty() {
+            if let Some(specs) = self.build_cell_cache_fill_specs() {
                 // 各 CellCache 共享相同的位置网格 — 从第一个获取位置数量。
                 let total_positions = self
                     .cell_indices
@@ -480,19 +479,21 @@ impl<'a> ChunkNoiseRouter<'a> {
                         positions.push(pos.z as f64);
                     }
 
-                    let mut gpu_results = vec![0.0f64; total_positions];
-                    accel.batch_fill_cell_caches(&positions, &params, &mut gpu_results);
+                    let mut gpu_results = vec![0.0f64; total_positions * specs.len()];
+                    accel.batch_fill_cell_caches_vanilla(&positions, &specs, &mut gpu_results);
 
-                    // 将 GPU 结果写入所有 CellCache（大小必须匹配）
+                    // 按 cache 分发结果（规格顺序与 cell_indices 一致）
                     let components = &mut self.component_stack;
-                    for cell_cache_index in &self.cell_indices {
+                    for (cache_i, cell_cache_index) in self.cell_indices.iter().enumerate() {
+                        let start = cache_i * total_positions;
+                        let slice = &gpu_results[start..start + total_positions];
                         let (_, component) = components.split_at_mut(*cell_cache_index);
                         if let Some(ChunkNoiseFunctionComponent::Chunk(
                             ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache),
                         )) = component.first_mut()
                         {
                             if cell_cache.cache.len() == total_positions {
-                                cell_cache.cache.copy_from_slice(&gpu_results);
+                                cell_cache.cache.copy_from_slice(slice);
                             } else {
                                 tracing::warn!(
                                     "CellCache size mismatch: expected {total_positions}, got {}",
@@ -543,11 +544,11 @@ impl<'a> ChunkNoiseRouter<'a> {
         mapper: &impl IndexToNoisePos,
         sample_options: &mut ChunkNoiseFunctionSampleOptions,
     ) {
-        // GPU 批量加速：预填充所有插值器缓冲区。
+        // GPU 批量加速：每个插值器用自己的 vanilla `Noise` 规格逐位计算，
+        // 仅支持 DAG 根为独立 `Noise` 的场景，否则回退 CPU DAG 求值。
         #[cfg(feature = "gpu")]
         if let Some(accel) = crate::gpu::get_batch_accel() {
-            let params = self.build_interpolator_fill_params();
-            if !params.perlin_configs.is_empty() && !params.num_octaves.is_empty() {
+            if let Some(specs) = self.build_interpolator_fill_specs() {
                 // 从第一个插值器获取缓冲区大小
                 let total_positions = self
                     .interpolator_indices
@@ -575,27 +576,29 @@ impl<'a> ChunkNoiseRouter<'a> {
                         positions.push(pos.z as f64);
                     }
 
-                    let mut gpu_results = vec![0.0f64; total_positions];
-                    accel.batch_fill_interpolators(&positions, &params, &mut gpu_results);
+                    let mut gpu_results = vec![0.0f64; total_positions * specs.len()];
+                    accel.batch_fill_cell_caches_vanilla(&positions, &specs, &mut gpu_results);
 
-                    // 将 GPU 结果写回 DensityInterpolator 缓冲区
+                    // 按插值器分发结果（规格顺序与 interpolator_indices 一致）
                     let indices = &self.interpolator_indices;
                     let components = &mut self.component_stack;
-                    for interpolator_index in indices {
+                    for (spec_i, interpolator_index) in indices.iter().enumerate() {
+                        let start_idx = spec_i * total_positions;
+                        let slice = &gpu_results[start_idx..start_idx + total_positions];
                         let (_, component) = components.split_at_mut(*interpolator_index);
                         if let Some(ChunkNoiseFunctionComponent::Chunk(
                             ChunkSpecificNoiseFunctionComponent::DensityInterpolator(di),
                         )) = component.first_mut()
                         {
-                            let start_index = di.yz_to_buf_index(0, cell_z);
+                            let buf_start = di.yz_to_buf_index(0, cell_z);
                             let buf_len = di.vertical_cell_count + 1;
-                            if gpu_results.len() == buf_len {
+                            if slice.len() == buf_len {
                                 let buf = if start {
-                                    &mut di.start_buffer[start_index..start_index + buf_len]
+                                    &mut di.start_buffer[buf_start..buf_start + buf_len]
                                 } else {
-                                    &mut di.end_buffer[start_index..start_index + buf_len]
+                                    &mut di.end_buffer[buf_start..buf_start + buf_len]
                                 };
-                                buf.copy_from_slice(&gpu_results);
+                                buf.copy_from_slice(slice);
                             }
                         }
                     }
@@ -857,21 +860,28 @@ impl<'a> ChunkNoiseRouter<'a> {
         }
     }
 
-    /// 将预计算的 cell 数据批量复制到所有 `CellCache` 实例。
-    /// 由 chunk 级批量 GPU 填充后调用，替代逐 cell 的 kernel launch。
-    pub fn copy_to_cell_caches(&mut self, data: &[f64]) {
+    /// 将预计算的 cell 数据复制到指定索引的 `CellCache`。
+    /// 由 chunk 级批量 GPU 填充后调用（每个 cache 的切片独立分发）。
+    pub fn copy_to_cell_cache(&mut self, cache_index: usize, data: &[f64]) {
         let indices = &self.cell_indices;
         let components = &mut self.component_stack;
-        for cell_cache_index in indices {
-            let (_, component) = components.split_at_mut(*cell_cache_index);
-            if let Some(ChunkNoiseFunctionComponent::Chunk(
-                ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache),
-            )) = component.first_mut()
-            {
-                debug_assert_eq!(cell_cache.cache.len(), data.len());
-                cell_cache.cache.copy_from_slice(data);
-            }
+        let Some(&cell_cache_index) = indices.get(cache_index) else {
+            return;
+        };
+        let (_, component) = components.split_at_mut(cell_cache_index);
+        if let Some(ChunkNoiseFunctionComponent::Chunk(
+            ChunkSpecificNoiseFunctionComponent::CellCache(cell_cache),
+        )) = component.first_mut()
+        {
+            debug_assert_eq!(cell_cache.cache.len(), data.len());
+            cell_cache.cache.copy_from_slice(data);
         }
+    }
+
+    /// CellCache 数量（= `cell_indices.len()`）。
+    #[must_use]
+    pub const fn cell_cache_count(&self) -> usize {
+        self.cell_indices.len()
     }
 
     pub fn swap_buffers(&mut self) {
@@ -906,6 +916,78 @@ impl<'a> ChunkNoiseRouter<'a> {
         self.cached_cell_params
             .get_or_init(|| self.compute_cell_fill_params())
             .clone()
+    }
+
+    /// 构建逐 cache 的 vanilla `Noise` 填充规格。
+    ///
+    /// 仅当每个 CellCache 的 DAG 根都是独立 `Noise`（DoublePerlin）组件时返回 `Some`；
+    /// 否则返回 `None`，调用方回退到 CPU DAG 求值。
+    ///
+    /// 当前（1.21.x）overworld router 的 cell cache DAG 包含 Beardifier/Binary 等
+    /// 复杂结构，不可批量化，会回退 CPU（正确但无 GPU 加速）。
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub fn build_cell_cache_fill_specs(
+        &self,
+    ) -> Option<Vec<crate::batch_accel::CellCacheFillSpec<'_>>> {
+        let mut specs = Vec::with_capacity(self.cell_indices.len());
+        for &ci in &self.cell_indices {
+            let component = self.component_stack.get(ci)?;
+            let ChunkNoiseFunctionComponent::Chunk(ChunkSpecificNoiseFunctionComponent::CellCache(
+                cc,
+            )) = component
+            else {
+                return None;
+            };
+            specs.push(self.extract_noise_spec(cc.input_index)?);
+        }
+        Some(specs)
+    }
+
+    /// 构建逐插值器的 vanilla `Noise` 填充规格（语义与 cell cache 一致）。
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub fn build_interpolator_fill_specs(
+        &self,
+    ) -> Option<Vec<crate::batch_accel::CellCacheFillSpec<'_>>> {
+        let mut specs = Vec::with_capacity(self.interpolator_indices.len());
+        for &ii in &self.interpolator_indices {
+            let component = self.component_stack.get(ii)?;
+            let ChunkNoiseFunctionComponent::Chunk(
+                ChunkSpecificNoiseFunctionComponent::DensityInterpolator(di),
+            ) = component
+            else {
+                return None;
+            };
+            specs.push(self.extract_noise_spec(di.input_index)?);
+        }
+        Some(specs)
+    }
+
+    /// 若组件栈 `input_index` 处的 DAG 根是独立 `Noise`，提取其填充规格。
+    #[cfg(feature = "gpu")]
+    fn extract_noise_spec(
+        &self,
+        input_index: usize,
+    ) -> Option<crate::batch_accel::CellCacheFillSpec<'_>> {
+        let input = self.component_stack.get(input_index)?;
+        let ChunkNoiseFunctionComponent::Independent(
+            IndependentProtoNoiseFunctionComponent::Noise(noise),
+        ) = input
+        else {
+            tracing::debug!(
+                "GPU 批量化不可用：组件 #{input_index} 的 DAG 根不是独立 Noise（类型：{}）",
+                component_tag(input)
+            );
+            return None;
+        };
+        Some(crate::batch_accel::CellCacheFillSpec {
+            first: noise.sampler.first_sampler(),
+            second: noise.sampler.second_sampler(),
+            amplitude: noise.sampler.amplitude(),
+            xz_scale: noise.data.xz_scale,
+            y_scale: noise.data.y_scale,
+        })
     }
 
     /// 实际计算 CellFillParams（DAG 遍历）。
@@ -1311,5 +1393,34 @@ fn extract_interpolated_noise_config(
         origins,
         xz_scale: None,
         y_scale: None,
+    }
+}
+
+/// 返回组件的简洁类型标签（用于诊断日志）。
+#[cfg(feature = "gpu")]
+fn component_tag(component: &ChunkNoiseFunctionComponent<'_>) -> &'static str {
+    match component {
+        ChunkNoiseFunctionComponent::Independent(i) => match i {
+            IndependentProtoNoiseFunctionComponent::Constant(_) => "Constant",
+            IndependentProtoNoiseFunctionComponent::EndIsland(_) => "EndIsland",
+            IndependentProtoNoiseFunctionComponent::Noise(_) => "Noise",
+            IndependentProtoNoiseFunctionComponent::ShiftA(_) => "ShiftA",
+            IndependentProtoNoiseFunctionComponent::ShiftB(_) => "ShiftB",
+            IndependentProtoNoiseFunctionComponent::InterpolatedNoise(_) => "InterpolatedNoise",
+            IndependentProtoNoiseFunctionComponent::ClampedYGradient(_) => "ClampedYGradient",
+        },
+        ChunkNoiseFunctionComponent::Dependent(d) => match d {
+            DependentProtoNoiseFunctionComponent::Linear(_) => "Linear",
+            DependentProtoNoiseFunctionComponent::Unary(_) => "Unary",
+            DependentProtoNoiseFunctionComponent::Binary(_) => "Binary",
+            DependentProtoNoiseFunctionComponent::ShiftedNoise(_) => "ShiftedNoise",
+            DependentProtoNoiseFunctionComponent::IntervalSelect(_) => "IntervalSelect",
+            DependentProtoNoiseFunctionComponent::RangeChoice(_) => "RangeChoice",
+            DependentProtoNoiseFunctionComponent::FindTopSurface(_) => "FindTopSurface",
+            DependentProtoNoiseFunctionComponent::Clamp(_) => "Clamp",
+            DependentProtoNoiseFunctionComponent::Spline(_) => "Spline",
+        },
+        ChunkNoiseFunctionComponent::Chunk(_) => "Chunk",
+        ChunkNoiseFunctionComponent::PassThrough(_) => "PassThrough",
     }
 }

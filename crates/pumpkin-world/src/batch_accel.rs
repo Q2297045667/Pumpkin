@@ -14,6 +14,19 @@ use pumpkin_gpu::{
         },
     },
 };
+use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
+
+/// CellCache 批量填充规格（vanilla `Noise` 组件语义：DoublePerlin + NoiseData 缩放）。
+///
+/// 与 vanilla `Noise.compute` 逐位对应：
+/// `value = dbl.sample(x * xz_scale, y * y_scale, z * xz_scale)`。
+pub struct CellCacheFillSpec<'a> {
+    pub first: &'a OctavePerlinNoiseSampler,
+    pub second: &'a OctavePerlinNoiseSampler,
+    pub amplitude: f64,
+    pub xz_scale: f64,
+    pub y_scale: f64,
+}
 
 /// 批量加速器 — 为 Cell Cache、Aquifer、Beardifier、Vein 提供 GPU 批量采样。
 pub struct BatchAccelerator {
@@ -191,6 +204,60 @@ impl BatchAccelerator {
         // CPU fallback
         tracing::debug!("GPU cell cache fill failed — using CPU fallback");
         cpu_cell_cache_fill_impl(positions, params, results);
+    }
+
+    /// 批量填充 Cell Cache（vanilla `Noise` 语义：每个 cache 一组 DoublePerlin）。
+    ///
+    /// `results` 布局为 `[cache_index][position]`，长度 = `(positions.len() / 3) * specs.len()`。
+    /// GPU 路径对每个 cache 启动一次 `double_perlin_sample_f64` kernel（已与 CPU 逐位一致），
+    /// 不可用时回退到 CPU 上的 `DoublePerlinNoiseSampler` 等价计算。
+    pub fn batch_fill_cell_caches_vanilla(
+        &self,
+        positions: &[f64],
+        specs: &[CellCacheFillSpec<'_>],
+        results: &mut [f64],
+    ) {
+        let n = positions.len() / 3;
+        debug_assert_eq!(positions.len(), n * 3);
+        debug_assert_eq!(results.len(), n * specs.len());
+
+        for (cache_index, spec) in specs.iter().enumerate() {
+            let out = &mut results[cache_index * n..(cache_index + 1) * n];
+
+            // 应用 NoiseData 缩放（与 vanilla `Noise.compute` 一致）
+            let mut scaled = Vec::with_capacity(positions.len());
+            for i in 0..n {
+                scaled.push(positions[i * 3] * spec.xz_scale);
+                scaled.push(positions[i * 3 + 1] * spec.y_scale);
+                scaled.push(positions[i * 3 + 2] * spec.xz_scale);
+            }
+
+            #[cfg(feature = "gpu")]
+            if self.with_noise_sampler(|sampler| {
+                sampler
+                    .sample_double_perlin_batch(
+                        spec.first,
+                        spec.second,
+                        spec.amplitude,
+                        &scaled,
+                        out,
+                    )
+                    .is_ok()
+            }) == Some(true)
+            {
+                continue;
+            }
+
+            // CPU fallback：与 `DoublePerlinNoiseSampler::sample` 逐位一致
+            let c = 1.0181268882175227f64;
+            for (i, res) in out.iter_mut().enumerate() {
+                let x = scaled[i * 3];
+                let y = scaled[i * 3 + 1];
+                let z = scaled[i * 3 + 2];
+                *res = (spec.first.sample(x, y, z) + spec.second.sample(x * c, y * c, z * c))
+                    * spec.amplitude;
+            }
+        }
     }
 
     /// 批量填充插值器缓冲区。

@@ -23,7 +23,8 @@
 #![cfg(feature = "gpu")]
 
 use pumpkin_config::gpu::GpuConfig;
-use pumpkin_world::batch_accel::BatchAccelerator;
+use pumpkin_data::chunk::DoublePerlinNoiseParameters;
+use pumpkin_world::batch_accel::{BatchAccelerator, CellCacheFillSpec};
 
 #[cfg(feature = "gpu")]
 use pumpkin_gpu::noise::batch_cell::{
@@ -31,6 +32,7 @@ use pumpkin_gpu::noise::batch_cell::{
 };
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};
+use pumpkin_world::generation::noise::perlin::DoublePerlinNoiseSampler;
 
 const SEED: u64 = 138_782_381_985_206;
 
@@ -312,6 +314,75 @@ fn interpolator_fill_consistency() {
     assert!(
         non_zero,
         "interpolator_fill with real configs should produce non-zero output"
+    );
+}
+
+/// 构造测试用 DoublePerlinNoiseSampler。
+fn make_test_double_perlin(seed: u64) -> DoublePerlinNoiseSampler {
+    let r = Xoroshiro::from_seed(seed);
+    let mut g = RandomGenerator::Xoroshiro(r);
+    let params = DoublePerlinNoiseParameters::new(
+        0,
+        0,
+        &[1.0f64],
+        0,
+        0,
+        DoublePerlinNoiseSampler::get_amplitude(&[1.0f64]),
+    );
+    DoublePerlinNoiseSampler::from_params(&mut g, &params, false)
+}
+
+/// 多 cache 批量填充（vanilla DoublePerlin 语义）与 `DoublePerlinNoiseSampler::sample` 逐位一致。
+/// 验证：每 cache 独立采样器、NoiseData 缩放、GPU/CPU 路径一致性。
+#[test]
+fn cell_cache_fill_vanilla_double_perlin_parity() {
+    let n = 256;
+    let positions = make_positions_3d(n, SEED);
+
+    let dbl1 = make_test_double_perlin(SEED);
+    let dbl2 = make_test_double_perlin(SEED.wrapping_add(7));
+
+    // 两个 cache 使用不同的采样器与缩放（与 vanilla NoiseData 一致）
+    let specs = vec![
+        CellCacheFillSpec {
+            first: dbl1.first_sampler(),
+            second: dbl1.second_sampler(),
+            amplitude: dbl1.amplitude(),
+            xz_scale: 0.25,
+            y_scale: 0.125,
+        },
+        CellCacheFillSpec {
+            first: dbl2.first_sampler(),
+            second: dbl2.second_sampler(),
+            amplitude: dbl2.amplitude(),
+            xz_scale: 1.0,
+            y_scale: 1.0,
+        },
+    ];
+
+    let mut results = vec![0.0f64; n * 2];
+    make_accel().batch_fill_cell_caches_vanilla(&positions, &specs, &mut results);
+
+    // 参考：DoublePerlinNoiseSampler::sample（vanilla Noise.compute 语义）
+    let mut reference = vec![0.0f64; n * 2];
+    for (c, spec) in specs.iter().enumerate() {
+        let out = &mut reference[c * n..(c + 1) * n];
+        for (i, res) in out.iter_mut().enumerate() {
+            let x = positions[i * 3] * spec.xz_scale;
+            let y = positions[i * 3 + 1] * spec.y_scale;
+            let z = positions[i * 3 + 2] * spec.xz_scale;
+            *res = if c == 0 {
+                dbl1.sample(x, y, z)
+            } else {
+                dbl2.sample(x, y, z)
+            };
+        }
+    }
+
+    assert_eq!(
+        fnv1a_f64(&results),
+        fnv1a_f64(&reference),
+        "多 cache vanilla 双 Perlin 批量填充与 vanilla 参考不一致"
     );
 }
 
