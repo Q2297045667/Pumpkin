@@ -3,9 +3,9 @@ use dashmap::DashMap;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::chunk::Biome;
 use pumpkin_data::item::{BedrockItem, BedrockItemVersion};
-use pumpkin_protocol::bedrock::client::EntityProperties;
 use pumpkin_protocol::bedrock::client::item_registry::{CItemRegistry, ItemDefinition};
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
+use pumpkin_protocol::bedrock::client::{CBiomeDefinitionList, EntityProperties};
 use pumpkin_protocol::bedrock::network_item::{NetworkItemDescriptor, NetworkItemStackDescriptor};
 use pumpkin_protocol::codec::data_component::data_to_proto_sound;
 use pumpkin_world::generation::proto_chunk::GenerationCache;
@@ -385,6 +385,15 @@ impl World {
             self.save_entity(entity).await;
         }
 
+        let chunks: Vec<Vector2<i32>> = self
+            .block_entities
+            .iter()
+            .map(|chunk_block_entities| *chunk_block_entities.key())
+            .collect();
+        for chunk_pos in chunks {
+            self.save_block_entities(&chunk_pos).await;
+        }
+
         // Save portal POI to disk
         let save_result = self.portal_poi.lock().await.save_all();
         if let Err(e) = save_result {
@@ -410,6 +419,27 @@ impl World {
         let chunk = self.level.get_entity_chunk(current_chunk).await;
         chunk.data.lock().await.push(nbt);
         chunk.mark_dirty(true);
+    }
+
+    /// Serializes the live block entities of a chunk back into that chunk's block
+    /// entity data. The live map is the source of truth while a chunk is loaded -
+    /// `get_block_entity` takes the saved NBT out of the chunk when it wakes an
+    /// entity up - so this has to run before the chunk is dropped, or everything
+    /// the entity did since it was loaded is lost.
+    async fn save_block_entities(&self, chunk_pos: &Vector2<i32>) {
+        let Some(block_entities) = self
+            .block_entities
+            .get(chunk_pos)
+            .map(|chunk_block_entities| chunk_block_entities.values().cloned().collect::<Vec<_>>())
+        else {
+            return;
+        };
+
+        for block_entity in block_entities {
+            let mut nbt = NbtCompound::new();
+            block_entity.write_internal(&mut nbt).await;
+            self.add_block_entity_nbt(block_entity.get_position(), &nbt);
+        }
     }
 
     /// Sends an entity status update to all players tracking the specified entity.
@@ -1945,6 +1975,12 @@ impl World {
             (position, level_info.spawn_yaw, level_info.spawn_pitch)
         };
 
+        // Keep the server-side transform aligned with the StartGame position. In
+        // particular, this ensures an early disconnect persists the real spawn.
+        player.living_entity.entity.set_pos(position);
+        player.living_entity.entity.set_rotation(yaw, pitch);
+        player.living_entity.entity.last_pos.store(position);
+
         // Todo make the data less spread
         let level_settings = LevelSettings {
             seed: self.level.seed.0,
@@ -2029,7 +2065,12 @@ impl World {
                 entity_id: VarLong(runtime_id as _),
                 runtime_entity_id: VarULong(runtime_id),
                 player_gamemode: player.gamemode.load(),
-                position: Vector3::new(position.x as f32, position.y as f32, position.z as f32),
+                // Bedrock represents the local player at eye height; Pumpkin stores feet position.
+                position: Vector3::new(
+                    position.x as f32,
+                    position.y as f32 + player.get_entity().entity_type.eye_height,
+                    position.z as f32,
+                ),
                 pitch,
                 yaw,
                 level_settings,
@@ -2063,6 +2104,8 @@ impl World {
                 },
             })
             .await;
+
+        client.send_game_packet(&CBiomeDefinitionList).await;
 
         client
             .send_game_packet(&CItemRegistry {
@@ -2635,6 +2678,8 @@ impl World {
 
             client.send_game_packet(&ex_be_mob_equipment).await;
         }
+
+        player.has_played_before.store(true, Ordering::Relaxed);
 
         // 3. Trigger Join Event and Broadcast Join Message
         let msg_comp = TextComponent::translate_cross(
@@ -4416,6 +4461,7 @@ impl World {
         }
 
         for chunk_pos in &chunks_set {
+            self.save_block_entities(chunk_pos).await;
             self.block_entities.remove(chunk_pos);
         }
     }
