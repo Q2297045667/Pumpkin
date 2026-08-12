@@ -45,6 +45,10 @@ pub struct CellFillParams {
     pub num_octaves: Vec<i32>,
     /// 每个采样器的类型标记（0=Noise, 1=ShiftA, 2=ShiftB, 3=Interpolated, ...）
     pub sampler_types: Vec<i32>,
+    /// 每个八度的真实置换表（每表 256 字节，sampler-major → octave-major）。
+    /// 来自 vanilla `PerlinNoiseSampler::permutation()`。
+    /// 为空时回退到 `gen_perm_table` 生成（兼容旧参数构造）。
+    pub perms: Vec<u8>,
 }
 
 /// 含水层批量结果
@@ -179,11 +183,17 @@ impl GpuCellBatchSampler {
 
         let component_stack: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
 
-        let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves as usize * 256);
-        for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
-            for o in 0..no as usize {
-                let perm = gen_perm_table(0x4365_6C6C_u64.wrapping_add(s_idx as u64), o);
-                perms_data.extend_from_slice(&perm);
+        // 置换表：优先使用参数中携带的真实 vanilla 表，缺失时回退 gen_perm_table 生成
+        let expected_perms = total_octaves as usize * 256;
+        let mut perms_data: Vec<u8> = Vec::with_capacity(expected_perms);
+        if sampler_params.perms.len() >= expected_perms {
+            perms_data.extend_from_slice(&sampler_params.perms[..expected_perms]);
+        } else {
+            for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
+                for o in 0..no as usize {
+                    let perm = gen_perm_table(0x4365_6C6C_u64.wrapping_add(s_idx as u64), o);
+                    perms_data.extend_from_slice(&perm);
+                }
             }
         }
 
@@ -303,12 +313,17 @@ impl GpuCellBatchSampler {
         // 构建 dag_params：[amp, lac, org_x, org_y, org_z, xz_scale, y_scale, _] per octave
         let dag_params: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
 
-        // 构建 perms_data：每个 octave 256 字节置换表
-        let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves as usize * 256);
-        for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
-            for o in 0..no as usize {
-                let perm = gen_perm_table(0x496E_7465_7270_u64.wrapping_add(s_idx as u64), o);
-                perms_data.extend_from_slice(&perm);
+        // 置换表：优先使用参数中携带的真实 vanilla 表，缺失时回退 gen_perm_table 生成
+        let expected_perms = total_octaves as usize * 256;
+        let mut perms_data: Vec<u8> = Vec::with_capacity(expected_perms);
+        if sampler_params.perms.len() >= expected_perms {
+            perms_data.extend_from_slice(&sampler_params.perms[..expected_perms]);
+        } else {
+            for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
+                for o in 0..no as usize {
+                    let perm = gen_perm_table(0x496E_7465_7270_u64.wrapping_add(s_idx as u64), o);
+                    perms_data.extend_from_slice(&perm);
+                }
             }
         }
 
@@ -906,6 +921,7 @@ mod tests {
             perlin_configs: vec![],
             num_octaves: vec![],
             sampler_types: vec![],
+            perms: vec![],
         };
         let mut results: [f64; 0] = [];
         s.batch_fill_cell_caches(&[], &params, &mut results)
@@ -919,6 +935,7 @@ mod tests {
             perlin_configs: vec![],
             num_octaves: vec![],
             sampler_types: vec![],
+            perms: vec![],
         };
         let positions = [0.0f64, 0.0, 0.0, 1.0, 1.0, 1.0];
         let mut results = [0.0f64; 2];
@@ -934,6 +951,7 @@ mod tests {
             perlin_configs: vec![],
             num_octaves: vec![],
             sampler_types: vec![],
+            perms: vec![],
         };
         let positions = [0.0f64, 0.0, 0.0, 1.0, 2.0, 3.0];
         let mut results = [0.0f64; 2];

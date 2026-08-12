@@ -917,6 +917,7 @@ impl<'a> ChunkNoiseRouter<'a> {
         let mut perlin_configs = Vec::<f64>::new();
         let mut num_octaves = Vec::<i32>::new();
         let mut sampler_types = Vec::<i32>::new();
+        let mut perms = Vec::<u8>::new();
 
         // 从第一个 cell cache 开始遍历 DAG
         if let Some(&cell_idx) = self.cell_indices.first() {
@@ -932,6 +933,11 @@ impl<'a> ChunkNoiseRouter<'a> {
                 perlin_configs.extend_from_slice(&info.amplitudes);
                 perlin_configs.extend_from_slice(&info.lacunarities);
                 perlin_configs.extend_from_slice(&info.origins);
+
+                // 真实 vanilla 置换表（每个 octave 256 字节）
+                for data in info.sampler.samplers.iter() {
+                    perms.extend_from_slice(data.sampler.permutation());
+                }
             }
         }
 
@@ -939,6 +945,7 @@ impl<'a> ChunkNoiseRouter<'a> {
             perlin_configs,
             num_octaves,
             sampler_types,
+            perms,
         }
     }
 
@@ -959,6 +966,7 @@ impl<'a> ChunkNoiseRouter<'a> {
         let mut perlin_configs = Vec::<f64>::new();
         let mut num_octaves = Vec::<i32>::new();
         let mut sampler_types = Vec::<i32>::new();
+        let mut perms = Vec::<u8>::new();
 
         if let Some(&interp_idx) = self.interpolator_indices.first() {
             let mut visited = HashSet::new();
@@ -981,6 +989,11 @@ impl<'a> ChunkNoiseRouter<'a> {
                     perlin_configs.push(y_scale);
                     perlin_configs.push(0.0); // reserved
                 }
+
+                // 真实 vanilla 置换表（每个 octave 256 字节）
+                for data in info.sampler.samplers.iter() {
+                    perms.extend_from_slice(data.sampler.permutation());
+                }
             }
         }
 
@@ -988,6 +1001,7 @@ impl<'a> ChunkNoiseRouter<'a> {
             perlin_configs,
             num_octaves,
             sampler_types,
+            perms,
         }
     }
 

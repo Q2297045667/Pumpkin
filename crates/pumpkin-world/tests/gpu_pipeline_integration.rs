@@ -295,6 +295,7 @@ fn batch_cell_cache_empty_config() {
         perlin_configs: vec![],
         num_octaves: vec![],
         sampler_types: vec![],
+        perms: vec![],
     };
     let mut results = vec![0.0f64; 32];
     // Empty config should zero-fill or not crash
@@ -312,6 +313,7 @@ fn batch_interpolator_empty_config() {
         perlin_configs: vec![],
         num_octaves: vec![],
         sampler_types: vec![],
+        perms: vec![],
     };
     let mut results = vec![0.0f64; 16];
     accel.batch_fill_interpolators(&[0.0; 48], &params, &mut results);
@@ -388,6 +390,7 @@ fn bench_cell_cache_1024() {
         perlin_configs,
         num_octaves: vec![4],
         sampler_types: vec![0],
+        perms: vec![],
     };
 
     let mut results = vec![0.0f64; n];

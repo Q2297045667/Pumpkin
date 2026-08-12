@@ -672,7 +672,7 @@ fn sample_perlin(perm: &[u8; 256], x: f64, y: f64, z: f64) -> f64 {
     pumpkin_util::math::lerp3(g000, g100, g010, g110, g001, g101, g011, g111, u, v, w)
 }
 
-/// Perlin 梯度函数
+/// Perlin 梯度函数（vein 路径使用，保留）
 fn grad_perlin(hash: usize, x: f64, y: f64, z: f64) -> f64 {
     let h = hash & 15;
     let u = if h < 8 { x } else { y };
@@ -684,6 +684,97 @@ fn grad_perlin(hash: usize, x: f64, y: f64, z: f64) -> f64 {
         z
     };
     (if (h & 1) == 0 { u } else { -u }) + (if (h & 2) == 0 { v } else { -v })
+}
+
+// ============================================================================
+// vanilla `ImprovedNoise` 采样核心（与 GPU `sample_no_fade_core` 逐位一致）
+// ============================================================================
+
+/// vanilla 梯度表点积（与 GPU kernel 的 `grad` 一致）。
+#[inline]
+fn perlin_grad(hash: i32, x: f64, y: f64, z: f64) -> f64 {
+    pumpkin_util::noise::GRADIENTS[(hash & 15) as usize].dot(x, y, z)
+}
+
+/// vanilla fade 曲线 `6t⁵ - 15t⁴ + 10t³`（与 GPU kernel 的 `perlin_fade` 一致）。
+#[inline]
+fn perlin_fade(t: f64) -> f64 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// vanilla `maintainPrecision`（与 GPU kernel 逐位一致）。
+#[inline]
+fn maintain_precision(value: f64) -> f64 {
+    value - (value / 33_554_432.0 + 0.5).floor() * 33_554_432.0
+}
+
+/// vanilla `ImprovedNoise.noise` 核心：给定置换表与 origin，对已缩放坐标采样。
+///
+/// 与 GPU `sample_no_fade_core` 逐行对应（同样的梯度表、fade、lerp 顺序）。
+/// 调用方负责先对坐标做 `maintain_precision(x * lac)`。
+#[allow(clippy::too_many_lines)]
+fn sample_no_fade_core(perm: &[u8; 256], ox: f64, oy: f64, oz: f64, x: f64, y: f64, z: f64) -> f64 {
+    let tx = x + ox;
+    let ty = y + oy;
+    let tz = z + oz;
+    let xi = tx.floor();
+    let yi = ty.floor();
+    let zi = tz.floor();
+    let lx = tx - xi;
+    let ly = ty - yi;
+    let lz = tz - zi;
+    let ix = (xi as i32) & 255;
+    let iy = (yi as i32) & 255;
+    let iz = (zi as i32) & 255;
+    let i = i32::from(perm[ix as usize]);
+    let j = i32::from(perm[((ix + 1) & 255) as usize]);
+    let k = i32::from(perm[((i + iy) & 255) as usize]);
+    let l = i32::from(perm[((i + iy + 1) & 255) as usize]);
+    let m = i32::from(perm[((j + iy) & 255) as usize]);
+    let n = i32::from(perm[((j + iy + 1) & 255) as usize]);
+    let d = perlin_grad(i32::from(perm[((k + iz) & 255) as usize]), lx, ly, lz);
+    let e = perlin_grad(i32::from(perm[((m + iz) & 255) as usize]), lx - 1.0, ly, lz);
+    let f = perlin_grad(i32::from(perm[((l + iz) & 255) as usize]), lx, ly - 1.0, lz);
+    let g = perlin_grad(
+        i32::from(perm[((n + iz) & 255) as usize]),
+        lx - 1.0,
+        ly - 1.0,
+        lz,
+    );
+    let h = perlin_grad(
+        i32::from(perm[((k + iz + 1) & 255) as usize]),
+        lx,
+        ly,
+        lz - 1.0,
+    );
+    let o = perlin_grad(
+        i32::from(perm[((m + iz + 1) & 255) as usize]),
+        lx - 1.0,
+        ly,
+        lz - 1.0,
+    );
+    let p = perlin_grad(
+        i32::from(perm[((l + iz + 1) & 255) as usize]),
+        lx,
+        ly - 1.0,
+        lz - 1.0,
+    );
+    let q = perlin_grad(
+        i32::from(perm[((n + iz + 1) & 255) as usize]),
+        lx - 1.0,
+        ly - 1.0,
+        lz - 1.0,
+    );
+    let u = perlin_fade(lx);
+    let v = perlin_fade(ly);
+    let w = perlin_fade(lz);
+    let du0 = d + u * (e - d);
+    let du1 = f + u * (g - f);
+    let du2 = h + u * (o - h);
+    let du3 = p + u * (q - p);
+    let dv0 = du0 + v * (du1 - du0);
+    let dv1 = du2 + v * (du3 - du2);
+    dv0 + w * (dv1 - dv0)
 }
 
 // ============================================================================
@@ -727,12 +818,23 @@ fn cpu_cell_cache_fill_impl(positions: &[f64], params: &CellFillParams, results:
         offset += size;
     }
 
-    // 为每个采样器生成置换表
+    // 为每个采样器准备置换表：优先使用参数中携带的真实 vanilla 表，缺失时回退生成
+    let expected_perms = total_octaves as usize * 256;
+    let has_real_perms = params.perms.len() >= expected_perms;
     let mut sampler_perms: Vec<Vec<[u8; 256]>> = Vec::with_capacity(params.num_octaves.len());
+    let mut perm_cursor = 0usize;
     for (s_idx, &no) in params.num_octaves.iter().enumerate() {
-        let perms: Vec<[u8; 256]> = (0..no as usize)
-            .map(|o| gen_perm_table(0x4365_6C6Cu64.wrapping_add(s_idx as u64), o))
-            .collect();
+        let mut perms = Vec::with_capacity(no as usize);
+        for o in 0..no as usize {
+            let mut table = [0u8; 256];
+            if has_real_perms {
+                table.copy_from_slice(&params.perms[perm_cursor..perm_cursor + 256]);
+            } else {
+                table = gen_perm_table(0x4365_6C6Cu64.wrapping_add(s_idx as u64), o);
+            }
+            perm_cursor += 256;
+            perms.push(table);
+        }
         sampler_perms.push(perms);
     }
 
@@ -769,7 +871,17 @@ fn cpu_cell_cache_fill_impl(positions: &[f64], params: &CellFillParams, results:
 
             if o < sampler_perms[s_idx].len() {
                 let perm = &sampler_perms[s_idx][o];
-                sum += amp * sample_perlin(perm, org_x + x * lac, org_y + y * lac, org_z + z * lac);
+                // 与 GPU `cell_cache_fill_f64` kernel 逐位一致
+                sum += amp
+                    * sample_no_fade_core(
+                        perm,
+                        org_x,
+                        org_y,
+                        org_z,
+                        maintain_precision(x * lac),
+                        maintain_precision(y * lac),
+                        maintain_precision(z * lac),
+                    );
             }
         }
         results[idx] = sum;
@@ -800,12 +912,23 @@ fn cpu_interpolator_fill_impl(positions: &[f64], params: &CellFillParams, result
         return;
     }
 
-    // 为每个采样器生成置换表
+    // 为每个采样器准备置换表：优先使用参数中携带的真实 vanilla 表，缺失时回退生成
+    let expected_perms = total_octaves as usize * 256;
+    let has_real_perms = params.perms.len() >= expected_perms;
     let mut sampler_perms: Vec<Vec<[u8; 256]>> = Vec::with_capacity(params.num_octaves.len());
+    let mut perm_cursor = 0usize;
     for (s_idx, &no) in params.num_octaves.iter().enumerate() {
-        let perms: Vec<[u8; 256]> = (0..no as usize)
-            .map(|o| gen_perm_table(0x496E_7465_7270u64.wrapping_add(s_idx as u64), o))
-            .collect();
+        let mut perms = Vec::with_capacity(no as usize);
+        for o in 0..no as usize {
+            let mut table = [0u8; 256];
+            if has_real_perms {
+                table.copy_from_slice(&params.perms[perm_cursor..perm_cursor + 256]);
+            } else {
+                table = gen_perm_table(0x496E_7465_7270u64.wrapping_add(s_idx as u64), o);
+            }
+            perm_cursor += 256;
+            perms.push(table);
+        }
         sampler_perms.push(perms);
     }
 
@@ -849,12 +972,16 @@ fn cpu_interpolator_fill_impl(positions: &[f64], params: &CellFillParams, result
 
             if o < sampler_perms[s_idx].len() {
                 let perm = &sampler_perms[s_idx][o];
+                // 与 GPU `interpolator_fill_f64` kernel 逐位一致
                 sum += amp
-                    * sample_perlin(
+                    * sample_no_fade_core(
                         perm,
-                        org_x + x * xz_scale * lac,
-                        org_y + y * y_scale * lac,
-                        org_z + z * xz_scale * lac,
+                        org_x,
+                        org_y,
+                        org_z,
+                        maintain_precision(x * xz_scale * lac),
+                        maintain_precision(y * y_scale * lac),
+                        maintain_precision(z * xz_scale * lac),
                     );
             }
         }

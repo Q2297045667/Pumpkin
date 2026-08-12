@@ -248,12 +248,13 @@ fn cell_cache_fill_consistency() {
 
     // 使用真实 perlin 配置（从 OctavePerlinNoiseSampler 提取）
     let sampler = make_test_sampler(SEED, &[0, 1, 2, 3]);
-    let (perlin_configs, num_octaves) = extract_cell_params_from_sampler(&sampler);
+    let (perlin_configs, num_octaves, perms) = extract_cell_params_from_sampler(&sampler);
 
     let params = CellFillParams {
         perlin_configs,
         num_octaves,
         sampler_types: vec![0],
+        perms,
     };
 
     // 两次 GPU 调用应产生完全相同的结果（确定性验证）
@@ -284,12 +285,14 @@ fn interpolator_fill_consistency() {
     let positions = make_positions_3d(n, SEED);
 
     let sampler = make_test_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
-    let (perlin_configs, num_octaves) = extract_interp_params_from_sampler(&sampler, 0.25, 0.125);
+    let (perlin_configs, num_octaves, perms) =
+        extract_interp_params_from_sampler(&sampler, 0.25, 0.125);
 
     let params = CellFillParams {
         perlin_configs,
         num_octaves,
         sampler_types: vec![0],
+        perms,
     };
 
     // 两次 GPU 调用应产生完全相同的结果（确定性验证）
@@ -309,6 +312,211 @@ fn interpolator_fill_consistency() {
     assert!(
         non_zero,
         "interpolator_fill with real configs should produce non-zero output"
+    );
+}
+
+// ============================================================================
+// vanilla 置换表一致性：batch 输出 vs 独立参考实现（镜像 GPU kernel 语义）
+// ============================================================================
+
+/// 参考实现：vanilla 梯度表点积（镜像 GPU `grad`）。
+fn ref_grad(hash: i32, x: f64, y: f64, z: f64) -> f64 {
+    pumpkin_util::noise::GRADIENTS[(hash & 15) as usize].dot(x, y, z)
+}
+
+/// 参考实现：vanilla fade（镜像 GPU `perlin_fade`）。
+fn ref_fade(t: f64) -> f64 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// 参考实现：vanilla maintainPrecision（镜像 GPU `maintain_precision`）。
+fn ref_maintain_precision(v: f64) -> f64 {
+    v - (v / 33_554_432.0 + 0.5).floor() * 33_554_432.0
+}
+
+/// 参考实现：与 GPU `sample_no_fade_core` 逐行一致。
+fn ref_sample_no_fade_core(
+    perm: &[u8; 256],
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> f64 {
+    let tx = x + ox;
+    let ty = y + oy;
+    let tz = z + oz;
+    let xi = tx.floor();
+    let yi = ty.floor();
+    let zi = tz.floor();
+    let lx = tx - xi;
+    let ly = ty - yi;
+    let lz = tz - zi;
+    let ix = (xi as i32) & 255;
+    let iy = (yi as i32) & 255;
+    let iz = (zi as i32) & 255;
+    let i = i32::from(perm[ix as usize]);
+    let j = i32::from(perm[((ix + 1) & 255) as usize]);
+    let k = i32::from(perm[((i + iy) & 255) as usize]);
+    let l = i32::from(perm[((i + iy + 1) & 255) as usize]);
+    let m = i32::from(perm[((j + iy) & 255) as usize]);
+    let n = i32::from(perm[((j + iy + 1) & 255) as usize]);
+    let d = ref_grad(i32::from(perm[((k + iz) & 255) as usize]), lx, ly, lz);
+    let e = ref_grad(i32::from(perm[((m + iz) & 255) as usize]), lx - 1.0, ly, lz);
+    let f = ref_grad(i32::from(perm[((l + iz) & 255) as usize]), lx, ly - 1.0, lz);
+    let g = ref_grad(
+        i32::from(perm[((n + iz) & 255) as usize]),
+        lx - 1.0,
+        ly - 1.0,
+        lz,
+    );
+    let h = ref_grad(
+        i32::from(perm[((k + iz + 1) & 255) as usize]),
+        lx,
+        ly,
+        lz - 1.0,
+    );
+    let o = ref_grad(
+        i32::from(perm[((m + iz + 1) & 255) as usize]),
+        lx - 1.0,
+        ly,
+        lz - 1.0,
+    );
+    let p = ref_grad(
+        i32::from(perm[((l + iz + 1) & 255) as usize]),
+        lx,
+        ly - 1.0,
+        lz - 1.0,
+    );
+    let q = ref_grad(
+        i32::from(perm[((n + iz + 1) & 255) as usize]),
+        lx - 1.0,
+        ly - 1.0,
+        lz - 1.0,
+    );
+    let u = ref_fade(lx);
+    let v = ref_fade(ly);
+    let w = ref_fade(lz);
+    let du0 = d + u * (e - d);
+    let du1 = f + u * (g - f);
+    let du2 = h + u * (o - h);
+    let du3 = p + u * (q - p);
+    let dv0 = du0 + v * (du1 - du0);
+    let dv1 = du2 + v * (du3 - du2);
+    dv0 + w * (dv1 - dv0)
+}
+
+/// Cell cache 参考：镜像 GPU `cell_cache_fill_f64` kernel 语义
+///（amp 已预乘 persistence，仅取 first_sampler）。
+fn ref_cell_cache_fill(sampler: &OctavePerlinNoiseSampler, positions: &[f64], results: &mut [f64]) {
+    for (i, res) in results.iter_mut().enumerate() {
+        let x = positions[i * 3];
+        let y = positions[i * 3 + 1];
+        let z = positions[i * 3 + 2];
+        let mut sum = 0.0;
+        for sd in &sampler.samplers {
+            let amp = sd.amplitude * sd.persistence;
+            let lac = sd.lacunarity;
+            sum += amp
+                * ref_sample_no_fade_core(
+                    sd.sampler.permutation(),
+                    sd.sampler.x_origin(),
+                    sd.sampler.y_origin(),
+                    sd.sampler.z_origin(),
+                    ref_maintain_precision(x * lac),
+                    ref_maintain_precision(y * lac),
+                    ref_maintain_precision(z * lac),
+                );
+        }
+        *res = sum;
+    }
+}
+
+/// 插值器参考：镜像 GPU `interpolator_fill_f64` kernel 语义。
+fn ref_interp_fill(
+    sampler: &OctavePerlinNoiseSampler,
+    xz_scale: f64,
+    y_scale: f64,
+    positions: &[f64],
+    results: &mut [f64],
+) {
+    for (i, res) in results.iter_mut().enumerate() {
+        let x = positions[i * 3];
+        let y = positions[i * 3 + 1];
+        let z = positions[i * 3 + 2];
+        let mut sum = 0.0;
+        for sd in &sampler.samplers {
+            let amp = sd.amplitude * sd.persistence;
+            let lac = sd.lacunarity;
+            sum += amp
+                * ref_sample_no_fade_core(
+                    sd.sampler.permutation(),
+                    sd.sampler.x_origin(),
+                    sd.sampler.y_origin(),
+                    sd.sampler.z_origin(),
+                    ref_maintain_precision(x * xz_scale * lac),
+                    ref_maintain_precision(y * y_scale * lac),
+                    ref_maintain_precision(z * xz_scale * lac),
+                );
+        }
+        *res = sum;
+    }
+}
+
+/// batch cell cache 填充（携带真实 vanilla 置换表）与参考实现逐位一致。
+#[test]
+fn cell_cache_fill_vanilla_table_parity() {
+    let n = 256;
+    let positions = make_positions_3d(n, SEED);
+    let sampler = make_test_sampler(SEED, &[0, 1, 2, 3]);
+    let (perlin_configs, num_octaves, perms) = extract_cell_params_from_sampler(&sampler);
+    let params = CellFillParams {
+        perlin_configs,
+        num_octaves,
+        sampler_types: vec![0],
+        perms,
+    };
+
+    let mut batch = vec![0.0f64; n];
+    make_accel().batch_fill_cell_caches(&positions, &params, &mut batch);
+
+    let mut reference = vec![0.0f64; n];
+    ref_cell_cache_fill(&sampler, &positions, &mut reference);
+
+    assert_eq!(
+        fnv1a_f64(&batch),
+        fnv1a_f64(&reference),
+        "cell cache fill 与 vanilla 置换表参考实现不一致"
+    );
+}
+
+/// batch 插值器填充（携带真实 vanilla 置换表）与参考实现逐位一致。
+#[test]
+fn interpolator_fill_vanilla_table_parity() {
+    let n = 256;
+    let positions = make_positions_3d(n, SEED);
+    let sampler = make_test_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
+    let (xz_scale, y_scale) = (0.25, 0.125);
+    let (perlin_configs, num_octaves, perms) =
+        extract_interp_params_from_sampler(&sampler, xz_scale, y_scale);
+    let params = CellFillParams {
+        perlin_configs,
+        num_octaves,
+        sampler_types: vec![0],
+        perms,
+    };
+
+    let mut batch = vec![0.0f64; n];
+    make_accel().batch_fill_interpolators(&positions, &params, &mut batch);
+
+    let mut reference = vec![0.0f64; n];
+    ref_interp_fill(&sampler, xz_scale, y_scale, &positions, &mut reference);
+
+    assert_eq!(
+        fnv1a_f64(&batch),
+        fnv1a_f64(&reference),
+        "interpolator fill 与 vanilla 置换表参考实现不一致"
     );
 }
 
@@ -521,6 +729,7 @@ fn all_batch_types() {
         perlin_configs: vec![],
         num_octaves: vec![3, 3],
         sampler_types: vec![0, 0],
+        perms: vec![],
     };
     let mut cpu_cell = vec![0.0f64; n_cell];
     cpu_cell.fill(0.0);
@@ -684,6 +893,7 @@ fn empty_batch() {
             perlin_configs: vec![],
             num_octaves: vec![],
             sampler_types: vec![],
+            perms: vec![],
         };
         let mut results = vec![];
         accel.batch_fill_cell_caches(&[], &params, &mut results);
@@ -696,6 +906,7 @@ fn empty_batch() {
             perlin_configs: vec![],
             num_octaves: vec![],
             sampler_types: vec![],
+            perms: vec![],
         };
         let mut results = vec![];
         accel.batch_fill_interpolators(&[], &params, &mut results);
@@ -739,6 +950,7 @@ fn perf_batch_cell() {
         perlin_configs: vec![],
         num_octaves: vec![3, 3],
         sampler_types: vec![0, 0],
+        perms: vec![],
     };
 
     let n_iter = 10u32;
@@ -792,7 +1004,10 @@ fn make_test_sampler(seed: u64, octaves: &[i32]) -> OctavePerlinNoiseSampler {
 /// 从 `OctavePerlinNoiseSampler` 提取 cell cache 编码的 perlin 配置。
 ///
 /// 编码格式：`[num_octaves, amps[0..n], lacs[0..n], orgs[0..3n]]`
-fn extract_cell_params_from_sampler(sampler: &OctavePerlinNoiseSampler) -> (Vec<f64>, Vec<i32>) {
+/// 返回 `(configs, num_octaves, 真实置换表)`。
+fn extract_cell_params_from_sampler(
+    sampler: &OctavePerlinNoiseSampler,
+) -> (Vec<f64>, Vec<i32>, Vec<u8>) {
     let num_octaves = sampler.samplers.len() as i32;
     let mut config = Vec::with_capacity(1 + num_octaves as usize * 5);
     config.push(num_octaves as f64);
@@ -807,17 +1022,23 @@ fn extract_cell_params_from_sampler(sampler: &OctavePerlinNoiseSampler) -> (Vec<
         config.push(sd.sampler.y_origin());
         config.push(sd.sampler.z_origin());
     }
-    (config, vec![num_octaves])
+    // 真实 vanilla 置换表
+    let mut perms = Vec::with_capacity(num_octaves as usize * 256);
+    for sd in &sampler.samplers {
+        perms.extend_from_slice(sd.sampler.permutation());
+    }
+    (config, vec![num_octaves], perms)
 }
 
 /// 从 `OctavePerlinNoiseSampler` 提取插值器编码的 perlin 配置。
 ///
 /// 编码格式：每八度 8 个 f64 `[amp, lac, orgx, orgy, orgz, xz_scale, y_scale, 0.0]`
+/// 返回 `(configs, num_octaves, 真实置换表)`。
 fn extract_interp_params_from_sampler(
     sampler: &OctavePerlinNoiseSampler,
     xz_scale: f64,
     y_scale: f64,
-) -> (Vec<f64>, Vec<i32>) {
+) -> (Vec<f64>, Vec<i32>, Vec<u8>) {
     let num_octaves = sampler.samplers.len() as i32;
     let mut config = Vec::with_capacity(num_octaves as usize * 8);
     for sd in &sampler.samplers {
@@ -830,5 +1051,10 @@ fn extract_interp_params_from_sampler(
         config.push(y_scale);
         config.push(0.0); // reserved
     }
-    (config, vec![num_octaves])
+    // 真实 vanilla 置换表
+    let mut perms = Vec::with_capacity(num_octaves as usize * 256);
+    for sd in &sampler.samplers {
+        perms.extend_from_slice(sd.sampler.permutation());
+    }
+    (config, vec![num_octaves], perms)
 }

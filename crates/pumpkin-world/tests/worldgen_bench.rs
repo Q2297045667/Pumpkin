@@ -80,10 +80,15 @@ fn cell_params(octaves: &[i32]) -> CellFillParams {
         cfgs.push(sd.sampler.y_origin());
         cfgs.push(sd.sampler.z_origin());
     }
+    let mut perms = Vec::with_capacity(no as usize * 256);
+    for sd in &sampler.samplers {
+        perms.extend_from_slice(sd.sampler.permutation());
+    }
     CellFillParams {
         perlin_configs: cfgs,
         num_octaves: vec![no],
         sampler_types: vec![0],
+        perms,
     }
 }
 

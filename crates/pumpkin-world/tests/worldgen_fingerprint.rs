@@ -103,10 +103,15 @@ fn extract_cell_params(sampler: &OctavePerlinNoiseSampler) -> CellFillParams {
         configs.push(sd.sampler.y_origin());
         configs.push(sd.sampler.z_origin());
     }
+    let mut perms = Vec::with_capacity(no as usize * 256);
+    for sd in &sampler.samplers {
+        perms.extend_from_slice(sd.sampler.permutation());
+    }
     CellFillParams {
         perlin_configs: configs,
         num_octaves: vec![no],
         sampler_types: vec![0],
+        perms,
     }
 }
 
@@ -124,10 +129,15 @@ fn extract_interp_params(sampler: &OctavePerlinNoiseSampler, xz: f64, ys: f64) -
         configs.push(ys);
         configs.push(0.0);
     }
+    let mut perms = Vec::with_capacity(no as usize * 256);
+    for sd in &sampler.samplers {
+        perms.extend_from_slice(sd.sampler.permutation());
+    }
     CellFillParams {
         perlin_configs: configs,
         num_octaves: vec![no],
         sampler_types: vec![0],
+        perms,
     }
 }
 
@@ -200,6 +210,7 @@ fn interp_empty_params() {
         perlin_configs: vec![],
         num_octaves: vec![],
         sampler_types: vec![],
+        perms: vec![],
     };
     let n = 64;
     let pos = mk_pos3d(n);
@@ -388,6 +399,7 @@ fn all_zero_inputs() {
         perlin_configs: vec![1.0, 1.0, 2.0, 0.0, 0.0, 0.0],
         num_octaves: vec![1],
         sampler_types: vec![0],
+        perms: vec![],
     };
     let positions = vec![0.0; 96]; // 32 positions at origin
     let n = 32;
