@@ -49,6 +49,7 @@ pub fn specialize_octave_perlin(
     }
 
     let amps = config.packed_amplitudes();
+    let pers = config.packed_persistences();
     let lacs = config.packed_lacunarities();
     let orgs = config.packed_origins();
 
@@ -82,7 +83,7 @@ pub fn specialize_octave_perlin(
     for o in 0..m {
         let _ = writeln!(
             src,
-            "    sum += {amp} * sample_no_fade_core(perms + {o}*256,",
+            "    sum += ({amp} * sample_no_fade_core(perms + {o}*256,",
             amp = amps[o],
             o = o
         );
@@ -95,8 +96,9 @@ pub fn specialize_octave_perlin(
         );
         let _ = writeln!(
             src,
-            "        maintain_precision(x*{lac}), maintain_precision(y*{lac}), maintain_precision(z*{lac}));",
-            lac = lacs[o]
+            "        maintain_precision(x*{lac}), maintain_precision(y*{lac}), maintain_precision(z*{lac}))) * {pers};",
+            lac = lacs[o],
+            pers = pers[o]
         );
     }
 
@@ -130,9 +132,11 @@ pub fn specialize_double_perlin(
     }
 
     let amps1 = config1.packed_amplitudes();
+    let pers1 = config1.packed_persistences();
     let lacs1 = config1.packed_lacunarities();
     let orgs1 = config1.packed_origins();
     let amps2 = config2.packed_amplitudes();
+    let pers2 = config2.packed_persistences();
     let lacs2 = config2.packed_lacunarities();
     let orgs2 = config2.packed_origins();
 
@@ -166,7 +170,7 @@ pub fn specialize_double_perlin(
     for o in 0..m1 {
         let _ = writeln!(
             src,
-            "    sum1 += {amp} * sample_no_fade_core(perms1 + {o}*256,",
+            "    sum1 += ({amp} * sample_no_fade_core(perms1 + {o}*256,",
             amp = amps1[o],
             o = o
         );
@@ -179,8 +183,9 @@ pub fn specialize_double_perlin(
         );
         let _ = writeln!(
             src,
-            "        maintain_precision(x*{lac}), maintain_precision(y*{lac}), maintain_precision(z*{lac}));",
-            lac = lacs1[o]
+            "        maintain_precision(x*{lac}), maintain_precision(y*{lac}), maintain_precision(z*{lac}))) * {pers};",
+            lac = lacs1[o],
+            pers = pers1[o]
         );
     }
 
@@ -192,7 +197,7 @@ pub fn specialize_double_perlin(
     for o in 0..m2 {
         let _ = writeln!(
             src,
-            "    sum2 += {amp} * sample_no_fade_core(perms2 + {o}*256,",
+            "    sum2 += ({amp} * sample_no_fade_core(perms2 + {o}*256,",
             amp = amps2[o],
             o = o
         );
@@ -205,8 +210,9 @@ pub fn specialize_double_perlin(
         );
         let _ = writeln!(
             src,
-            "        maintain_precision(x2*{lac}), maintain_precision(y2*{lac}), maintain_precision(z2*{lac}));",
-            lac = lacs2[o]
+            "        maintain_precision(x2*{lac}), maintain_precision(y2*{lac}), maintain_precision(z2*{lac}))) * {pers};",
+            lac = lacs2[o],
+            pers = pers2[o]
         );
     }
 
@@ -233,6 +239,7 @@ pub fn specialize_shift(
     }
 
     let amps = config.packed_amplitudes();
+    let pers = config.packed_persistences();
     let lacs = config.packed_lacunarities();
     let orgs = config.packed_origins();
 
@@ -268,7 +275,7 @@ pub fn specialize_shift(
     for o in 0..m {
         let _ = writeln!(
             src,
-            "    sum += {amp} * sample_no_fade_core(perms + {o}*256,",
+            "    sum += ({amp} * sample_no_fade_core(perms + {o}*256,",
             amp = amps[o],
             o = o
         );
@@ -281,8 +288,9 @@ pub fn specialize_shift(
         );
         let _ = writeln!(
             src,
-            "        maintain_precision(x*{lac}), 0.0, maintain_precision(z*{lac}));",
-            lac = lacs[o]
+            "        maintain_precision(x*{lac}), 0.0, maintain_precision(z*{lac}))) * {pers};",
+            lac = lacs[o],
+            pers = pers[o]
         );
     }
 

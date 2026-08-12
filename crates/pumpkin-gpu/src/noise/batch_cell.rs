@@ -993,9 +993,12 @@ mod tests {
         }];
         let positions = [0.0f64, 64.0, 0.0];
         let mut results = [0.0f64];
-        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
         let result = s.batch_beardifier(&positions, &structures, &junctions, &mut results);
-        assert!(result.is_err());
+        // GPU 不可用（CPU 后端）时必须返回错误，由上层 BatchAccelerator 处理 CPU 回退；
+        // 真 GPU 环境下 kernel 正常执行、返回 Ok 是合法行为。
+        if s.device.device_type() == crate::DeviceType::Cpu {
+            assert!(result.is_err());
+        }
     }
 
     #[test]

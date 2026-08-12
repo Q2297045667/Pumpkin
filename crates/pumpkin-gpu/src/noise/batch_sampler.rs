@@ -15,9 +15,10 @@ use crate::common::kernel::GpuBufferRef;
 use crate::common::kernel::KernelArg;
 use crate::noise::cache::{NoiseCache, SerializedOctaveConfig};
 
-/// 八度配置的池化 buffer 组 (perm: u8, amp: f64, lac: f64, org: f64)。
+/// 八度配置的池化 buffer 组 (perm: u8, amp: f64, pers: f64, lac: f64, org: f64)。
 type OctaveConfigBufs = (
     crate::GpuBuffer<u8>,
+    crate::GpuBuffer<f64>,
     crate::GpuBuffer<f64>,
     crate::GpuBuffer<f64>,
     crate::GpuBuffer<f64>,
@@ -62,7 +63,7 @@ impl GpuNoiseSampler {
 
     // ========== Octave Perlin ==========
 
-    /// 从池中分配并上传八度配置（perm + amp + lac + org）。
+    /// 从池中分配并上传八度配置（perm + amp + pers + lac + org）。
     fn load_octave_config_pooled(
         &mut self,
         config: &SerializedOctaveConfig,
@@ -70,6 +71,7 @@ impl GpuNoiseSampler {
         let m = config.num_octaves();
         let mut d_perm = self.buffer_pool.take_u8(&self.device, m * 256)?;
         let mut d_amp = self.buffer_pool.take_f64(&self.device, m)?;
+        let mut d_pers = self.buffer_pool.take_f64(&self.device, m)?;
         let mut d_lac = self.buffer_pool.take_f64(&self.device, m)?;
         let mut d_org = self.buffer_pool.take_f64(&self.device, m * 3)?;
         self.device
@@ -77,10 +79,12 @@ impl GpuNoiseSampler {
         self.device
             .copy_to_device(&mut d_amp, &config.packed_amplitudes())?;
         self.device
+            .copy_to_device(&mut d_pers, &config.packed_persistences())?;
+        self.device
             .copy_to_device(&mut d_lac, &config.packed_lacunarities())?;
         self.device
             .copy_to_device(&mut d_org, &config.packed_origins())?;
-        Ok((d_perm, d_amp, d_lac, d_org))
+        Ok((d_perm, d_amp, d_pers, d_lac, d_org))
     }
 
     #[cfg(feature = "pumpkin-util")]
@@ -111,7 +115,7 @@ impl GpuNoiseSampler {
 
         let m = config.num_octaves();
         let d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (d_perm, d_amp, d_lac, d_org) = self.load_octave_config_pooled(&config)?;
+        let (d_perm, d_amp, d_pers, d_lac, d_org) = self.load_octave_config_pooled(&config)?;
 
         // SoA 路径：当启用 soa_layout 且数据量足够大时，使用独立 X/Y/Z 数组
         let use_soa = use_soa_layout() && n >= 64;
@@ -136,6 +140,7 @@ impl GpuNoiseSampler {
                     KernelArg::BufferRef(5),
                     KernelArg::BufferRef(6),
                     KernelArg::BufferRef(7),
+                    KernelArg::BufferRef(8),
                     KernelArg::I32(n as i32),
                     KernelArg::I32(m as i32),
                 ],
@@ -145,6 +150,7 @@ impl GpuNoiseSampler {
                     GpuBufferRef::F64(&d_z),
                     GpuBufferRef::U8(&d_perm),
                     GpuBufferRef::F64(&d_amp),
+                    GpuBufferRef::F64(&d_pers),
                     GpuBufferRef::F64(&d_lac),
                     GpuBufferRef::F64(&d_org),
                     GpuBufferRef::F64(&d_res),
@@ -169,6 +175,7 @@ impl GpuNoiseSampler {
                     KernelArg::BufferRef(3),
                     KernelArg::BufferRef(4),
                     KernelArg::BufferRef(5),
+                    KernelArg::BufferRef(6),
                     KernelArg::I32(n as i32),
                     KernelArg::I32(m as i32),
                 ],
@@ -176,6 +183,7 @@ impl GpuNoiseSampler {
                     GpuBufferRef::F64(&d_pos),
                     GpuBufferRef::U8(&d_perm),
                     GpuBufferRef::F64(&d_amp),
+                    GpuBufferRef::F64(&d_pers),
                     GpuBufferRef::F64(&d_lac),
                     GpuBufferRef::F64(&d_org),
                     GpuBufferRef::F64(&d_res),
@@ -194,6 +202,7 @@ impl GpuNoiseSampler {
         self.buffer_pool.put_f64(d_res);
         self.buffer_pool.put_u8(d_perm);
         self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_pers);
         self.buffer_pool.put_f64(d_lac);
         self.buffer_pool.put_f64(d_org);
         Ok(())
@@ -432,8 +441,8 @@ impl GpuNoiseSampler {
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
         let d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (d_p1, d_a1, d_l1, d_o1) = self.load_octave_config_pooled(&c1)?;
-        let (d_p2, d_a2, d_l2, d_o2) = self.load_octave_config_pooled(&c2)?;
+        let (d_p1, d_a1, d_pers1, d_l1, d_o1) = self.load_octave_config_pooled(&c1)?;
+        let (d_p2, d_a2, d_pers2, d_l2, d_o2) = self.load_octave_config_pooled(&c2)?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
 
@@ -450,8 +459,10 @@ impl GpuNoiseSampler {
                 KernelArg::BufferRef(6),
                 KernelArg::BufferRef(7),
                 KernelArg::BufferRef(8),
-                KernelArg::F64(amplitude),
                 KernelArg::BufferRef(9),
+                KernelArg::BufferRef(10),
+                KernelArg::F64(amplitude),
+                KernelArg::BufferRef(11),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(m1 as i32),
                 KernelArg::I32(m2 as i32),
@@ -460,10 +471,12 @@ impl GpuNoiseSampler {
                 GpuBufferRef::F64(&d_pos),
                 GpuBufferRef::U8(&d_p1),
                 GpuBufferRef::F64(&d_a1),
+                GpuBufferRef::F64(&d_pers1),
                 GpuBufferRef::F64(&d_l1),
                 GpuBufferRef::F64(&d_o1),
                 GpuBufferRef::U8(&d_p2),
                 GpuBufferRef::F64(&d_a2),
+                GpuBufferRef::F64(&d_pers2),
                 GpuBufferRef::F64(&d_l2),
                 GpuBufferRef::F64(&d_o2),
                 GpuBufferRef::F64(&d_res),
@@ -481,10 +494,12 @@ impl GpuNoiseSampler {
         self.buffer_pool.put_f64(d_a1);
         self.buffer_pool.put_f64(d_l1);
         self.buffer_pool.put_f64(d_o1);
+        self.buffer_pool.put_f64(d_pers1);
         self.buffer_pool.put_u8(d_p2);
         self.buffer_pool.put_f64(d_a2);
         self.buffer_pool.put_f64(d_l2);
         self.buffer_pool.put_f64(d_o2);
+        self.buffer_pool.put_f64(d_pers2);
         Ok(())
     }
 
@@ -517,7 +532,7 @@ impl GpuNoiseSampler {
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
         let d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (d_perm, d_amp, d_lac, d_org) = self.load_octave_config_pooled(&config)?;
+        let (d_perm, d_amp, d_pers, d_lac, d_org) = self.load_octave_config_pooled(&config)?;
         self.device.copy_to_device(&mut d_pos, xz_positions)?;
 
         let ok = self.try_launch(
@@ -530,6 +545,7 @@ impl GpuNoiseSampler {
                 KernelArg::BufferRef(3),
                 KernelArg::BufferRef(4),
                 KernelArg::BufferRef(5),
+                KernelArg::BufferRef(6),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(m as i32),
             ],
@@ -537,6 +553,7 @@ impl GpuNoiseSampler {
                 GpuBufferRef::F64(&d_pos),
                 GpuBufferRef::U8(&d_perm),
                 GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_pers),
                 GpuBufferRef::F64(&d_lac),
                 GpuBufferRef::F64(&d_org),
                 GpuBufferRef::F64(&d_res),
@@ -552,6 +569,7 @@ impl GpuNoiseSampler {
         self.buffer_pool.put_f64(d_res);
         self.buffer_pool.put_u8(d_perm);
         self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_pers);
         self.buffer_pool.put_f64(d_lac);
         self.buffer_pool.put_f64(d_org);
         Ok(())
@@ -655,7 +673,7 @@ impl GpuNoiseSampler {
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
         let d_res = self.buffer_pool.take_f64(&self.device, n)?;
-        let (d_perm, d_amp, d_lac, d_org) = self.load_octave_config_pooled(&config)?;
+        let (d_perm, d_amp, d_pers, d_lac, d_org) = self.load_octave_config_pooled(&config)?;
         self.device.copy_to_device(&mut d_pos, zx_positions)?;
 
         let ok = self.try_launch(
@@ -668,6 +686,7 @@ impl GpuNoiseSampler {
                 KernelArg::BufferRef(3),
                 KernelArg::BufferRef(4),
                 KernelArg::BufferRef(5),
+                KernelArg::BufferRef(6),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(m as i32),
             ],
@@ -675,6 +694,7 @@ impl GpuNoiseSampler {
                 GpuBufferRef::F64(&d_pos),
                 GpuBufferRef::U8(&d_perm),
                 GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_pers),
                 GpuBufferRef::F64(&d_lac),
                 GpuBufferRef::F64(&d_org),
                 GpuBufferRef::F64(&d_res),
@@ -690,6 +710,7 @@ impl GpuNoiseSampler {
         self.buffer_pool.put_f64(d_res);
         self.buffer_pool.put_u8(d_perm);
         self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_pers);
         self.buffer_pool.put_f64(d_lac);
         self.buffer_pool.put_f64(d_org);
         Ok(())
@@ -860,6 +881,7 @@ impl GpuNoiseSampler {
         let d_res = self.device.alloc_f64(n)?;
         let mut d_perm = self.device.alloc_u8(m * 256)?;
         let mut d_amp = self.device.alloc_f64(m)?;
+        let mut d_pers = self.device.alloc_f64(m)?;
         let mut d_lac = self.device.alloc_f64(m)?;
         let mut d_org = self.device.alloc_f64(m * 3)?;
         self.device.copy_to_device(&mut d_pos, xz)?;
@@ -867,6 +889,8 @@ impl GpuNoiseSampler {
             .copy_to_device(&mut d_perm, &c.packed_permutations())?;
         self.device
             .copy_to_device(&mut d_amp, &c.packed_amplitudes())?;
+        self.device
+            .copy_to_device(&mut d_pers, &c.packed_persistences())?;
         self.device
             .copy_to_device(&mut d_lac, &c.packed_lacunarities())?;
         self.device
@@ -881,6 +905,7 @@ impl GpuNoiseSampler {
                 KernelArg::BufferRef(3),
                 KernelArg::BufferRef(4),
                 KernelArg::BufferRef(5),
+                KernelArg::BufferRef(6),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(m as i32),
             ],
@@ -888,6 +913,7 @@ impl GpuNoiseSampler {
                 GpuBufferRef::F64(&d_pos),
                 GpuBufferRef::U8(&d_perm),
                 GpuBufferRef::F64(&d_amp),
+                GpuBufferRef::F64(&d_pers),
                 GpuBufferRef::F64(&d_lac),
                 GpuBufferRef::F64(&d_org),
                 GpuBufferRef::F64(&d_res),
@@ -904,6 +930,7 @@ impl GpuNoiseSampler {
         self.device.free(d_res)?;
         self.device.free(d_perm)?;
         self.device.free(d_amp)?;
+        self.device.free(d_pers)?;
         self.device.free(d_lac)?;
         self.device.free(d_org)?;
         Ok(())

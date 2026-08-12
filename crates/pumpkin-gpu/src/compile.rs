@@ -247,14 +247,19 @@ pub mod cuda_compile {
 
         /// 构建常规 kernel 的 NVRTC CompileOptions。
         ///
-        /// 仅包含架构目标和用户配置标志（精度优先，默认 `--fmad=false`）。
+        /// 仅包含架构目标和用户配置标志。
+        /// 精度优先：默认禁用 FMA 融合与快速数学，保证与 CPU 路径逐位一致
+        /// （用户可通过 flags 覆盖，后传入的选项优先）。
         fn build_compile_opts(&self, flags: &[String]) -> cudarc::nvrtc::CompileOptions {
             let mut opts = cudarc::nvrtc::CompileOptions::default();
             if let Some(ref arch) = self.compile_ptx_arch {
                 opts.options.push(format!("--gpu-architecture={arch}"));
             }
-            // 无精度损失的通用优化
-            opts.options.push("--use_fast_math".into());
+            // 精度优先的默认选项
+            opts.options.push("--fmad=false".into());
+            opts.options.push("--ftz=false".into());
+            opts.options.push("--prec-div=true".into());
+            opts.options.push("--prec-sqrt=true".into());
             opts.options.push("--restrict".into());
             for flag in flags {
                 opts.options.push(flag.clone());
@@ -265,15 +270,18 @@ pub mod cuda_compile {
         /// 构建 JIT 特化 kernel 的 NVRTC CompileOptions。
         ///
         /// JIT kernel 八度数 ≤ 16、循环完全展开、常量全部内联，
-        /// FMA 融合乘加和激进优化（`--opt-level=3`）具有确定性。
+        /// 激进优化（`--opt-level=3`）。但保持 `--fmad=false` 等精度选项，
+        /// 确保与 CPU 路径逐位一致。
         fn build_jit_compile_opts(&self) -> cudarc::nvrtc::CompileOptions {
             let mut opts = cudarc::nvrtc::CompileOptions::default();
             if let Some(ref arch) = self.compile_ptx_arch {
                 opts.options.push(format!("--gpu-architecture={arch}"));
             }
-            opts.options.push("--fmad=true".into());
+            opts.options.push("--fmad=false".into());
+            opts.options.push("--ftz=false".into());
+            opts.options.push("--prec-div=true".into());
+            opts.options.push("--prec-sqrt=true".into());
             opts.options.push("--opt-level=3".into());
-            opts.options.push("--use_fast_math".into());
             opts.options.push("--restrict".into());
             opts
         }
