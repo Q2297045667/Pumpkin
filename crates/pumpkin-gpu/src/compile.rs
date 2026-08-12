@@ -21,20 +21,25 @@ use crate::noise::kernels_light;
 static KERNEL_REGISTRY: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
 
 /// 初始化全局 kernel 注册表。在设备初始化时调用一次。
+///
+/// 幂等：使用 [`OnceLock::get_or_init`]，重复调用不会重复泄漏源码字符串。
 pub(crate) fn init_kernel_registry() {
-    let mut map = HashMap::new();
-    for k in all_kernel_sources() {
-        // 将源码泄漏为 'static（编译时嵌入的字符串字面量本身是 'static）
-        let source: &'static str = Box::leak(k.source.into_boxed_str());
-        let name: &'static str = Box::leak(k.name.into_boxed_str());
-        map.insert(name, source);
-    }
-    for k in all_cuda_kernel_sources() {
-        let source: &'static str = Box::leak(k.source.into_boxed_str());
-        let name: &'static str = Box::leak(k.name.into_boxed_str());
-        map.insert(name, source);
-    }
-    let _ = KERNEL_REGISTRY.set(map);
+    KERNEL_REGISTRY.get_or_init(|| {
+        let mut map = HashMap::new();
+        for k in all_kernel_sources() {
+            // 将源码泄漏为 'static（编译时嵌入的字符串字面量本身是 'static）
+            let source: &'static str = Box::leak(k.source.into_boxed_str());
+            let name: &'static str = Box::leak(k.name.into_boxed_str());
+            map.insert(name, source);
+        }
+        #[cfg(feature = "cuda")]
+        for k in all_cuda_kernel_sources() {
+            let source: &'static str = Box::leak(k.source.into_boxed_str());
+            let name: &'static str = Box::leak(k.name.into_boxed_str());
+            map.insert(name, source);
+        }
+        map
+    });
 }
 
 /// 按名称查找 kernel 源码（用于延迟编译）。

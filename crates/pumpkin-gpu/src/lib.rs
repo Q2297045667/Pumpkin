@@ -100,11 +100,19 @@ impl GpuDevice {
     ///
     /// 按 CUDA → OpenCL → CPU 的顺序尝试，第一个成功即停止。
     /// 所有初始化失败都会通过 [`tracing::warn`] 输出日志。
+    ///
+    /// 与 [`Self::from_config`] 一致，同时初始化全局 kernel 注册表，
+    /// 供延迟编译（按需加载）模块读取。
     #[must_use]
     pub fn init() -> Self {
         let device = Self::init_internal(
             None, None, None, false, None, None, 4, 1, false, None, false,
         );
+        // 注入全局默认配置（与 from_config 保持一致）
+        #[cfg(feature = "pumpkin-util")]
+        {
+            crate::compile::init_kernel_registry();
+        }
         device.log_startup();
         device
     }
@@ -612,5 +620,23 @@ mod tests {
         let mut dst = vec![0.0_f64; len + 1];
         assert!(device.copy_from_device(&buf, &mut dst).is_err());
         device.free(buf).expect("free");
+    }
+
+    /// `GpuDevice::init()` 应与 `from_config()` 一样初始化全局 kernel 注册表，
+    /// 否则依赖延迟编译（按需加载）的模块在 `init()` 路径下无法查找到 kernel 源码。
+    #[cfg(feature = "pumpkin-util")]
+    #[test]
+    fn init_initializes_kernel_registry() {
+        let _device = GpuDevice::init();
+
+        // 基础 kernel（OpenCL/CUDA 共用注册表）应可用
+        assert!(crate::compile::lookup_kernel_source("sky_light_fill_u8").is_some());
+        assert!(crate::compile::lookup_kernel_source("octave_perlin_sample_f64").is_some());
+        // CUDA 专属 kernel 在启用 cuda feature 时应注册
+        #[cfg(feature = "cuda")]
+        assert!(
+            crate::compile::lookup_kernel_source("light_propagate_u8_persistent").is_some(),
+            "CUDA 专属 kernel 应注册到注册表"
+        );
     }
 }
