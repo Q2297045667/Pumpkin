@@ -382,6 +382,11 @@ pub trait LoadConfiguration {
     /// Merge two TOML values recursively.
     ///
     /// Base is treated as default; overlay overwrites values.
+    ///
+    /// Keys that exist in the overlay but not in the base (i.e. unknown to the
+    /// current build — for example a `[gpu]` section when the `gpu` feature is
+    /// not compiled in) are dropped, and `changed` is set to `true` so the
+    /// cleaned-up config is written back to disk.
     #[must_use]
     fn merge_toml_values(base: toml::Value, overlay: toml::Value) -> (toml::Value, bool) {
         match (base, overlay) {
@@ -404,7 +409,9 @@ pub trait LoadConfiguration {
                             changed = true;
                         }
                     } else {
-                        base_table.insert(key, overlay_value);
+                        // 未知字段（例如未启用 `gpu` feature 的构建中的 `[gpu]` 段）：
+                        // 不写入配置，并标记 changed 以便从磁盘移除。
+                        changed = true;
                     }
                 }
                 (toml::Value::Table(base_table), changed)
@@ -418,4 +425,56 @@ pub trait LoadConfiguration {
 
     /// Validates the configuration after loading or merging.
     fn validate(&self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_drops_unknown_sections() {
+        // 未知字段（例如未启用 `gpu` feature 构建中的 `[gpu]` 段）
+        // 应在合并时被移除，并触发配置回写。
+        let toml_str = r#"
+[gpu]
+enabled = true
+
+unknown_section = 42
+"#;
+        let parsed: toml::Value = toml::from_str(toml_str).expect("parse");
+        let (merged, changed) = PumpkinConfig::merge_with_default_toml(parsed);
+        assert!(changed, "unknown keys should trigger a rewrite");
+
+        let serialized = toml::to_string(&merged).expect("serialize");
+        assert!(
+            !serialized.contains("unknown_section"),
+            "unknown sections must be dropped: {serialized}"
+        );
+
+        #[cfg(not(feature = "gpu"))]
+        assert!(
+            !serialized.contains("[gpu]"),
+            "[gpu] must be dropped when the gpu feature is disabled: {serialized}"
+        );
+
+        #[cfg(feature = "gpu")]
+        assert!(
+            serialized.contains("[gpu]"),
+            "[gpu] must be kept when the gpu feature is enabled: {serialized}"
+        );
+    }
+
+    #[test]
+    fn merge_of_default_config_is_unchanged() {
+        let default_value: toml::Value =
+            toml::Value::try_from(&PumpkinConfig::default()).expect("default toml");
+        let (merged, changed) = PumpkinConfig::merge_with_default_toml(default_value);
+        assert!(!changed, "a complete default config should not change");
+
+        let serialized = toml::to_string(&merged).expect("serialize");
+        #[cfg(not(feature = "gpu"))]
+        assert!(!serialized.contains("[gpu]"), "{serialized}");
+        #[cfg(feature = "gpu")]
+        assert!(serialized.contains("[gpu]"), "{serialized}");
+    }
 }

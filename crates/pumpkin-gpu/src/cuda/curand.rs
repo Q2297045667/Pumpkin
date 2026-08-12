@@ -3,7 +3,7 @@
 //! cuRAND 的 PRNG 算法与 CPU 的 Xoroshiro128 不同，
 //! 会产生不同的随机数序列。仅在非地形生成场景（粒子效果、实体 AI）中可用。
 //!
-//! 默认禁用，需显式设置 `cudarc.use_curand = true`。
+//! 默认禁用，需显式设置配置 `[gpu.cuda]` 中的 `use_curand = true`。
 //!
 //! # 实现说明
 //!

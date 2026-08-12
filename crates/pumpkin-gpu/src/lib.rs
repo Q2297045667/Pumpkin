@@ -152,10 +152,10 @@ impl GpuDevice {
             pumpkin_config::gpu::GpuDeviceSelection::Auto => (None, None, false),
         };
 
-        let compile_ptx = if config.cudarc.compile_ptx == "auto" {
+        let compile_ptx = if config.cuda.compile_ptx == "auto" {
             None
         } else {
-            Some(config.cudarc.compile_ptx.as_str())
+            Some(config.cuda.compile_ptx.as_str())
         };
 
         let device = Self::init_internal(
@@ -163,13 +163,13 @@ impl GpuDevice {
             device_index,
             device_name_filter,
             prefer_integrated,
-            Some(&config.cudarc.flags),
-            Some(&config.opencl3.flags),
-            config.cudarc.zero_copy_threshold_kb,
-            config.opencl3.pipeline_queues,
-            config.cudarc.persistent_kernels,
+            Some(&config.cuda.flags),
+            Some(&config.opencl.flags),
+            config.cuda.zero_copy_threshold_kb,
+            config.opencl.pipeline_queues,
+            config.cuda.persistent_kernels,
             compile_ptx,
-            config.cudarc.use_curand,
+            config.cuda.use_curand,
         );
 
         // 将配置项注入全局 OnceLock，供各模块读取
@@ -184,7 +184,7 @@ impl GpuDevice {
             crate::jit::set_jit_max_unroll(effective_unroll);
             crate::compile::init_kernel_registry();
             crate::noise::batch_cell::set_aquifer_tile_threshold(
-                config.opencl3.local_mem_tile_threshold,
+                config.opencl.local_mem_tile_threshold,
             );
             crate::noise::batch_sampler::set_soa_layout(config.soa_layout);
         };

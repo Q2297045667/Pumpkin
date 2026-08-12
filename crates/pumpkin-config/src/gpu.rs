@@ -18,11 +18,16 @@ use serde::{Deserialize, Serialize};
 /// light_acceleration = false
 /// batch_acceleration = false
 /// jit_enabled = true
+/// jit_max_unroll = 16
 /// backend = "auto"
+/// soa_layout = false
 ///
-/// [gpu.cudarc]
+/// [gpu.cuda]
 /// compile_ptx = "auto"
 /// flags = ["--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true"]
+///
+/// [gpu.opencl]
+/// flags = ["-cl-fp32-correctly-rounded-divide-sqrt"]
 ///
 /// [gpu.device]
 /// strategy = "auto"
@@ -66,13 +71,6 @@ pub struct GpuConfig {
     /// 默认值：`16`
     pub jit_max_unroll: usize,
 
-    /// 是否启用 `SoA`（Structure of Arrays）数据布局优化。
-    ///
-    /// 启用后位置数据以独立 X/Y/Z 数组格式上传，
-    /// 改善 GPU 内存合并访问效率。
-    /// 默认值：`false`
-    pub soa_layout: bool,
-
     /// 后端选择策略。
     ///
     /// - `"auto"`：按 `CUDA` → `OpenCL` 顺序自动探测
@@ -83,13 +81,20 @@ pub struct GpuConfig {
     /// 默认值：`"auto"`
     pub backend: GpuBackend,
 
-    /// `CUDA` 特定配置。
-    pub cudarc: CudaConfig,
+    /// 是否启用 `SoA`（Structure of Arrays）数据布局优化。
+    ///
+    /// 启用后位置数据以独立 X/Y/Z 数组格式上传，
+    /// 改善 GPU 内存合并访问效率。
+    /// 默认值：`false`
+    pub soa_layout: bool,
 
-    /// `OpenCL` 特定配置。
-    pub opencl3: OpenClConfig,
+    /// `CUDA` 特定配置（TOML 段：`[gpu.cuda]`）。
+    pub cuda: CudaConfig,
 
-    /// 设备选择策略。
+    /// `OpenCL` 特定配置（TOML 段：`[gpu.opencl]`）。
+    pub opencl: OpenClConfig,
+
+    /// 设备选择策略（TOML 段：`[gpu.device]`）。
     pub device: GpuDeviceSelection,
 }
 
@@ -113,10 +118,10 @@ impl Default for GpuConfig {
             batch_acceleration: false,
             jit_enabled: false,
             jit_max_unroll: 16,
-            soa_layout: false,
             backend: GpuBackend::default(),
-            cudarc: CudaConfig::default(),
-            opencl3: OpenClConfig::default(),
+            soa_layout: false,
+            cuda: CudaConfig::default(),
+            opencl: OpenClConfig::default(),
             device: GpuDeviceSelection::default(),
         }
     }
@@ -207,7 +212,6 @@ pub struct CudaConfig {
     ///
     /// ⚠️ **警告**：cuRAND 的 PRNG 算法与 CPU 的 Xoroshiro128 不同，
     /// 会产生不同的随机数序列，**破坏地形一致性**。
-    /// 仅在非地形生成场景（如粒子效果、实体 AI）中可用。
     /// 默认值：`false`
     ///
     /// ⚠️ **未实现**：此配置项已声明但运行时尚未集成 cuRAND。
@@ -265,15 +269,6 @@ pub struct OpenClConfig {
     /// 默认值：精度优先的保守设置
     pub flags: Vec<String>,
 
-    /// 是否强制使用 persistent kernel 进行光照传播。
-    ///
-    /// ⚠️ `OpenCL` 对 persistent kernel 支持有限（无全局 barrier），
-    /// 可能无法正确收敛。建议仅在 CUDA 后端使用。
-    /// 默认值：`false`
-    ///
-    /// ⚠️ **未实现**：此配置项已声明但运行时尚未实现 persistent kernel 模式。
-    pub persistent_kernels: bool,
-
     /// 多 `CommandQueue` 流水线数。
     ///
     /// 大于 `1` 时启用多队列流水线：HtoD 传输、kernel 执行、DtoH 传输
@@ -293,7 +288,6 @@ impl Default for OpenClConfig {
     fn default() -> Self {
         Self {
             flags: vec![String::from("-cl-fp32-correctly-rounded-divide-sqrt")],
-            persistent_kernels: false,
             pipeline_queues: 1,
             local_mem_tile_threshold: 2048,
         }
@@ -384,7 +378,6 @@ mod tests {
     #[test]
     fn opencl_config_default_flags() {
         let config = OpenClConfig::default();
-        assert!(!config.persistent_kernels);
         assert_eq!(config.pipeline_queues, 1);
         assert_eq!(config.local_mem_tile_threshold, 2048);
         assert!(
@@ -415,16 +408,15 @@ mod tests {
             jit_max_unroll: 8,
             soa_layout: true,
             backend: GpuBackend::Cuda,
-            cudarc: CudaConfig {
+            cuda: CudaConfig {
                 compile_ptx: String::from("compute_89"),
                 flags: vec![String::from("--fmad=true"), String::from("--restrict")],
                 persistent_kernels: true,
                 use_curand: false,
                 zero_copy_threshold_kb: 8,
             },
-            opencl3: OpenClConfig {
+            opencl: OpenClConfig {
                 flags: vec![String::from("-cl-fast-relaxed-math")],
-                persistent_kernels: false,
                 pipeline_queues: 2,
                 local_mem_tile_threshold: 4096,
             },
@@ -437,11 +429,45 @@ mod tests {
         assert!(parsed.soa_layout);
         assert_eq!(parsed.jit_max_unroll, 8);
         assert_eq!(parsed.backend, GpuBackend::Cuda);
-        assert_eq!(parsed.cudarc.compile_ptx, "compute_89");
-        assert!(parsed.cudarc.persistent_kernels);
-        assert_eq!(parsed.cudarc.zero_copy_threshold_kb, 8);
-        assert_eq!(parsed.opencl3.pipeline_queues, 2);
-        assert_eq!(parsed.opencl3.local_mem_tile_threshold, 4096);
+        assert_eq!(parsed.cuda.compile_ptx, "compute_89");
+        assert!(parsed.cuda.persistent_kernels);
+        assert_eq!(parsed.cuda.zero_copy_threshold_kb, 8);
+        assert_eq!(parsed.opencl.pipeline_queues, 2);
+        assert_eq!(parsed.opencl.local_mem_tile_threshold, 4096);
+    }
+
+    #[test]
+    fn toml_uses_template_section_names() {
+        // 序列化结果必须与 pumpkin.toml 模板中的字段名一致。
+        #[derive(serde::Serialize)]
+        struct Wrapper {
+            gpu: GpuConfig,
+        }
+        let toml_str = toml::to_string(&Wrapper {
+            gpu: GpuConfig::default(),
+        })
+        .expect("serialize");
+        assert!(toml_str.contains("[gpu.cuda]"), "{toml_str}");
+        assert!(toml_str.contains("[gpu.opencl]"), "{toml_str}");
+        assert!(toml_str.contains("use_curand"), "{toml_str}");
+        assert!(!toml_str.contains("cudarc"), "{toml_str}");
+        assert!(!toml_str.contains("opencl3"), "{toml_str}");
+        assert!(toml_str.contains("[gpu.device]"), "{toml_str}");
+    }
+
+    #[test]
+    fn toml_use_curand_key_maps_to_field() {
+        // 配置键 use_curand 必须正确映射到 CudaConfig::use_curand 字段。
+        let toml_str = r#"
+[cuda]
+compile_ptx = "auto"
+flags = []
+use_curand = true
+"#;
+        let parsed: GpuConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(parsed.cuda.use_curand);
+        let serialized = toml::to_string(&parsed).expect("serialize");
+        assert!(serialized.contains("use_curand"));
     }
 
     #[test]
