@@ -4,20 +4,64 @@ use super::BackendType;
 #[cfg(feature = "opencl")]
 use opencl3::memory::ClMem;
 
-/// CUDA 设备内存包装。
+/// CUDA 设备内存包装（原始驱动 API 持有，支持零拷贝 kernel 参数）。
 ///
-/// 注意：在 GPU 硬件验证完成前，`CudaSliceHolder` 字段暂时未使用。
-/// 待 CUDA 后端完成后，此类型将被激活。
-#[allow(dead_code)]
+/// 使用 `cuMemAlloc` 分配的裸设备指针：cudarc 的 `CudaSlice`/`LaunchArgs`
+/// 公共 API 无法传递任意设备指针（字段均私有），而零拷贝映射内存需要
+/// 在 kernel 参数中直接传递 `CUdeviceptr` 值，因此 CUDA 后端的内存与启动
+/// 层基于原始驱动 API 实现。
 #[cfg(feature = "cuda")]
-#[derive(Debug)]
-pub(crate) struct CudaSliceHolder<T: bytemuck::Pod> {
-    pub slice: cudarc::driver::CudaSlice<T>,
+pub(crate) struct CudaRawHolder<T: bytemuck::Pod> {
+    pub ptr: cudarc::driver::sys::CUdeviceptr,
+    /// 上下文句柄：`cuMemFree` 等操作要求当前上下文正确绑定。
+    pub(crate) ctx: std::sync::Arc<cudarc::driver::CudaContext>,
+    _marker: std::marker::PhantomData<T>,
 }
 
-// SAFETY: CudaSlice is Send by specification. The contained pointer is device-side memory that cudarc manages.
+// SAFETY: ptr 指向由 cuMemAlloc 分配的设备内存；应用层保证互斥访问。
 #[cfg(feature = "cuda")]
-unsafe impl<T: bytemuck::Pod + Send> Send for CudaSliceHolder<T> {}
+unsafe impl<T: bytemuck::Pod + Send> Send for CudaRawHolder<T> {}
+
+#[cfg(feature = "cuda")]
+impl<T: bytemuck::Pod> Drop for CudaRawHolder<T> {
+    fn drop(&mut self) {
+        // 绑定上下文后释放（cuMemFree 作用于当前上下文）。
+        let _ = self.ctx.bind_to_thread();
+        // SAFETY: ptr 由 cuMemAlloc 分配且未被释放过。
+        unsafe {
+            let _ = cudarc::driver::result::free_sync(self.ptr);
+        }
+    }
+}
+
+/// CUDA 零拷贝（映射主机内存）包装。
+///
+/// `cuMemHostAlloc(CU_MEMHOSTALLOC_DEVICEMAP)` 分配的主机内存同时映射到设备
+/// 地址空间：主机通过 `host_ptr` 直接读写，kernel 通过 `device_ptr` 访问，
+/// 无需显式 `memcpy`。仅用于小于零拷贝阈值的小缓冲区。
+#[cfg(feature = "cuda")]
+pub(crate) struct CudaMappedHolder<T: bytemuck::Pod> {
+    pub host_ptr: std::ptr::NonNull<T>,
+    pub device_ptr: cudarc::driver::sys::CUdeviceptr,
+    /// 上下文句柄：`cuMemFreeHost` 要求当前上下文正确绑定。
+    pub(crate) ctx: std::sync::Arc<cudarc::driver::CudaContext>,
+}
+
+// SAFETY: host_ptr 指向的映射内存由 cuMemHostAlloc 分配，跨线程访问安全；
+// 应用层保证对同一缓冲区的互斥访问。
+#[cfg(feature = "cuda")]
+unsafe impl<T: bytemuck::Pod + Send> Send for CudaMappedHolder<T> {}
+
+#[cfg(feature = "cuda")]
+impl<T: bytemuck::Pod> Drop for CudaMappedHolder<T> {
+    fn drop(&mut self) {
+        let _ = self.ctx.bind_to_thread();
+        // SAFETY: host_ptr 由 cuMemHostAlloc 分配且未被释放过。
+        unsafe {
+            let _ = cudarc::driver::result::free_host(self.host_ptr.as_ptr().cast());
+        }
+    }
+}
 
 /// `OpenCL` 设备内存包装。使用 `UnsafeCell` 以允许对 `Buffer` 的合法互斥可变访问。
 #[cfg(feature = "opencl")]
@@ -35,7 +79,9 @@ unsafe impl Send for OpenClBufferHolder {}
 pub(crate) enum RawBuffer<T: bytemuck::Pod> {
     Cpu(Vec<T>),
     #[cfg(feature = "cuda")]
-    Cuda(Box<CudaSliceHolder<T>>),
+    Cuda(Box<CudaRawHolder<T>>),
+    #[cfg(feature = "cuda")]
+    CudaMapped(Box<CudaMappedHolder<T>>),
     #[cfg(feature = "opencl")]
     OpenCl(Box<OpenClBufferHolder>),
 }
@@ -64,11 +110,30 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
     #[allow(dead_code)]
     #[cfg(feature = "cuda")]
     #[must_use]
-    pub(crate) fn new_cuda(len: usize, slice: cudarc::driver::CudaSlice<T>) -> Self {
+    pub(crate) fn new_cuda(
+        len: usize,
+        ptr: cudarc::driver::sys::CUdeviceptr,
+        ctx: std::sync::Arc<cudarc::driver::CudaContext>,
+    ) -> Self {
         Self {
             len,
             backend_type: BackendType::Cuda,
-            raw: RawBuffer::Cuda(Box::new(CudaSliceHolder { slice })),
+            raw: RawBuffer::Cuda(Box::new(CudaRawHolder {
+                ptr,
+                ctx,
+                _marker: std::marker::PhantomData,
+            })),
+        }
+    }
+
+    /// 创建 CUDA 零拷贝（映射内存）缓冲区。
+    #[cfg(feature = "cuda")]
+    #[must_use]
+    pub(crate) fn new_cuda_mapped(len: usize, holder: CudaMappedHolder<T>) -> Self {
+        Self {
+            len,
+            backend_type: BackendType::Cuda,
+            raw: RawBuffer::CudaMapped(Box::new(holder)),
         }
     }
 
@@ -99,7 +164,7 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         match &self.raw {
             RawBuffer::Cpu(v) => Some(v),
             #[cfg(feature = "cuda")]
-            RawBuffer::Cuda(_) => None,
+            RawBuffer::Cuda(_) | RawBuffer::CudaMapped(_) => None,
             #[cfg(feature = "opencl")]
             RawBuffer::OpenCl(_) => None,
         }
@@ -109,32 +174,52 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         match &mut self.raw {
             RawBuffer::Cpu(v) => Some(v),
             #[cfg(feature = "cuda")]
-            RawBuffer::Cuda(_) => None,
+            RawBuffer::Cuda(_) | RawBuffer::CudaMapped(_) => None,
             #[cfg(feature = "opencl")]
             RawBuffer::OpenCl(_) => None,
         }
     }
 
-    #[allow(dead_code)]
+    /// 获取 CUDA 缓冲区的设备指针（标准或零拷贝映射内存均返回 `Some`）。
+    /// 供原始 kernel 启动路径传递参数。
     #[cfg(feature = "cuda")]
     #[must_use]
-    pub(crate) fn cuda_slice(&self) -> Result<&cudarc::driver::CudaSlice<T>, &'static str> {
+    pub(crate) fn cuda_device_ptr(&self) -> Option<cudarc::driver::sys::CUdeviceptr> {
         match &self.raw {
-            RawBuffer::Cuda(holder) => Ok(&holder.slice),
-            _ => Err("不是 CUDA 缓冲区"),
+            RawBuffer::Cuda(holder) => Some(holder.ptr),
+            RawBuffer::CudaMapped(holder) => Some(holder.device_ptr),
+            _ => None,
         }
     }
 
-    #[allow(dead_code)]
+    /// 获取设备指针字段的地址（供 `cuLaunchKernel` 参数数组使用：
+    /// 指针参数需要「指向设备指针值的指针」，驱动会解引用取得指针值）。
     #[cfg(feature = "cuda")]
     #[must_use]
-    pub(crate) fn cuda_slice_mut(
-        &mut self,
-    ) -> Result<&mut cudarc::driver::CudaSlice<T>, &'static str> {
-        match &mut self.raw {
-            RawBuffer::Cuda(holder) => Ok(&mut holder.slice),
-            _ => Err("不是 CUDA 缓冲区"),
+    pub(crate) fn cuda_device_ptr_addr(&self) -> Option<*const cudarc::driver::sys::CUdeviceptr> {
+        match &self.raw {
+            RawBuffer::Cuda(holder) => Some(std::ptr::addr_of!(holder.ptr)),
+            RawBuffer::CudaMapped(holder) => Some(std::ptr::addr_of!(holder.device_ptr)),
+            _ => None,
         }
+    }
+
+    /// 获取零拷贝映射缓冲区的引用（主机指针 + 设备指针 + 长度）。
+    /// 仅 CUDA 零拷贝缓冲区返回 `Some`。
+    #[cfg(feature = "cuda")]
+    #[must_use]
+    pub(crate) fn cuda_mapped(&self) -> Option<&CudaMappedHolder<T>> {
+        match &self.raw {
+            RawBuffer::CudaMapped(holder) => Some(holder),
+            _ => None,
+        }
+    }
+
+    /// 获取 CUDA 零拷贝映射缓冲区的主机指针（仅零拷贝缓冲区返回 `Some`）。
+    #[cfg(feature = "cuda")]
+    #[must_use]
+    pub(crate) fn cuda_mapped_host_ptr(&self) -> Option<*mut T> {
+        self.cuda_mapped().map(|h| h.host_ptr.as_ptr())
     }
 
     /// 获取字节大小。

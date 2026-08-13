@@ -520,6 +520,26 @@ impl GpuDevice {
     ) -> Result<(), DeviceError> {
         self.backend.compile_jit_kernel(jit_kernel)
     }
+
+    /// 创建 cuRAND 生成器（SplitMix64 确定性实现）。
+    ///
+    /// 仅在 CUDA 后端且配置 `use_curand = true` 时可用。
+    ///
+    /// ⚠️ 随机数序列与 CPU 的 Xoroshiro128 不同，**不得用于地形生成**；
+    /// 适用于粒子效果、实体 AI 等非确定性场景。
+    ///
+    /// # Errors
+    /// 非 CUDA 后端或配置未启用 `use_curand` 时返回错误。
+    #[cfg(feature = "cuda")]
+    pub fn create_curand(
+        &self,
+        seed: u64,
+    ) -> Result<crate::cuda::curand::CuRandGenerator, DeviceError> {
+        match &self.backend {
+            BackendImpl::Cuda(b) => b.create_curand(seed),
+            _ => Err(DeviceError::Unsupported("cuRAND 仅在 CUDA 后端可用".into())),
+        }
+    }
 }
 
 impl std::fmt::Debug for GpuDevice {

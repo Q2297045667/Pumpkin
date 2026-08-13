@@ -234,10 +234,10 @@ impl GpuNoiseSampler {
         if let Some(jit_kernel) = crate::jit::specialize_octave_perlin(&config, max_unroll) {
             let m = config.num_octaves();
 
-            // 分配缓冲区
-            let mut d_pos = self.device.alloc_f64(n * 3)?;
-            let d_res = self.device.alloc_f64(n)?;
-            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            // 从缓冲池分配（复用跨调用缓冲区，避免重复分配/释放）
+            let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
+            let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_perm = self.buffer_pool.take_u8(&self.device, m * 256)?;
 
             self.device.copy_to_device(&mut d_pos, positions)?;
             self.device
@@ -272,15 +272,15 @@ impl GpuNoiseSampler {
             );
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
-                self.device.free(d_pos)?;
-                self.device.free(d_res)?;
-                self.device.free(d_perm)?;
+                self.buffer_pool.put_f64(d_pos);
+                self.buffer_pool.put_f64(d_res);
+                self.buffer_pool.put_u8(d_perm);
                 return Ok(());
             }
 
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_perm)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_res);
+            self.buffer_pool.put_u8(d_perm);
         }
 
         // JIT 不可用，回退到标准路径
@@ -326,10 +326,11 @@ impl GpuNoiseSampler {
             let m1 = c1.num_octaves();
             let m2 = c2.num_octaves();
 
-            let mut d_pos = self.device.alloc_f64(n * 3)?;
-            let d_res = self.device.alloc_f64(n)?;
-            let mut d_perm1 = self.device.alloc_u8(m1 * 256)?;
-            let mut d_perm2 = self.device.alloc_u8(m2 * 256)?;
+            // 从缓冲池分配（复用跨调用缓冲区）
+            let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
+            let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_perm1 = self.buffer_pool.take_u8(&self.device, m1 * 256)?;
+            let mut d_perm2 = self.buffer_pool.take_u8(&self.device, m2 * 256)?;
 
             self.device.copy_to_device(&mut d_pos, positions)?;
             self.device
@@ -364,16 +365,16 @@ impl GpuNoiseSampler {
             );
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
-                self.device.free(d_pos)?;
-                self.device.free(d_res)?;
-                self.device.free(d_perm1)?;
-                self.device.free(d_perm2)?;
+                self.buffer_pool.put_f64(d_pos);
+                self.buffer_pool.put_f64(d_res);
+                self.buffer_pool.put_u8(d_perm1);
+                self.buffer_pool.put_u8(d_perm2);
                 return Ok(());
             }
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_perm1)?;
-            self.device.free(d_perm2)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_res);
+            self.buffer_pool.put_u8(d_perm1);
+            self.buffer_pool.put_u8(d_perm2);
         }
 
         // 回退标准路径
@@ -563,9 +564,10 @@ impl GpuNoiseSampler {
         let max_unroll = crate::jit::get_jit_max_unroll();
         if let Some(jit_kernel) = crate::jit::specialize_shift("shift_a", &config, max_unroll) {
             let m = config.num_octaves();
-            let mut d_pos = self.device.alloc_f64(n * 2)?;
-            let d_res = self.device.alloc_f64(n)?;
-            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            // 从缓冲池分配（复用跨调用缓冲区）
+            let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
+            let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_perm = self.buffer_pool.take_u8(&self.device, m * 256)?;
             self.device.copy_to_device(&mut d_pos, xz_positions)?;
             self.device
                 .copy_to_device(&mut d_perm, &config.packed_permutations())?;
@@ -594,14 +596,14 @@ impl GpuNoiseSampler {
             );
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
-                self.device.free(d_pos)?;
-                self.device.free(d_res)?;
-                self.device.free(d_perm)?;
+                self.buffer_pool.put_f64(d_pos);
+                self.buffer_pool.put_f64(d_res);
+                self.buffer_pool.put_u8(d_perm);
                 return Ok(());
             }
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_perm)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_res);
+            self.buffer_pool.put_u8(d_perm);
         }
         self.sample_shift_a_batch(sampler, xz_positions, results)
     }
@@ -694,9 +696,10 @@ impl GpuNoiseSampler {
         let max_unroll = crate::jit::get_jit_max_unroll();
         if let Some(jit_kernel) = crate::jit::specialize_shift("shift_b", &config, max_unroll) {
             let m = config.num_octaves();
-            let mut d_pos = self.device.alloc_f64(n * 2)?;
-            let d_res = self.device.alloc_f64(n)?;
-            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            // 从缓冲池分配（复用跨调用缓冲区）
+            let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
+            let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_perm = self.buffer_pool.take_u8(&self.device, m * 256)?;
             self.device.copy_to_device(&mut d_pos, zx_positions)?;
             self.device
                 .copy_to_device(&mut d_perm, &config.packed_permutations())?;
@@ -725,14 +728,14 @@ impl GpuNoiseSampler {
             );
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
-                self.device.free(d_pos)?;
-                self.device.free(d_res)?;
-                self.device.free(d_perm)?;
+                self.buffer_pool.put_f64(d_pos);
+                self.buffer_pool.put_f64(d_res);
+                self.buffer_pool.put_u8(d_perm);
                 return Ok(());
             }
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_perm)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_res);
+            self.buffer_pool.put_u8(d_perm);
         }
         self.sample_shift_b_batch(sampler, zx_positions, results)
     }
@@ -767,9 +770,10 @@ impl GpuNoiseSampler {
             return Ok(());
         }
 
-        let mut d_c = self.device.alloc_f64(n * 8)?;
-        let mut d_d = self.device.alloc_f64(n * 3)?;
-        let d_r = self.device.alloc_f64(n)?;
+        // 从缓冲池分配（复用跨调用缓冲区）
+        let mut d_c = self.buffer_pool.take_f64(&self.device, n * 8)?;
+        let mut d_d = self.buffer_pool.take_f64(&self.device, n * 3)?;
+        let d_r = self.buffer_pool.take_f64(&self.device, n)?;
         self.device.copy_to_device(&mut d_c, corners)?;
         self.device.copy_to_device(&mut d_d, deltas)?;
         let ok = self.try_launch(
@@ -792,9 +796,9 @@ impl GpuNoiseSampler {
         } else {
             cpu_trilinear(corners, deltas, results);
         }
-        self.device.free(d_c)?;
-        self.device.free(d_d)?;
-        self.device.free(d_r)?;
+        self.buffer_pool.put_f64(d_c);
+        self.buffer_pool.put_f64(d_d);
+        self.buffer_pool.put_f64(d_r);
         Ok(())
     }
 
@@ -828,9 +832,10 @@ impl GpuNoiseSampler {
         // 失败或未启用时回退到标准 kernel。
         let max_unroll = crate::jit::get_jit_max_unroll();
         if let Some(jit_kernel) = crate::jit::specialize_flatcache(&c, max_unroll) {
-            let mut d_pos = self.device.alloc_f64(n * 2)?;
-            let d_res = self.device.alloc_f64(n)?;
-            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            // 从缓冲池分配（复用跨调用缓冲区）
+            let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
+            let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+            let mut d_perm = self.buffer_pool.take_u8(&self.device, m * 256)?;
             self.device.copy_to_device(&mut d_pos, xz)?;
             self.device
                 .copy_to_device(&mut d_perm, &c.packed_permutations())?;
@@ -860,34 +865,21 @@ impl GpuNoiseSampler {
             );
             if ok {
                 self.device.copy_from_device(&d_res, results)?;
-                self.device.free(d_pos)?;
-                self.device.free(d_res)?;
-                self.device.free(d_perm)?;
+                self.buffer_pool.put_f64(d_pos);
+                self.buffer_pool.put_f64(d_res);
+                self.buffer_pool.put_u8(d_perm);
                 return Ok(());
             }
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_perm)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_res);
+            self.buffer_pool.put_u8(d_perm);
         }
 
-        let mut d_pos = self.device.alloc_f64(n * 2)?;
-        let d_res = self.device.alloc_f64(n)?;
-        let mut d_perm = self.device.alloc_u8(m * 256)?;
-        let mut d_amp = self.device.alloc_f64(m)?;
-        let mut d_pers = self.device.alloc_f64(m)?;
-        let mut d_lac = self.device.alloc_f64(m)?;
-        let mut d_org = self.device.alloc_f64(m * 3)?;
+        // 标准 batch 路径（同样走缓冲池）
+        let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
+        let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let (d_perm, d_amp, d_pers, d_lac, d_org) = self.load_octave_config_pooled(&c)?;
         self.device.copy_to_device(&mut d_pos, xz)?;
-        self.device
-            .copy_to_device(&mut d_perm, &c.packed_permutations())?;
-        self.device
-            .copy_to_device(&mut d_amp, &c.packed_amplitudes())?;
-        self.device
-            .copy_to_device(&mut d_pers, &c.packed_persistences())?;
-        self.device
-            .copy_to_device(&mut d_lac, &c.packed_lacunarities())?;
-        self.device
-            .copy_to_device(&mut d_org, &c.packed_origins())?;
         let ok = self.try_launch(
             "flatcache_precompute_f64",
             n,
@@ -919,13 +911,13 @@ impl GpuNoiseSampler {
                 results[i] = sampler.sample(xz[i * 2], 0.0, xz[i * 2 + 1]);
             }
         }
-        self.device.free(d_pos)?;
-        self.device.free(d_res)?;
-        self.device.free(d_perm)?;
-        self.device.free(d_amp)?;
-        self.device.free(d_pers)?;
-        self.device.free(d_lac)?;
-        self.device.free(d_org)?;
+        self.buffer_pool.put_f64(d_pos);
+        self.buffer_pool.put_f64(d_res);
+        self.buffer_pool.put_u8(d_perm);
+        self.buffer_pool.put_f64(d_amp);
+        self.buffer_pool.put_f64(d_pers);
+        self.buffer_pool.put_f64(d_lac);
+        self.buffer_pool.put_f64(d_org);
         Ok(())
     }
 }

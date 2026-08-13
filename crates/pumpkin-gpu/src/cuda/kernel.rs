@@ -3,7 +3,6 @@
 use crate::common::DeviceError;
 use crate::common::kernel::{GpuBufferRef, KernelArg, KernelLaunch, KernelLauncher};
 use crate::compile::cuda_compile::CudaKernelCompiler;
-use cudarc::driver::PushKernelArg;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -116,26 +115,27 @@ impl KernelLauncher for CudaKernelLauncher {
             .as_ref()
             .ok_or_else(|| DeviceError::Internal("CUDA stream not initialized".into()))?;
 
-        let func = compiler
+        let kernel = compiler
             .get_function(launch.name)
             .ok_or_else(|| DeviceError::KernelError(format!("'{}' not compiled", launch.name)))?;
 
-        // 构建 LaunchArgs builder
-        let mut builder = stream.launch_builder(func);
-
+        // 构建原始 kernel 参数数组：
+        // - 标量参数：指向 `launch.args` 中值的指针（cuLaunchKernel 调用期间有效）；
+        // - 缓冲区参数：直接以 `CUdeviceptr` 值作为指针传入（含零拷贝映射内存）。
+        let mut params: Vec<*mut std::ffi::c_void> = Vec::with_capacity(launch.args.len());
         for arg in &launch.args {
             match arg {
                 KernelArg::I32(v) => {
-                    builder.arg(v);
+                    params.push(std::ptr::from_ref(v).cast_mut().cast());
                 }
                 KernelArg::F64(v) => {
-                    builder.arg(v);
+                    params.push(std::ptr::from_ref(v).cast_mut().cast());
                 }
                 KernelArg::U32(v) => {
-                    builder.arg(v);
+                    params.push(std::ptr::from_ref(v).cast_mut().cast());
                 }
                 KernelArg::USize(v) => {
-                    builder.arg(v);
+                    params.push(std::ptr::from_ref(v).cast_mut().cast());
                 }
                 KernelArg::BufferRef(idx) => {
                     let buf_ref = launch.gpu_buffers.get(*idx).ok_or_else(|| {
@@ -144,26 +144,21 @@ impl KernelLauncher for CudaKernelLauncher {
                             launch.gpu_buffers.len()
                         ))
                     })?;
-                    match buf_ref {
-                        GpuBufferRef::F64(b) => {
-                            let slice = b.cuda_slice().map_err(|e| {
-                                DeviceError::LaunchFailed(format!("F64 buffer: {e}"))
-                            })?;
-                            builder.arg(slice);
-                        }
-                        GpuBufferRef::I32(b) => {
-                            let slice = b.cuda_slice().map_err(|e| {
-                                DeviceError::LaunchFailed(format!("I32 buffer: {e}"))
-                            })?;
-                            builder.arg(slice);
-                        }
-                        GpuBufferRef::U8(b) => {
-                            let slice = b.cuda_slice().map_err(|e| {
-                                DeviceError::LaunchFailed(format!("U8 buffer: {e}"))
-                            })?;
-                            builder.arg(slice);
-                        }
-                    }
+                    // 指针参数：params 数组元素为「指向设备指针值的指针」
+                    // （驱动解引用取得指针值）；地址指向 GpuBuffer 内的稳定字段，
+                    // 在启动调用期间保持有效。
+                    let ptr_addr = match buf_ref {
+                        GpuBufferRef::F64(b) => b.cuda_device_ptr_addr().ok_or_else(|| {
+                            DeviceError::Unsupported("F64 buffer is not a CUDA buffer".into())
+                        })?,
+                        GpuBufferRef::I32(b) => b.cuda_device_ptr_addr().ok_or_else(|| {
+                            DeviceError::Unsupported("I32 buffer is not a CUDA buffer".into())
+                        })?,
+                        GpuBufferRef::U8(b) => b.cuda_device_ptr_addr().ok_or_else(|| {
+                            DeviceError::Unsupported("U8 buffer is not a CUDA buffer".into())
+                        })?,
+                    };
+                    params.push(ptr_addr.cast_mut().cast());
                 }
                 // CPU-only arg types — CUDA GPU path 不支持
                 KernelArg::F64Slice(_)
@@ -188,25 +183,43 @@ impl KernelLauncher for CudaKernelLauncher {
         let grid_dim = n.div_ceil(block_dim);
         // 动态共享内存（extern __shared__ kernel 使用）：汇总各参数大小
         let shared_mem_bytes = launch.local_mem_bytes.iter().sum::<usize>() as u32;
-        let cfg = cudarc::driver::LaunchConfig {
-            grid_dim: (grid_dim, 1, 1),
-            block_dim: (block_dim, 1, 1),
-            shared_mem_bytes,
-        };
 
         // 检测是否为 persistent kernel 变体（名称含 "_persistent"）
         let is_persistent = launch.name.contains("_persistent") && self.persistent_enabled;
 
-        // SAFETY: all kernel args have been pushed in correct order matching __global__ signature.
-        // GPU buffers are valid for the duration of the kernel execution.
+        // cuLaunchKernel 要求调用线程的上下文正确绑定（与 cudarc 的 LaunchArgs::launch 一致）。
+        stream
+            .context()
+            .bind_to_thread()
+            .map_err(|e| DeviceError::LaunchFailed(format!("CUDA 绑定上下文: {e:?}")))?;
+
+        // SAFETY: 参数数组按 kernel 签名顺序构建；缓冲区设备指针有效；
+        // 标量指针指向 launch.args 中的值，在启动调用期间保持有效。
         let result = if is_persistent {
             tracing::debug!("CUDA: launching persistent kernel '{}'", launch.name);
             // SAFETY: kernel args match signature; cooperative launch requires SM 6.0+
-            // Config (grid/block dimensions, shared memory) is valid for this kernel.
-            unsafe { builder.launch_cooperative(cfg) }
+            unsafe {
+                cudarc::driver::result::launch_cooperative_kernel(
+                    kernel.function,
+                    (grid_dim, 1, 1),
+                    (block_dim, 1, 1),
+                    shared_mem_bytes,
+                    stream.cu_stream(),
+                    &mut params,
+                )
+            }
         } else {
             // SAFETY: kernel args match signature; config (grid/block dimensions) is valid.
-            unsafe { builder.launch(cfg) }
+            unsafe {
+                cudarc::driver::result::launch_kernel(
+                    kernel.function,
+                    (grid_dim, 1, 1),
+                    (block_dim, 1, 1),
+                    shared_mem_bytes,
+                    stream.cu_stream(),
+                    &mut params,
+                )
+            }
         };
 
         result.map_err(|e| DeviceError::LaunchFailed(format!("'{}': {e:?}", launch.name)))?;
@@ -219,7 +232,11 @@ impl KernelLauncher for CudaKernelLauncher {
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {
-        // CUDA default stream is implicitly synchronized on DtoH copy
+        if let Some(stream) = self.stream.as_ref() {
+            stream
+                .synchronize()
+                .map_err(|e| DeviceError::TransferFailed(format!("CUDA synchronize: {e:?}")))?;
+        }
         Ok(())
     }
 }

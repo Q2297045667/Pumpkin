@@ -223,8 +223,71 @@ pub mod cuda_compile {
     use super::*;
     use std::collections::HashMap;
 
+    /// 通过原始 NVRTC API 编译 CUDA 源码为 PTX 文本（以 NUL 结尾）。
+    ///
+    /// cudarc 的 `Ptx` 类型内容为私有（`PtxKind::Image`），外部无法提取
+    /// PTX 字节；原始 `create_program` / `compile_program` / `get_ptx` 均为公开，
+    /// 供零拷贝所需的 `cuModuleLoadData` 原始模块加载路径使用。
+    fn nvrtc_compile_to_ptx(
+        source: &str,
+        name: &str,
+        opts: &cudarc::nvrtc::CompileOptions,
+    ) -> Result<Vec<i8>, DeviceError> {
+        use cudarc::nvrtc;
+        let src_c = std::ffi::CString::new(source)
+            .map_err(|e| DeviceError::KernelError(format!("NVRTC src '{name}': {e}")))?;
+        let name_c = std::ffi::CString::new(name)
+            .map_err(|e| DeviceError::KernelError(format!("NVRTC name '{name}': {e}")))?;
+        let prog = nvrtc::result::create_program(&src_c, Some(&name_c))
+            .map_err(|e| DeviceError::KernelError(format!("NVRTC create '{name}': {e:?}")))?;
+        // compile_program 接受选项切片（每个选项为字符串类类型）
+        let opts_list = opts.options.clone();
+        // SAFETY: prog 为有效 nvrtcProgram；opts_list 为合法选项字符串。
+        if let Err(e) = unsafe { nvrtc::result::compile_program(prog, &opts_list) } {
+            // SAFETY: prog 尚未销毁，可取日志。
+            let log = unsafe { nvrtc::result::get_program_log(prog) }
+                .ok()
+                .map(|v| {
+                    String::from_utf8_lossy(&v.iter().map(|&c| c as u8).collect::<Vec<u8>>())
+                        .to_string()
+                })
+                .unwrap_or_default();
+            // SAFETY: prog 有效。
+            unsafe {
+                let _ = nvrtc::result::destroy_program(prog);
+            }
+            return Err(DeviceError::KernelError(format!(
+                "NVRTC '{name}': {e:?}; log: {log}"
+            )));
+        }
+        // SAFETY: prog 有效且编译成功。
+        let ptx = unsafe { nvrtc::result::get_ptx(prog) }
+            .map_err(|e| DeviceError::KernelError(format!("NVRTC get_ptx '{name}': {e:?}")))?;
+        // SAFETY: prog 有效。
+        unsafe {
+            let _ = nvrtc::result::destroy_program(prog);
+        }
+        Ok(ptx)
+    }
+
+    /// 已编译的 CUDA kernel（原始驱动句柄）。
+    ///
+    /// 零拷贝映射内存需要直接在 kernel 参数中传递 `CUdeviceptr` 值，
+    /// 而 cudarc 的 `LaunchArgs.args` / `CudaSlice.cu_device_ptr` 均为私有，
+    /// 公共 API 无法实现；因此 CUDA 后端的内存与启动层基于原始驱动 API
+    /// （`cuModuleLoadData` / `cuLaunchKernel`）实现。
+    pub struct RawCompiledKernel {
+        pub function: cudarc::driver::sys::CUfunction,
+        /// 模块句柄必须比函数句柄活得久。
+        #[allow(dead_code)]
+        module: cudarc::driver::sys::CUmodule,
+    }
+
+    // SAFETY: CUmodule / CUfunction 为驱动句柄，可跨线程使用（驱动 API 线程安全）。
+    unsafe impl Send for RawCompiledKernel {}
+
     pub struct CudaKernelCompiler {
-        pub compiled: HashMap<String, cudarc::driver::CudaFunction>,
+        pub compiled: HashMap<String, RawCompiledKernel>,
         compile_ptx_arch: Option<String>,
         /// 用户配置的额外 NVRTC 标志（后传入，优先级高于默认精度选项）。
         compile_flags: Vec<String>,
@@ -342,21 +405,34 @@ pub mod cuda_compile {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, jit_kernel.cuda_source);
             // JIT 特化 kernel：使用激进优化（FMA + O3），不受配置 `--fmad=false` 约束。
             let opts = self.build_jit_compile_opts();
-            let ptx = cudarc::nvrtc::compile_ptx_with_opts(full_source, opts).map_err(|e| {
-                let msg = format!("JIT NVRTC '{}': {e:?}", jit_kernel.name);
-                crate::logging::log_fallback(
-                    &crate::logging::FallbackReason::KernelCompileFailed(msg.clone()),
-                    "cuda_compile::compile_jit_kernel",
-                );
-                DeviceError::KernelError(msg)
+            let ptx =
+                nvrtc_compile_to_ptx(&full_source, &jit_kernel.name, &opts).inspect_err(|e| {
+                    crate::logging::log_fallback(
+                        &crate::logging::FallbackReason::KernelCompileFailed(e.to_string()),
+                        "cuda_compile::compile_jit_kernel",
+                    );
+                })?;
+            ctx.bind_to_thread().map_err(|e| {
+                DeviceError::KernelError(format!("JIT bind '{}': {e:?}", jit_kernel.name))
             })?;
-            let module = ctx.load_module(ptx).map_err(|e| {
+            // SAFETY: ptx 由 NVRTC 生成且以 NUL 结尾。
+            let module = unsafe {
+                cudarc::driver::result::module::load_data(ptx.as_ptr().cast::<std::ffi::c_void>())
+            }
+            .map_err(|e| {
                 DeviceError::KernelError(format!("JIT load '{}': {e:?}", jit_kernel.name))
             })?;
-            let func = module.load_function(&jit_kernel.name).map_err(|e| {
+            let fname = std::ffi::CString::new(jit_kernel.name.as_str())
+                .map_err(|e| DeviceError::KernelError(format!("JIT name: {e}")))?;
+            // SAFETY: module 为有效模块句柄；fname 为合法函数名。
+            let function = unsafe { cudarc::driver::result::module::get_function(module, fname) }
+                .map_err(|e| {
                 DeviceError::KernelError(format!("JIT load_fn '{}': {e:?}", jit_kernel.name))
             })?;
-            self.compiled.insert(jit_kernel.name.clone(), func);
+            self.compiled.insert(
+                jit_kernel.name.clone(),
+                RawCompiledKernel { function, module },
+            );
             tracing::info!("CUDA JIT: compiled '{}'", jit_kernel.name);
             Ok(())
         }
@@ -366,26 +442,34 @@ pub mod cuda_compile {
             name: &str,
             source: &str,
             opts: &cudarc::nvrtc::CompileOptions,
-        ) -> Result<cudarc::driver::CudaFunction, DeviceError> {
+        ) -> Result<RawCompiledKernel, DeviceError> {
             let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, source);
-            let ptx = cudarc::nvrtc::compile_ptx_with_opts(full_source, opts.clone())
-                .map_err(|e| DeviceError::KernelError(format!("NVRTC '{name}': {e:?}")))?;
-            let module = ctx
-                .load_module(ptx)
-                .map_err(|e| DeviceError::KernelError(format!("load '{name}': {e:?}")))?;
-            let func = module
-                .load_function(name)
-                .map_err(|e| DeviceError::KernelError(format!("load_fn '{name}': {e:?}")))?;
-            Ok(func)
+            let ptx = nvrtc_compile_to_ptx(&full_source, name, opts)?;
+            // 绑定上下文后通过原始驱动 API 加载模块与函数（公共 API 无法传递
+            // 任意设备指针，零拷贝 kernel 参数需要原始 CUfunction 句柄）。
+            ctx.bind_to_thread()
+                .map_err(|e| DeviceError::KernelError(format!("bind ctx '{name}': {e:?}")))?;
+            // SAFETY: ptx 由 NVRTC 生成且以 NUL 结尾；缓冲在加载期间保持有效。
+            let module = unsafe {
+                cudarc::driver::result::module::load_data(ptx.as_ptr().cast::<std::ffi::c_void>())
+            }
+            .map_err(|e| DeviceError::KernelError(format!("load '{name}': {e:?}")))?;
+            let fname = std::ffi::CString::new(name)
+                .map_err(|e| DeviceError::KernelError(format!("name '{name}': {e}")))?;
+            // SAFETY: module 为有效模块句柄；fname 为合法函数名。
+            let function =
+                unsafe { cudarc::driver::result::module::get_function(module, fname) }
+                    .map_err(|e| DeviceError::KernelError(format!("load_fn '{name}': {e:?}")))?;
+            Ok(RawCompiledKernel { function, module })
         }
 
         pub fn has(&self, name: &str) -> bool {
             self.compiled.contains_key(name)
         }
 
-        /// 获取已编译的 `CudaFunction` 引用。
+        /// 获取已编译 kernel 的原始 `CUfunction` 引用。
         #[must_use]
-        pub fn get_function(&self, name: &str) -> Option<&cudarc::driver::CudaFunction> {
+        pub fn get_function(&self, name: &str) -> Option<&RawCompiledKernel> {
             self.compiled.get(name)
         }
     }

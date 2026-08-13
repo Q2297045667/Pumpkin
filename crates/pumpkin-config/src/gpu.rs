@@ -204,27 +204,30 @@ pub struct CudaConfig {
     /// 是否使用 persistent kernel 进行光照传播。
     ///
     /// 启用后光照迭代式距离场计算使用 persistent kernel
-    ///（kernel 不退出，用原子标志检测收敛），减少重复启动开销。
-    /// 需要 CUDA cooperative groups 支持。
-    /// 默认值：`false`
-    ///
-    /// ⚠️ **未实现**：此配置项已声明但运行时尚未实现 persistent kernel 模式。
+    ///（单次 cooperative launch，kernel 内部迭代直至收敛），减少重复启动开销。
+    /// 需要 CUDA cooperative launch 支持（SM 6.0+）。
+    /// 当网格过大无法共驻留或启动失败时，自动回退迭代式路径。
+    /// 默认值：`true`
     pub persistent_kernels: bool,
 
     /// 是否使用 cuRAND 提供真随机生成。
     ///
     /// ⚠️ **警告**：cuRAND 的 PRNG 算法与 CPU 的 Xoroshiro128 不同，
     /// 会产生不同的随机数序列，**破坏地形一致性**。
+    /// 仅适用于粒子效果、实体 AI 等非确定性场景。
     /// 默认值：`false`
     ///
-    /// ⚠️ **未实现**：此配置项已声明但运行时尚未集成 cuRAND。
+    /// 启用后可通过 [`crate::GpuDevice::create_curand`]（`pumpkin-gpu`）
+    /// 获取生成器实例。
     pub use_curand: bool,
 
     /// 零拷贝阈值 (KB)。
     ///
-    /// 小于此阈值的缓冲区自动使用映射内存（Zero-Copy），
-    /// 避免显式 `cudaMemcpy` 调用。适用于小参数缓冲区（排列表、收敛标志等）。
-    /// 默认值：`4`
+    /// 小于此阈值的缓冲区使用映射主机内存（`cuMemHostAlloc` +
+    /// `CU_MEMHOSTALLOC_DEVICEMAP`），主机与 kernel 直接读写同一物理内存，
+    /// 省去显式 `cudaMemcpy`。适用于小参数缓冲区（排列表、收敛标志等）。
+    /// 设为 `0` 禁用零拷贝（全部使用标准设备内存）。
+    /// 默认值：`0`（禁用，保证最广泛兼容性）
     pub zero_copy_threshold_kb: usize,
 }
 
@@ -238,9 +241,9 @@ impl Default for CudaConfig {
                 String::from("--prec-div=true"),
                 String::from("--prec-sqrt=true"),
             ],
-            persistent_kernels: false,
+            persistent_kernels: true,
             use_curand: false,
-            zero_copy_threshold_kb: 4,
+            zero_copy_threshold_kb: 0,
         }
     }
 }
@@ -369,9 +372,9 @@ mod tests {
     fn cuda_config_default_flags() {
         let config = CudaConfig::default();
         assert_eq!(config.compile_ptx, "auto");
-        assert!(!config.persistent_kernels);
+        assert!(config.persistent_kernels);
         assert!(!config.use_curand);
-        assert_eq!(config.zero_copy_threshold_kb, 4);
+        assert_eq!(config.zero_copy_threshold_kb, 0);
         assert!(config.flags.contains(&String::from("--fmad=false")));
         assert!(config.flags.contains(&String::from("--ftz=false")));
         assert!(config.flags.contains(&String::from("--prec-div=true")));

@@ -5,9 +5,9 @@
 //! | 功能 | 状态 | 说明 |
 //! |------|------|------|
 //! | 驱动初始化 | ✅ | cudarc driver API |
-//! | NVRTC kernel 编译 | ✅ | CUDA .cu kernel 源码 |
-//! | GPU 内存分配 (标准) | ✅ | `CudaStream::alloc` → `CudaSlice` |
-//! | GPU 内存分配 (零拷贝) | ⚠️ | PinnedHostSlice 框架就绪 |
+//! | NVRTC kernel 编译 | ✅ | CUDA .cu kernel 源码（原始 cuModuleLoadData） |
+//! | GPU 内存分配 (标准) | ✅ | `cuMemAlloc` 原始驱动 API |
+//! | GPU 内存分配 (零拷贝) | ✅ | `cuMemHostAlloc(DEVICEMAP)` 映射内存 |
 //! | HtoD/DtoH 拷贝 | ✅ | `memcpy_htod` / `memcpy_dtoh` |
 //! | Kernel 启动 | ⚠️ | `LaunchArgs` builder 框架就绪 |
 //! | 设备选择 ByIndex | ✅ | |
@@ -30,6 +30,8 @@ pub struct CudaBackend {
     pub(crate) launcher: kernel::CudaKernelLauncher,
     /// 零拷贝阈值（字节）
     zero_copy_threshold_bytes: usize,
+    /// 是否启用 cuRAND（配置 `use_curand = true`）
+    pub(crate) use_curand: bool,
 }
 
 // SAFETY: CudaBackend's internal state is Send by cudarc specification.
@@ -58,10 +60,12 @@ impl CudaBackend {
 
         tracing::info!("CUDA 设备: {name}");
         if zero_copy_threshold_kb > 0 {
-            tracing::debug!(
-                "CUDA 零拷贝阈值: {} KB (功能暂未实现，使用标准分配)",
+            tracing::info!(
+                "CUDA 零拷贝: 小于 {} KB 的缓冲区使用映射内存（cuMemHostAlloc DEVICEMAP）",
                 zero_copy_threshold_kb
             );
+        } else {
+            tracing::debug!("CUDA 零拷贝已禁用（阈值 = 0）");
         }
         if use_curand {
             tracing::warn!("⚠️ cuRAND 已启用 — 随机数序列与 CPU 不同，地形一致性不保证");
@@ -74,7 +78,22 @@ impl CudaBackend {
             name,
             launcher,
             zero_copy_threshold_bytes: zero_copy_threshold_kb.saturating_mul(1024),
+            use_curand,
         })
+    }
+
+    /// 创建 cuRAND 生成器（SplitMix64 确定性实现）。
+    ///
+    /// ⚠️ 仅在配置 `use_curand = true` 时可用；随机数序列与 CPU 的
+    /// Xoroshiro128 不同，**不得用于地形生成**（会破坏一致性）。
+    /// 适用场景：粒子效果、实体 AI 等非确定性内容。
+    pub fn create_curand(&self, seed: u64) -> Result<curand::CuRandGenerator, DeviceError> {
+        if !self.use_curand {
+            return Err(DeviceError::Unsupported(
+                "cuRAND 未启用（配置 [gpu.cuda] use_curand = true 后可用）".into(),
+            ));
+        }
+        curand::CuRandGenerator::new(seed)
     }
 
     pub fn device_name(&self) -> &str {

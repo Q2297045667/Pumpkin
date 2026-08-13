@@ -7,14 +7,24 @@ use crate::common::DeviceError;
 use crate::common::kernel::{GpuBufferRef, KernelArg};
 
 /// GPU 光照加速器。
+///
+/// 收敛检查步长：迭代式光照传播每 N 次迭代才回读一次 changed 标志。
+/// 收敛后多余的空转迭代无副作用，但同步/传输开销降低为 1/N。
+const CONVERGENCE_CHECK_STRIDE: usize = 4;
+
 pub struct GpuLightSampler {
     device: GpuDevice,
+    /// 持久化 buffer 池（按长度复用 u8/i32 buffer）。
+    buffer_pool: crate::common::GpuBufferPool,
 }
 
 impl GpuLightSampler {
     #[must_use]
     pub fn new(device: GpuDevice) -> Self {
-        Self { device }
+        Self {
+            device,
+            buffer_pool: crate::common::GpuBufferPool::new(),
+        }
     }
 
     /// GPU 批量天空光垂直填充。
@@ -34,9 +44,10 @@ impl GpuLightSampler {
 
         if let Some(l) = self.device.kernel_launcher() {
             if l.has_kernel("sky_light_fill_u8") {
-                let mut d_hm = self.device.alloc_i32(n)?;
-                let mut d_op = self.device.alloc_u8(n * max_height)?;
-                let d_sl = self.device.alloc_u8(n * max_height)?;
+                // 从缓冲池分配（复用跨调用缓冲区）
+                let mut d_hm = self.buffer_pool.take_i32(&self.device, n)?;
+                let mut d_op = self.buffer_pool.take_u8(&self.device, n * max_height)?;
+                let d_sl = self.buffer_pool.take_u8(&self.device, n * max_height)?;
                 self.device.copy_to_device(&mut d_hm, heightmap)?;
                 self.device.copy_to_device(&mut d_op, opacity)?;
                 l.launch(crate::common::kernel::KernelLaunch {
@@ -59,9 +70,9 @@ impl GpuLightSampler {
                 })?;
                 // 隐式同步：copy_from_device 在默认流/有序队列中等待 kernel 完成。
                 self.device.copy_from_device(&d_sl, sky_light)?;
-                self.device.free(d_hm)?;
-                self.device.free(d_op)?;
-                self.device.free(d_sl)?;
+                self.buffer_pool.put_i32(d_hm);
+                self.buffer_pool.put_u8(d_op);
+                self.buffer_pool.put_u8(d_sl);
                 return Ok(());
             }
         }
@@ -94,10 +105,11 @@ impl GpuLightSampler {
 
         if let Some(l) = self.device.kernel_launcher() {
             if l.has_kernel("block_light_scan_u8") {
-                let mut d_lum = self.device.alloc_u8(n)?;
-                let d_bl = self.device.alloc_u8(n)?;
-                let d_src = self.device.alloc_i32(n)?;
-                let mut d_cnt = self.device.alloc_i32(1)?;
+                // 从缓冲池分配（复用跨调用缓冲区）
+                let mut d_lum = self.buffer_pool.take_u8(&self.device, n)?;
+                let d_bl = self.buffer_pool.take_u8(&self.device, n)?;
+                let d_src = self.buffer_pool.take_i32(&self.device, n)?;
+                let mut d_cnt = self.buffer_pool.take_i32(&self.device, 1)?;
                 self.device.copy_to_device(&mut d_lum, luminances)?;
                 self.device.copy_to_device(&mut d_cnt, &[0i32])?;
                 l.launch(crate::common::kernel::KernelLaunch {
@@ -129,10 +141,10 @@ impl GpuLightSampler {
                     self.device.copy_from_device(&d_src, &mut src)?;
                     sources = src;
                 }
-                self.device.free(d_lum)?;
-                self.device.free(d_bl)?;
-                self.device.free(d_src)?;
-                self.device.free(d_cnt)?;
+                self.buffer_pool.put_u8(d_lum);
+                self.buffer_pool.put_u8(d_bl);
+                self.buffer_pool.put_i32(d_src);
+                self.buffer_pool.put_i32(d_cnt);
                 return Ok(sources);
             }
         }
@@ -167,13 +179,14 @@ impl GpuLightSampler {
             // 优先使用 persistent kernel（单次 cooperative launch）
             if l.has_kernel("light_propagate_u8_persistent") {
                 let persistent_ok = (|| -> Result<(), DeviceError> {
-                    let mut d_light = self.device.alloc_u8(n)?;
-                    let mut d_opacity = self.device.alloc_u8(n)?;
-                    let mut d_neighbors = self.device.alloc_i32(n * 6)?;
-                    let mut d_sync_counter = self.device.alloc_i32(1)?;
+                    // 从缓冲池分配（复用跨调用缓冲区）
+                    let mut d_light = self.buffer_pool.take_u8(&self.device, n)?;
+                    let mut d_opacity = self.buffer_pool.take_u8(&self.device, n)?;
+                    let mut d_neighbors = self.buffer_pool.take_i32(&self.device, n * 6)?;
+                    let mut d_sync_counter = self.buffer_pool.take_i32(&self.device, 1)?;
                     // 每 block 一个变更标志（block 数 = ceil(n / 256)）
                     let num_blocks = n.div_ceil(256);
-                    let mut d_changed_flags = self.device.alloc_u8(num_blocks)?;
+                    let mut d_changed_flags = self.buffer_pool.take_u8(&self.device, num_blocks)?;
 
                     self.device.copy_to_device(&mut d_light, light)?;
                     self.device.copy_to_device(&mut d_opacity, opacity)?;
@@ -206,11 +219,11 @@ impl GpuLightSampler {
                     })?;
                     // 隐式同步：copy_from_device 等待 persistent kernel 收敛。
                     self.device.copy_from_device(&d_light, light)?;
-                    self.device.free(d_light)?;
-                    self.device.free(d_opacity)?;
-                    self.device.free(d_neighbors)?;
-                    self.device.free(d_sync_counter)?;
-                    self.device.free(d_changed_flags)?;
+                    self.buffer_pool.put_u8(d_light);
+                    self.buffer_pool.put_u8(d_opacity);
+                    self.buffer_pool.put_i32(d_neighbors);
+                    self.buffer_pool.put_i32(d_sync_counter);
+                    self.buffer_pool.put_u8(d_changed_flags);
                     Ok(())
                 })();
                 if persistent_ok.is_ok() {
@@ -221,16 +234,20 @@ impl GpuLightSampler {
             }
 
             if l.has_kernel("light_propagate_u8") {
-                let mut d_light = self.device.alloc_u8(n)?;
-                let mut d_opacity = self.device.alloc_u8(n)?;
-                let mut d_neighbors = self.device.alloc_i32(n * 6)?;
-                let mut d_changed = self.device.alloc_i32(1)?;
+                // 从缓冲池分配（复用跨调用缓冲区）
+                let mut d_light = self.buffer_pool.take_u8(&self.device, n)?;
+                let mut d_opacity = self.buffer_pool.take_u8(&self.device, n)?;
+                let mut d_neighbors = self.buffer_pool.take_i32(&self.device, n * 6)?;
+                let mut d_changed = self.buffer_pool.take_i32(&self.device, 1)?;
                 self.device.copy_to_device(&mut d_light, light)?;
                 self.device.copy_to_device(&mut d_opacity, opacity)?;
                 self.device.copy_to_device(&mut d_neighbors, neighbors)?;
 
+                // 每 CHECK_STRIDE 次迭代才回读一次 changed 标志：
+                // 收敛后多余的空转迭代是无副作用的（best > cur 恒假），
+                // 但同步/传输开销降低为 1/CHECK_STRIDE。
                 let mut iterations = 0;
-                for _ in 0..max_iters {
+                while iterations < max_iters {
                     self.device.copy_to_device(&mut d_changed, &[0i32])?;
                     l.launch(crate::common::kernel::KernelLaunch {
                         name: "light_propagate_u8",
@@ -252,18 +269,20 @@ impl GpuLightSampler {
                         local_mem_bytes: vec![],
                     })?;
                     iterations += 1;
-                    // 隐式同步：copy_from_device(&d_changed) 等待 kernel 完成。
-                    let mut c = [0i32];
-                    self.device.copy_from_device(&d_changed, &mut c)?;
-                    if c[0] == 0 {
-                        break;
+                    if iterations % CONVERGENCE_CHECK_STRIDE == 0 {
+                        // 隐式同步：copy_from_device(&d_changed) 等待 kernel 完成。
+                        let mut c = [0i32];
+                        self.device.copy_from_device(&d_changed, &mut c)?;
+                        if c[0] == 0 {
+                            break;
+                        }
                     }
                 }
                 self.device.copy_from_device(&d_light, light)?;
-                self.device.free(d_light)?;
-                self.device.free(d_opacity)?;
-                self.device.free(d_neighbors)?;
-                self.device.free(d_changed)?;
+                self.buffer_pool.put_u8(d_light);
+                self.buffer_pool.put_u8(d_opacity);
+                self.buffer_pool.put_i32(d_neighbors);
+                self.buffer_pool.put_i32(d_changed);
                 return Ok(iterations);
             }
         }
@@ -333,15 +352,18 @@ impl GpuLightSampler {
 
         if let Some(l) = self.device.kernel_launcher() {
             if l.has_kernel("sky_light_horizontal_propagate_u8") {
-                let mut d_light = self.device.alloc_u8(n_total)?;
-                let mut d_opacity = self.device.alloc_u8(n_total)?;
-                let mut d_changed = self.device.alloc_i32(1)?;
+                // 从缓冲池分配（复用跨调用缓冲区）
+                let mut d_light = self.buffer_pool.take_u8(&self.device, n_total)?;
+                let mut d_opacity = self.buffer_pool.take_u8(&self.device, n_total)?;
+                let mut d_changed = self.buffer_pool.take_i32(&self.device, 1)?;
 
                 self.device.copy_to_device(&mut d_light, sky_light)?;
                 self.device.copy_to_device(&mut d_opacity, opacity)?;
 
+                // 每 CONVERGENCE_CHECK_STRIDE 次迭代才回读一次 changed 标志：
+                // 收敛后多余的空转迭代是无副作用的，但同步/传输开销降低为 1/STRIDE。
                 let mut iterations = 0;
-                for _ in 0..max_iters {
+                while iterations < max_iters {
                     self.device.copy_to_device(&mut d_changed, &[0i32])?;
                     l.launch(crate::common::kernel::KernelLaunch {
                         name: "sky_light_horizontal_propagate_u8",
@@ -363,17 +385,19 @@ impl GpuLightSampler {
                         local_mem_bytes: vec![],
                     })?;
                     iterations += 1;
-                    let mut c = [0i32];
-                    self.device.copy_from_device(&d_changed, &mut c)?;
-                    if c[0] == 0 {
-                        break;
+                    if iterations % CONVERGENCE_CHECK_STRIDE == 0 {
+                        let mut c = [0i32];
+                        self.device.copy_from_device(&d_changed, &mut c)?;
+                        if c[0] == 0 {
+                            break;
+                        }
                     }
                 }
 
                 self.device.copy_from_device(&d_light, sky_light)?;
-                self.device.free(d_light)?;
-                self.device.free(d_opacity)?;
-                self.device.free(d_changed)?;
+                self.buffer_pool.put_u8(d_light);
+                self.buffer_pool.put_u8(d_opacity);
+                self.buffer_pool.put_i32(d_changed);
                 return Ok(iterations);
             }
         }

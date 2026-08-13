@@ -94,7 +94,7 @@ impl CpuBackend {
                 vec.extend_from_slice(data);
             }
             #[cfg(feature = "cuda")]
-            RawBuffer::Cuda(_) => {
+            RawBuffer::Cuda(_) | RawBuffer::CudaMapped(_) => {
                 return Err(DeviceError::Unsupported(
                     "CPU 后端不能操作 CUDA 缓冲区".into(),
                 ));
@@ -120,7 +120,7 @@ impl CpuBackend {
                 data.copy_from_slice(vec);
             }
             #[cfg(feature = "cuda")]
-            RawBuffer::Cuda(_) => {
+            RawBuffer::Cuda(_) | RawBuffer::CudaMapped(_) => {
                 return Err(DeviceError::Unsupported(
                     "CPU 后端不能操作 CUDA 缓冲区".into(),
                 ));

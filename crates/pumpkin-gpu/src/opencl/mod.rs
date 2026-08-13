@@ -41,6 +41,20 @@ impl OpenClBackend {
         flags: Option<&[String]>,
         pipeline_queues: usize,
     ) -> Result<Self, DeviceError> {
+        // 调度策略支持性检查：OpenCL 仅支持 index / name / integrated 三种
+        // 明确的选择策略；无法兑现 `auto`（“按性能自动选择最佳 GPU”）的承诺。
+        // 因此当三个参数均为默认值（即策略为 `auto`）时输出警告并回退 CPU，
+        // 避免静默选择第一个设备与配置语义不符。
+        if device_index.is_none() && device_name_filter.is_none() && !prefer_integrated {
+            tracing::warn!(
+                "OpenCL 不支持 `auto` 设备调度策略（无法按性能自动选择），回退 CPU；\
+                 请在配置中使用 `strategy = \"index\"` / `\"name\"` / `\"integrated\"`"
+            );
+            return Err(DeviceError::InitFailed(
+                "OpenCL 不支持 auto 调度策略，请使用 index/name/integrated".into(),
+            ));
+        }
+
         let (ctx, queues, device, name) = context::init_opencl(
             device_index,
             device_name_filter,

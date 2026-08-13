@@ -39,6 +39,12 @@ fn env_config() -> GpuConfig {
         _ => GpuBackend::Auto,
     };
     let jit_enabled = std::env::var("PUMPKIN_GPU_JIT").as_deref() == Ok("1");
+    // OpenCL 不支持 auto 调度策略（会警告并回退 CPU），测试时显式指定 ByIndex(0)。
+    let device = if backend == GpuBackend::OpenCl {
+        pumpkin_config::gpu::GpuDeviceSelection::ByIndex { index: 0 }
+    } else {
+        pumpkin_config::gpu::GpuDeviceSelection::Auto
+    };
     GpuConfig {
         enabled: true,
         noise_acceleration: true,
@@ -47,6 +53,7 @@ fn env_config() -> GpuConfig {
         jit_enabled,
         jit_max_unroll: 16,
         backend,
+        device,
         ..Default::default()
     }
 }

@@ -75,16 +75,19 @@ pub struct BeardifierJunctionData {
 // ============================================================================
 
 /// GPU 含水层批量采样器。
-///
-/// 对批量位置执行 4 近邻搜索，确定流体状态与方块类型。
 pub struct GpuAquiferBatchSampler {
     pub device: GpuDevice,
+    /// 持久化 buffer 池（按长度复用 f64/u8/i32 buffer）。
+    buffer_pool: crate::common::GpuBufferPool,
 }
 
 impl GpuAquiferBatchSampler {
     #[must_use]
     pub fn new(device: GpuDevice) -> Self {
-        Self { device }
+        Self {
+            device,
+            buffer_pool: crate::common::GpuBufferPool::new(),
+        }
     }
 
     /// 批量含水层判定。
@@ -138,13 +141,13 @@ impl GpuAquiferBatchSampler {
             grid_densities.push(f64::from_bits(packed_grid[i * 4 + 3] as u64));
         }
 
-        // GPU 分配
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
-        let mut d_dens = self.device.alloc_f64(n)?;
-        let mut d_gpos = self.device.alloc_f64(grid_pos_count)?;
-        let mut d_gden = self.device.alloc_f64(grid_den_count)?;
-        let d_bids = self.device.alloc_i32(n)?;
-        let d_flags = self.device.alloc_u8(n)?;
+        // 从缓冲池分配（复用跨调用缓冲区）
+        let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
+        let mut d_dens = self.buffer_pool.take_f64(&self.device, n)?;
+        let mut d_gpos = self.buffer_pool.take_f64(&self.device, grid_pos_count)?;
+        let mut d_gden = self.buffer_pool.take_f64(&self.device, grid_den_count)?;
+        let d_bids = self.buffer_pool.take_i32(&self.device, n)?;
+        let d_flags = self.buffer_pool.take_u8(&self.device, n)?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_dens, densities)?;
@@ -194,12 +197,12 @@ impl GpuAquiferBatchSampler {
             let mut fluid_updates = vec![0u8; n];
             self.device.copy_from_device(&d_bids, &mut block_ids)?;
             self.device.copy_from_device(&d_flags, &mut fluid_updates)?;
-            self.device.free(d_pos)?;
-            self.device.free(d_dens)?;
-            self.device.free(d_gpos)?;
-            self.device.free(d_gden)?;
-            self.device.free(d_bids)?;
-            self.device.free(d_flags)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_dens);
+            self.buffer_pool.put_f64(d_gpos);
+            self.buffer_pool.put_f64(d_gden);
+            self.buffer_pool.put_i32(d_bids);
+            self.buffer_pool.put_u8(d_flags);
             return Ok(AquiferBatchResult {
                 block_ids,
                 fluid_updates,
@@ -207,12 +210,12 @@ impl GpuAquiferBatchSampler {
         }
 
         // GPU launch 失败，清理资源并返回错误
-        self.device.free(d_pos)?;
-        self.device.free(d_dens)?;
-        self.device.free(d_gpos)?;
-        self.device.free(d_gden)?;
-        self.device.free(d_bids)?;
-        self.device.free(d_flags)?;
+        self.buffer_pool.put_f64(d_pos);
+        self.buffer_pool.put_f64(d_dens);
+        self.buffer_pool.put_f64(d_gpos);
+        self.buffer_pool.put_f64(d_gden);
+        self.buffer_pool.put_i32(d_bids);
+        self.buffer_pool.put_u8(d_flags);
         Err(DeviceError::LaunchFailed("aquifer batch failed".into()))
     }
 
@@ -268,6 +271,8 @@ pub struct GpuBeardifierBatchSampler {
     pub device: GpuDevice,
     /// 持久化 beard kernel GPU buffer（108KB，首次上传后复用）
     beard_kernel_buf: Option<crate::GpuBuffer<f64>>,
+    /// 持久化 buffer 池（按长度复用 f64 buffer）。
+    buffer_pool: crate::common::GpuBufferPool,
 }
 
 impl GpuBeardifierBatchSampler {
@@ -276,6 +281,7 @@ impl GpuBeardifierBatchSampler {
         Self {
             device,
             beard_kernel_buf: None,
+            buffer_pool: crate::common::GpuBufferPool::new(),
         }
     }
 
@@ -343,12 +349,12 @@ impl GpuBeardifierBatchSampler {
 
         let affected_flat: Vec<f64> = affected_box.iter().map(|&v| f64::from(v)).collect();
 
-        // GPU 内存分配（kernel 已缓存，其余按需）
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
-        let d_res = self.device.alloc_f64(n)?;
-        let mut d_struct = self.device.alloc_f64(struct_flat.len())?;
-        let mut d_junct = self.device.alloc_f64(junct_flat.len())?;
-        let mut d_affected = self.device.alloc_f64(6)?;
+        // 从缓冲池分配（kernel 已缓存，其余按需复用）
+        let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 3)?;
+        let d_res = self.buffer_pool.take_f64(&self.device, n)?;
+        let mut d_struct = self.buffer_pool.take_f64(&self.device, struct_flat.len())?;
+        let mut d_junct = self.buffer_pool.take_f64(&self.device, junct_flat.len())?;
+        let mut d_affected = self.buffer_pool.take_f64(&self.device, 6)?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
@@ -383,19 +389,19 @@ impl GpuBeardifierBatchSampler {
         if ok {
             self.device.copy_from_device(&d_res, results)?;
         } else {
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_struct)?;
-            self.device.free(d_junct)?;
-            self.device.free(d_affected)?;
+            self.buffer_pool.put_f64(d_pos);
+            self.buffer_pool.put_f64(d_res);
+            self.buffer_pool.put_f64(d_struct);
+            self.buffer_pool.put_f64(d_junct);
+            self.buffer_pool.put_f64(d_affected);
             return Err(DeviceError::LaunchFailed("beardifier batch failed".into()));
         }
 
-        self.device.free(d_pos)?;
-        self.device.free(d_res)?;
-        self.device.free(d_struct)?;
-        self.device.free(d_junct)?;
-        self.device.free(d_affected)?;
+        self.buffer_pool.put_f64(d_pos);
+        self.buffer_pool.put_f64(d_res);
+        self.buffer_pool.put_f64(d_struct);
+        self.buffer_pool.put_f64(d_junct);
+        self.buffer_pool.put_f64(d_affected);
         Ok(())
     }
 
