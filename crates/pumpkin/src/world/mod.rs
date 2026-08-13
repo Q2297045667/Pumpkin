@@ -71,7 +71,12 @@ use pumpkin_data::{
     sound_id_remap::remap_sound_id_for_version,
     world::{RAW, WorldEvent},
 };
-use pumpkin_data::{BlockDirection, BlockState, HorizontalFacingExt, translation};
+use pumpkin_data::{
+    BlockDirection, BlockState, HorizontalFacingExt,
+    block_properties::{BlockProperties, ChestLikeProperties, ChestType},
+    tag::Taggable,
+    translation,
+};
 use pumpkin_inventory::crafting::recipe_provider::RecipeProvider;
 use pumpkin_inventory::screen_handler::InventoryPlayer;
 use pumpkin_nbt::compound::NbtCompound;
@@ -90,9 +95,11 @@ use pumpkin_protocol::{
     bedrock::{
         client::{
             add_player::CAddPlayer,
+            block_event::CBlockEvent as CBedrockBlockEvent,
             common::BuildPlatform,
             creative_content::{CCreativeContent, CreativeCategory, Entry, Group},
             gamerules_changed::GameRules,
+            level_sound_event::CLevelSoundEvent,
             player_list::{CPlayerList, PlayerListEntry, Skin},
             remove_actor::CRemoveActor,
             start_game::{Experiments, GamePublishSetting, LevelSettings},
@@ -165,6 +172,41 @@ use weather::Weather;
 type FlowingFluidProperties = pumpkin_data::fluid::FlowingWaterLikeFluidProperties;
 
 const MAX_LIGHT_LEVEL: u8 = 15;
+
+fn bedrock_chest_block_actor(state_id: BlockStateId, position: BlockPos) -> Option<NbtCompound> {
+    let (block, _) = BlockState::from_id_with_block(state_id);
+    if !block.has_tag(&pumpkin_data::tag::Block::C_CHESTS_WOODEN)
+        && !block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_COPPER_CHESTS)
+    {
+        return None;
+    }
+
+    // Block actor tags describe the chest itself. Container contents are synchronized
+    // through inventory packets and must not be exposed in chunk data.
+    let mut nbt = NbtCompound::new();
+    nbt.put_string("id", "Chest".to_string());
+    nbt.put_int("x", position.0.x);
+    nbt.put_int("y", position.0.y);
+    nbt.put_int("z", position.0.z);
+    nbt.put_bool("isMovable", true);
+
+    let properties = ChestLikeProperties::from_state_id(state_id, block);
+    if properties.r#type != ChestType::Single {
+        let direction = if properties.r#type == ChestType::Left {
+            properties.facing.rotate_clockwise()
+        } else {
+            properties.facing.rotate_counter_clockwise()
+        };
+        let pair = position.offset(direction.to_offset());
+        nbt.put_int("pairx", pair.0.x);
+        nbt.put_int("pairz", pair.0.z);
+        if properties.r#type == ChestType::Right {
+            nbt.put_bool("pairlead", true);
+        }
+    }
+
+    Some(nbt)
+}
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -545,7 +587,7 @@ impl World {
                 continue;
             }
             let chunk_pos = event.pos.chunk_position();
-            self.broadcast_to_chunk(
+            self.broadcast_to_chunk_editioned_sync(
                 chunk_pos,
                 &CBlockEvent::new(
                     event.pos,
@@ -553,6 +595,7 @@ impl World {
                     event.data,
                     VarInt(block.id.as_u16() as i32),
                 ),
+                &CBedrockBlockEvent::new(event.pos, i32::from(event.r#type), i32::from(event.data)),
             );
         }
     }
@@ -901,6 +944,34 @@ impl World {
         self.play_sound_raw(sound as u16, category, position, volume, pitch);
     }
 
+    /// Plays a Bedrock level sound for players close enough to hear it.
+    pub fn play_bedrock_level_sound(
+        &self,
+        sound_id: &str,
+        position: &Vector3<f64>,
+        extra_data: i32,
+    ) {
+        let packet = CLevelSoundEvent {
+            sound_id: sound_id.to_string(),
+            position: Vector3::new(position.x as f32, position.y as f32, position.z as f32),
+            extra_data: VarInt(extra_data),
+            entity_type: String::new(),
+            is_baby_mob: false,
+            is_global: false,
+            actor_unique_id: 0,
+            fire_at_position: None,
+        };
+        let chunk_pos = BlockPos::floored_v(*position).chunk_position();
+
+        for player in self.players.load().iter() {
+            if is_within_view_distance(chunk_pos, player.get_entity().chunk_pos.load(), 1)
+                && let ClientPlatform::Bedrock(client) = player.client.as_ref()
+            {
+                client.try_enqueue_packet(&packet);
+            }
+        }
+    }
+
     pub fn play_sound_expect(
         &self,
         player: &Player,
@@ -1044,6 +1115,7 @@ impl World {
         let entity_count = entities_to_tick.len();
         let server_for_entities = server.clone();
         let active_chunks = self.active_chunks.load();
+        let level_for_entities = self.level.clone();
 
         let entity_future = async move {
             let t = tokio::time::Instant::now();
@@ -1061,6 +1133,14 @@ impl World {
                     get_section_cord(entity_pos.z.floor() as i32),
                 );
                 if !active_chunks.contains(&entity_chunk) {
+                    continue;
+                }
+
+                // A chunk stays active while it is still being generated. Mobs spawned by the
+                // generator are added to the world before their chunk is published, and every
+                // block read in a missing chunk reports air, so ticking them here would let
+                // them fall through the terrain that is about to appear.
+                if !level_for_entities.is_chunk_loaded(&entity_chunk) {
                     continue;
                 }
 
@@ -1613,7 +1693,7 @@ impl World {
         }
 
         let mut inside = false;
-        'shapes: for shape in state.get_block_outline_shapes() {
+        'shapes: for shape in state.get_block_outline_shapes_at(&pos) {
             let outline_shape = shape.at_pos(pos);
 
             if outline_shape.intersects(bounding_box) {
@@ -1645,7 +1725,7 @@ impl World {
         }
 
         let mut shapes = state
-            .get_block_collision_shapes()
+            .get_block_collision_shapes_at(&pos)
             .map(|shape| shape.at_pos(pos));
 
         if use_collision_shape {
@@ -1699,7 +1779,7 @@ impl World {
                     }
                 }
             } else {
-                for shape in state.get_block_collision_shapes() {
+                for shape in state.get_block_collision_shapes_at(&pos) {
                     let shape = shape.at_pos(pos);
                     if shape.intersects(&bounding_box) {
                         collided = true;
@@ -1737,7 +1817,7 @@ impl World {
     pub fn get_dismount_height(&self, pos: &BlockPos) -> f64 {
         let state = self.get_block_state(pos);
         let max_y = state
-            .get_block_collision_shapes()
+            .get_block_collision_shapes_at(pos)
             .map(|s| s.max.y)
             .fold(f64::NEG_INFINITY, f64::max);
         if max_y != f64::NEG_INFINITY {
@@ -1747,7 +1827,7 @@ impl World {
         let below = BlockPos(Vector3::new(pos.0.x, pos.0.y - 1, pos.0.z));
         let below_state = self.get_block_state(&below);
         let below_max_y = below_state
-            .get_block_collision_shapes()
+            .get_block_collision_shapes_at(&below)
             .map(|s| s.max.y)
             .fold(f64::NEG_INFINITY, f64::max);
         if below_max_y >= 1.0 {
@@ -4931,15 +5011,40 @@ impl World {
         self.spawn_entity(item_entity).await;
     }
 
-    pub async fn strike_lightning(self: &Arc<Self>, pos: Vector3<f64>, _effect_only: bool) {
+    pub async fn strike_lightning(self: &Arc<Self>, pos: Vector3<f64>, effect_only: bool) {
         use pumpkin_data::entity::EntityType;
         use uuid::Uuid;
+
+        let server_ref = self.server.upgrade();
+        if let Some(server_ref) = server_ref {
+            let mut event =
+                crate::plugin::api::events::world::lightning_strike::LightningStrikeEvent::new(
+                    pos,
+                    effect_only,
+                );
+            server_ref
+                .plugin_manager
+                .fire(&server_ref, &mut event)
+                .await;
+            if event.cancelled {
+                return;
+            }
+        }
+
         let lightning = crate::entity::r#type::from_type(
             &EntityType::LIGHTNING_BOLT,
             pos,
             self,
             Uuid::new_v4(),
         );
+
+        if let Some(bolt) = lightning
+            .cast_any()
+            .downcast_ref::<crate::entity::lightning::LightningBoltEntity>()
+        {
+            bolt.set_visual_only(effect_only);
+        }
+
         self.spawn_entity(lightning).await;
     }
 
@@ -5337,6 +5442,36 @@ impl World {
         Some(entity)
     }
 
+    /// Builds Bedrock block actor tags that are not represented by Java block states alone.
+    pub fn bedrock_chunk_block_actors(&self, chunk: &ChunkData) -> Vec<NbtCompound> {
+        let chunk_pos = Vector2::new(chunk.x, chunk.z);
+        let live_positions: FxHashSet<_> = self
+            .block_entities
+            .get(&chunk_pos)
+            .map(|entities| entities.keys().copied().collect())
+            .unwrap_or_default();
+
+        let pending = chunk
+            .pending_block_entities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        live_positions
+            .iter()
+            .chain(
+                pending
+                    .keys()
+                    .filter(|position| !live_positions.contains(position)),
+            )
+            .filter_map(|position| {
+                let relative = position.chunk_relative_position();
+                chunk
+                    .section
+                    .get_block_absolute_y(relative.x as usize, relative.y, relative.z as usize)
+                    .and_then(|state_id| bedrock_chest_block_actor(state_id, *position))
+            })
+            .collect()
+    }
+
     pub fn add_block_entity(&self, block_entity: Arc<dyn BlockEntity>) {
         let block_pos = block_entity.get_position();
         let chunk_pos = block_pos.chunk_position();
@@ -5527,7 +5662,7 @@ impl World {
             return (true, None);
         }
 
-        let bounding_boxes = state.get_block_outline_shapes();
+        let bounding_boxes = state.get_block_outline_shapes_at(block_pos);
 
         for shape in bounding_boxes {
             let world_min = shape.min.add(&block_pos.0.to_f64());
@@ -5864,12 +5999,34 @@ impl WorldPortalExt for WorldPortal {
 
 #[cfg(test)]
 mod tests {
-    use super::bedrock_block_breaking_rate;
+    use pumpkin_data::{
+        Block,
+        block_properties::{BlockProperties, ChestLikeProperties, ChestType, HorizontalFacing},
+    };
+    use pumpkin_util::math::position::BlockPos;
+
+    use super::{bedrock_block_breaking_rate, bedrock_chest_block_actor};
 
     #[test]
     fn bedrock_block_breaking_rate_uses_progress_per_tick() {
         assert_eq!(bedrock_block_breaking_rate(0.0), 0);
         assert_eq!(bedrock_block_breaking_rate(1.0 / 30.0), 2_184);
         assert_eq!(bedrock_block_breaking_rate(1.0), 65_535);
+    }
+
+    #[test]
+    fn bedrock_double_chest_block_actor_identifies_pair_and_lead() {
+        let position = BlockPos::new(5, 64, 7);
+        let properties = ChestLikeProperties {
+            facing: HorizontalFacing::North,
+            r#type: ChestType::Right,
+            waterlogged: false,
+        };
+        let actor =
+            bedrock_chest_block_actor(properties.to_state_id(&Block::CHEST), position).unwrap();
+
+        assert_eq!(actor.get_int("pairx"), Some(4));
+        assert_eq!(actor.get_int("pairz"), Some(7));
+        assert_eq!(actor.get_bool("pairlead"), Some(true));
     }
 }
