@@ -3497,7 +3497,7 @@ dependencies = [
  "parking_lot",
  "pumpkin-config",
  "pumpkin-util",
- "rand 0.10.2",
+ "rand",
  "rustc-hash",
  "sysinfo",
  "tempfile",

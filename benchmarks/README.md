@@ -192,7 +192,46 @@ CPU_XeonW3345_32GB_TeslaT10_Windows10_2026-08-13.md
 
 ---
 
-## 5. 系统信息采集命令
+## 5. Release 构建流程(GPU 模块优化二进制)
+
+### 5.1 构建命令
+
+```sh
+cargo build --release -p pumpkin --features gpu
+```
+
+- feature 链:`pumpkin` 的 `gpu = ["dep:pumpkin-gpu", "pumpkin-gpu/gpu", "pumpkin-world/gpu", "pumpkin-config/gpu"]`;
+- 优化配置(workspace `Cargo.toml` 的 `[profile.release]`):`lto = true`、`codegen-units = 1`、`strip = "debuginfo"`;
+- 产物:`target/release/pumpkin.exe`(Windows);调试符号在独立 `.pdb`。
+
+### 5.2 产物记录字段(报告可选附注)
+
+| 字段 | 示例 |
+|------|------|
+| 构建耗时 | 42m 56s |
+| 二进制大小 | 84,128,768 字节 |
+| PDB 大小 | 8,524,160 字节 |
+| 告警 | 仅第三方 `proc-macro-error2` future-incompat 提示 |
+
+### 5.3 GPU 链接验证(必做)
+
+构建后必须确认 GPU 内核源码与配置键确实嵌入二进制(`strings`/`findstr` 对本 PE 不可靠,使用 PowerShell 字节扫描):
+
+```sh
+powershell.exe -NoProfile -Command '$b=[System.IO.File]::ReadAllBytes("target\release\pumpkin.exe"); $t=[System.Text.Encoding]::ASCII.GetString($b); foreach($s in @("aquifer_batch_tiled_f64","light_propagate_u8_persistent","octave_perlin_sample_soa_f64","sky_light_horizontal_propagate_u8","flatcache_precompute_f64","cuMemHostAlloc","use_curand","persistent_kernels")){ if($t.Contains($s)){"FOUND: $s"}else{"MISSING: $s"} }'
+```
+
+全部输出 `FOUND` 才算验证通过。
+
+### 5.4 注意事项
+
+- 服务器二进制无 CLI 参数,启动即绑定端口并生成 world/配置目录——**不要在仓库根目录冒烟运行**,部署目录中运行;
+- CUDA/OpenCL 驱动为运行时动态加载,运行机器需安装对应驱动(如 NVIDIA 610.47);
+- GPU 功能默认关闭(`[gpu] enabled = false`),部署时按需在 `pumpkin.toml` 开启;JIT/零拷贝/cuRAND 开关语义见各测试报告。
+
+---
+
+## 6. 系统信息采集命令
 
 ```sh
 # GPU 型号 / 显存 / 驱动
@@ -208,9 +247,9 @@ powershell.exe -NoProfile -Command \
 
 ---
 
-## 6. 失败处理与验收标准
+## 7. 失败处理与验收标准
 
-### 6.1 失败处理
+### 7.1 失败处理
 
 | 情形 | 处理 |
 |------|------|
@@ -218,7 +257,7 @@ powershell.exe -NoProfile -Command \
 | 功能模块启动失败 | 分析原因,并将分析结果输出到本目录 `{报告同名}_FAILURE_ANALYSIS.md` |
 | 一致性/指纹断言失败 | 定位 kernel 与 CPU 路径差异(运算顺序/平局语义/编译优化),修复后重跑全部矩阵 |
 
-### 6.2 验收清单(报告发布前逐项确认)
+### 7.2 验收清单(报告发布前逐项确认)
 
 - [ ] 文件名符合 §1 命名规范
 - [ ] 硬件配置 / 测试环境字段全部填写(§2.1、§2.2)
@@ -231,7 +270,7 @@ powershell.exe -NoProfile -Command \
 
 ---
 
-## 7. 附录:测试套件 → 报告章节映射
+## 8. 附录:测试套件 → 报告章节映射
 
 | 测试套件 | 报告章节 |
 |----------|---------|
