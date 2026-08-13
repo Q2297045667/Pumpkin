@@ -55,6 +55,7 @@ impl GpuLightSampler {
                         GpuBufferRef::U8(&d_op),
                         GpuBufferRef::U8(&d_sl),
                     ],
+                    local_mem_bytes: vec![],
                 })?;
                 // 隐式同步：copy_from_device 在默认流/有序队列中等待 kernel 完成。
                 self.device.copy_from_device(&d_sl, sky_light)?;
@@ -116,6 +117,7 @@ impl GpuLightSampler {
                         GpuBufferRef::I32(&d_src),
                         GpuBufferRef::I32(&d_cnt),
                     ],
+                    local_mem_bytes: vec![],
                 })?;
                 // 隐式同步：后续 copy_from_device 等待 kernel 完成。
                 self.device.copy_from_device(&d_bl, block_light)?;
@@ -164,47 +166,58 @@ impl GpuLightSampler {
         if let Some(l) = self.device.kernel_launcher() {
             // 优先使用 persistent kernel（单次 cooperative launch）
             if l.has_kernel("light_propagate_u8_persistent") {
-                let mut d_light = self.device.alloc_u8(n)?;
-                let mut d_opacity = self.device.alloc_u8(n)?;
-                let mut d_neighbors = self.device.alloc_i32(n * 6)?;
-                let mut d_converged = self.device.alloc_i32(1)?;
-                let mut d_sync_counter = self.device.alloc_i32(1)?;
+                let persistent_ok = (|| -> Result<(), DeviceError> {
+                    let mut d_light = self.device.alloc_u8(n)?;
+                    let mut d_opacity = self.device.alloc_u8(n)?;
+                    let mut d_neighbors = self.device.alloc_i32(n * 6)?;
+                    let mut d_sync_counter = self.device.alloc_i32(1)?;
+                    // 每 block 一个变更标志（block 数 = ceil(n / 256)）
+                    let num_blocks = n.div_ceil(256);
+                    let mut d_changed_flags = self.device.alloc_u8(num_blocks)?;
 
-                self.device.copy_to_device(&mut d_light, light)?;
-                self.device.copy_to_device(&mut d_opacity, opacity)?;
-                self.device.copy_to_device(&mut d_neighbors, neighbors)?;
-                self.device.copy_to_device(&mut d_converged, &[0i32])?;
-                self.device.copy_to_device(&mut d_sync_counter, &[0i32])?;
+                    self.device.copy_to_device(&mut d_light, light)?;
+                    self.device.copy_to_device(&mut d_opacity, opacity)?;
+                    self.device.copy_to_device(&mut d_neighbors, neighbors)?;
+                    self.device.copy_to_device(&mut d_sync_counter, &[0i32])?;
+                    self.device
+                        .copy_to_device(&mut d_changed_flags, &vec![0u8; num_blocks])?;
 
-                l.launch(crate::common::kernel::KernelLaunch {
-                    name: "light_propagate_u8_persistent",
-                    global_work_size: [n, 1, 1],
-                    local_work_size: Some([256, 1, 1]),
-                    args: vec![
-                        KernelArg::BufferRef(0), // light
-                        KernelArg::BufferRef(1), // opacity
-                        KernelArg::BufferRef(2), // neighbors
-                        KernelArg::BufferRef(3), // converged flag
-                        KernelArg::BufferRef(4), // sync counter
-                        KernelArg::I32(n as i32),
-                        KernelArg::I32(max_iters as i32),
-                    ],
-                    gpu_buffers: vec![
-                        GpuBufferRef::U8(&d_light),
-                        GpuBufferRef::U8(&d_opacity),
-                        GpuBufferRef::I32(&d_neighbors),
-                        GpuBufferRef::I32(&d_converged),
-                        GpuBufferRef::I32(&d_sync_counter),
-                    ],
-                })?;
-                // 隐式同步：copy_from_device 等待 persistent kernel 收敛。
-                self.device.copy_from_device(&d_light, light)?;
-                self.device.free(d_light)?;
-                self.device.free(d_opacity)?;
-                self.device.free(d_neighbors)?;
-                self.device.free(d_converged)?;
-                self.device.free(d_sync_counter)?;
-                return Ok(1); // 单次迭代
+                    l.launch(crate::common::kernel::KernelLaunch {
+                        name: "light_propagate_u8_persistent",
+                        global_work_size: [n, 1, 1],
+                        local_work_size: Some([256, 1, 1]),
+                        args: vec![
+                            KernelArg::BufferRef(0), // light
+                            KernelArg::BufferRef(1), // opacity
+                            KernelArg::BufferRef(2), // neighbors
+                            KernelArg::BufferRef(3), // sync counter
+                            KernelArg::BufferRef(4), // changed flags
+                            KernelArg::I32(n as i32),
+                            KernelArg::I32(max_iters as i32),
+                        ],
+                        gpu_buffers: vec![
+                            GpuBufferRef::U8(&d_light),
+                            GpuBufferRef::U8(&d_opacity),
+                            GpuBufferRef::I32(&d_neighbors),
+                            GpuBufferRef::I32(&d_sync_counter),
+                            GpuBufferRef::U8(&d_changed_flags),
+                        ],
+                        local_mem_bytes: vec![],
+                    })?;
+                    // 隐式同步：copy_from_device 等待 persistent kernel 收敛。
+                    self.device.copy_from_device(&d_light, light)?;
+                    self.device.free(d_light)?;
+                    self.device.free(d_opacity)?;
+                    self.device.free(d_neighbors)?;
+                    self.device.free(d_sync_counter)?;
+                    self.device.free(d_changed_flags)?;
+                    Ok(())
+                })();
+                if persistent_ok.is_ok() {
+                    return Ok(1); // 单次迭代
+                }
+                // cooperative launch 失败（如网格过大无法共驻留）→ 回退迭代式路径
+                tracing::debug!("CUDA persistent kernel 启动失败，回退迭代式路径");
             }
 
             if l.has_kernel("light_propagate_u8") {
@@ -236,6 +249,7 @@ impl GpuLightSampler {
                             GpuBufferRef::I32(&d_neighbors),
                             GpuBufferRef::I32(&d_changed),
                         ],
+                        local_mem_bytes: vec![],
                     })?;
                     iterations += 1;
                     // 隐式同步：copy_from_device(&d_changed) 等待 kernel 完成。
@@ -346,6 +360,7 @@ impl GpuLightSampler {
                             GpuBufferRef::U8(&d_opacity),
                             GpuBufferRef::I32(&d_changed),
                         ],
+                        local_mem_bytes: vec![],
                     })?;
                     iterations += 1;
                     let mut c = [0i32];

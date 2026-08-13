@@ -1,7 +1,8 @@
-//! 批量 Cell Cache / Aquifer / Beardifier / Vein 采样器。
+//! 批量 Aquifer / Beardifier 采样器。
 //!
-//! 提供 GPU 加速的 Cell Cache 填充、插值器缓冲填充、含水层判定、
-//! Beardifier 地形适应和矿脉判定功能，均包含 CPU 回退路径。
+//! 提供 GPU 加速的含水层判定与 Beardifier 地形适应，均包含 CPU 回退路径。
+//! （Cell Cache / Interpolator 填充已改用 vanilla 语义的 DoublePerlin 规格路径，
+//! 见 `pumpkin-world::batch_accel::batch_fill_cell_caches_vanilla`。）
 #![allow(
     clippy::separated_literal_suffix,
     clippy::as_ptr_cast_mut,
@@ -12,7 +13,6 @@
 use crate::GpuDevice;
 use crate::common::DeviceError;
 use crate::common::kernel::{GpuBufferRef, KernelArg};
-use crate::noise::cache::NoiseCache;
 use std::sync::OnceLock;
 
 /// 含水层 tiling 阈值全局配置。
@@ -36,21 +36,6 @@ pub fn get_aquifer_tile_threshold() -> usize {
 // 辅助数据结构
 // ============================================================================
 
-/// Cell 填充参数
-#[derive(Clone)]
-pub struct CellFillParams {
-    /// 扁平化的 perlin 配置（用于采样器）
-    pub perlin_configs: Vec<f64>,
-    /// 每个采样器的八度数
-    pub num_octaves: Vec<i32>,
-    /// 每个采样器的类型标记（0=Noise, 1=ShiftA, 2=ShiftB, 3=Interpolated, ...）
-    pub sampler_types: Vec<i32>,
-    /// 每个八度的真实置换表（每表 256 字节，sampler-major → octave-major）。
-    /// 来自 vanilla `PerlinNoiseSampler::permutation()`。
-    /// 为空时回退到 `gen_perm_table` 生成（兼容旧参数构造）。
-    pub perms: Vec<u8>,
-}
-
 /// 含水层批量结果
 pub struct AquiferBatchResult {
     /// block_state_id 数组
@@ -61,19 +46,21 @@ pub struct AquiferBatchResult {
 
 /// 结构数据（可序列化到 GPU）。
 ///
-/// 编码为 9 个 f64 值，与 `beardifier_batch_f64` kernel 的 structures 布局一致：
-///   `[center_x, center_y, center_z, radius_x, radius_y, radius_z,
-///     min_y, ground_delta_y, max_y]`
+/// 与 vanilla `Beardifier::sample` 的包围盒语义一致：
+/// 编码为 8 个 f64，与 `beardifier_batch_f64` kernel 的 structures 布局一致：
+///   `[box_min_x, box_min_y, box_min_z, box_max_x, box_max_y, box_max_z,
+///     adaptation, ground_delta]`
 pub struct BeardifierStructureData {
-    pub center_x: f64,
-    pub center_y: f64,
-    pub center_z: f64,
-    pub radius_x: f64,
-    pub radius_y: f64,
-    pub radius_z: f64,
-    pub min_y: f64,
-    pub ground_delta_y: f64,
-    pub max_y: f64,
+    pub box_min_x: i32,
+    pub box_min_y: i32,
+    pub box_min_z: i32,
+    pub box_max_x: i32,
+    pub box_max_y: i32,
+    pub box_max_z: i32,
+    /// 地形适应类型：0=None 1=BeardThin 2=BeardBox 3=Bury 4=Encapsulate
+    pub adaptation: i32,
+    /// 地面高度差（`ground_level_delta`）
+    pub ground_delta: i32,
 }
 
 /// 连接点数据
@@ -81,312 +68,6 @@ pub struct BeardifierJunctionData {
     pub x: i32,
     pub ground_y: i32,
     pub z: i32,
-}
-
-/// 矿脉参数
-pub struct VeinParams {
-    pub toggle_config: Vec<f64>,
-    pub ridged_config: Vec<f64>,
-    pub gap_config: Vec<f64>,
-}
-
-// ============================================================================
-// GpuCellBatchSampler
-// ============================================================================
-
-/// GPU Cell Cache 批量采样器。
-///
-/// 支持批量 Cell Cache 填充和插值器缓冲填充。
-/// 内部维护持久化 buffer 池以减少重复分配。
-pub struct GpuCellBatchSampler {
-    pub device: GpuDevice,
-    pub cache: NoiseCache,
-    /// 持久化 buffer 池（按长度复用 f64/u8/i32 buffer）。
-    buffer_pool: crate::common::GpuBufferPool,
-}
-
-impl GpuCellBatchSampler {
-    #[must_use]
-    pub fn new(device: GpuDevice) -> Self {
-        Self {
-            device,
-            cache: NoiseCache::default(),
-            buffer_pool: crate::common::GpuBufferPool::new(),
-        }
-    }
-
-    /// 从 u8 buffer 池中分配或复用。
-    fn take_u8(&mut self, len: usize) -> Result<crate::GpuBuffer<u8>, DeviceError> {
-        self.buffer_pool.take_u8(&self.device, len)
-    }
-    fn put_u8(&mut self, buf: crate::GpuBuffer<u8>) {
-        self.buffer_pool.put_u8(buf);
-    }
-    fn take_f64(&mut self, len: usize) -> Result<crate::GpuBuffer<f64>, DeviceError> {
-        self.buffer_pool.take_f64(&self.device, len)
-    }
-    fn put_f64(&mut self, buf: crate::GpuBuffer<f64>) {
-        self.buffer_pool.put_f64(buf);
-    }
-    fn take_i32(&mut self, len: usize) -> Result<crate::GpuBuffer<i32>, DeviceError> {
-        self.buffer_pool.take_i32(&self.device, len)
-    }
-    fn put_i32(&mut self, buf: crate::GpuBuffer<i32>) {
-        self.buffer_pool.put_i32(buf);
-    }
-
-    /// 批量填充 cell cache — 支持自定义 cell_indices。
-    ///
-    /// 与 `batch_fill_cell_caches` 的区别：接受预构建的 `cell_indices`，
-    /// 允许不同位置组使用不同的 sampler 配置。用于合并多次调用为单次 GPU launch。
-    pub fn batch_fill_cell_caches_indexed(
-        &mut self,
-        positions: &[f64],
-        sampler_params: &CellFillParams,
-        cell_indices: &[i32],
-        results: &mut [f64],
-    ) -> Result<(), DeviceError> {
-        let n = results.len();
-        if n == 0 {
-            return Ok(());
-        }
-        assert_eq!(positions.len(), n * 3);
-        assert_eq!(cell_indices.len(), n);
-
-        if self.device.device_type() == crate::DeviceType::Cpu {
-            return Err(DeviceError::LaunchFailed(
-                "CPU device — use BatchAccelerator fallback".into(),
-            ));
-        }
-
-        let total_octaves: i32 = sampler_params.num_octaves.iter().sum();
-        if total_octaves == 0 || sampler_params.perlin_configs.is_empty() {
-            return Err(DeviceError::LaunchFailed(
-                "cell cache fill: empty params — use CPU fallback".into(),
-            ));
-        }
-
-        let num_octaves_0 = sampler_params.num_octaves.first().copied().unwrap_or(0) as usize;
-        if num_octaves_0 == 0 {
-            return Err(DeviceError::LaunchFailed(
-                "cell cache fill: sampler has 0 octaves".into(),
-            ));
-        }
-
-        let config_stride = 1 + num_octaves_0 * 5;
-        let expected_len = config_stride * sampler_params.num_octaves.len();
-        if sampler_params.perlin_configs.len() < expected_len {
-            return Err(DeviceError::LaunchFailed(
-                "cell cache fill: perlin_configs too short".into(),
-            ));
-        }
-
-        let component_stack: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
-
-        // 置换表：优先使用参数中携带的真实 vanilla 表，缺失时回退 gen_perm_table 生成
-        let expected_perms = total_octaves as usize * 256;
-        let mut perms_data: Vec<u8> = Vec::with_capacity(expected_perms);
-        if sampler_params.perms.len() >= expected_perms {
-            perms_data.extend_from_slice(&sampler_params.perms[..expected_perms]);
-        } else {
-            for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
-                for o in 0..no as usize {
-                    let perm = gen_perm_table(0x4365_6C6C_u64.wrapping_add(s_idx as u64), o);
-                    perms_data.extend_from_slice(&perm);
-                }
-            }
-        }
-
-        let amps_offset: i32 = 1;
-        let lacs_offset: i32 = 1 + num_octaves_0 as i32;
-        let orgs_offset: i32 = 1 + (num_octaves_0 * 2) as i32;
-
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
-        let d_res = self.device.alloc_f64(n)?;
-        let mut d_stack = self.take_f64(component_stack.len())?;
-        let mut d_perms = self.take_u8(perms_data.len())?;
-        let mut d_indices = self.take_i32(cell_indices.len())?;
-
-        self.device.copy_to_device(&mut d_pos, positions)?;
-        self.device.copy_to_device(&mut d_stack, &component_stack)?;
-        self.device.copy_to_device(&mut d_perms, &perms_data)?;
-        self.device.copy_to_device(&mut d_indices, cell_indices)?;
-
-        let ok = self.try_launch(
-            "cell_cache_fill_f64",
-            n,
-            vec![
-                KernelArg::BufferRef(0),
-                KernelArg::BufferRef(1),
-                KernelArg::BufferRef(2),
-                KernelArg::BufferRef(3),
-                KernelArg::BufferRef(4),
-                KernelArg::I32(n as i32),
-                KernelArg::I32(config_stride as i32),
-                KernelArg::I32(amps_offset),
-                KernelArg::I32(lacs_offset),
-                KernelArg::I32(orgs_offset),
-            ],
-            vec![
-                GpuBufferRef::F64(&d_pos),
-                GpuBufferRef::F64(&d_stack),
-                GpuBufferRef::U8(&d_perms),
-                GpuBufferRef::I32(&d_indices),
-                GpuBufferRef::F64(&d_res),
-            ],
-        );
-
-        if ok {
-            self.device.copy_from_device(&d_res, results)?;
-        } else {
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.put_f64(d_stack);
-            self.put_u8(d_perms);
-            self.put_i32(d_indices);
-            return Err(DeviceError::LaunchFailed(
-                "cell cache fill: GPU kernel launch failed".into(),
-            ));
-        }
-
-        self.device.free(d_pos)?;
-        self.device.free(d_res)?;
-        self.put_f64(d_stack);
-        self.put_u8(d_perms);
-        self.put_i32(d_indices);
-        Ok(())
-    }
-
-    /// 批量填充 cell cache（默认所有位置使用 sampler 0）。
-    pub fn batch_fill_cell_caches(
-        &mut self,
-        positions: &[f64],
-        sampler_params: &CellFillParams,
-        results: &mut [f64],
-    ) -> Result<(), DeviceError> {
-        let n = results.len();
-        if n == 0 {
-            return Ok(());
-        }
-        let cell_indices: Vec<i32> = vec![0i32; n];
-        self.batch_fill_cell_caches_indexed(positions, sampler_params, &cell_indices, results)
-    }
-
-    /// 批量填充插值器缓冲区。
-    ///
-    /// GPU 路径尝试 launch `interpolator_fill_f64` kernel，
-    /// 失败时回退到上层 `BatchAccelerator` 的 CPU fallback。
-    pub fn batch_fill_interpolators(
-        &mut self,
-        positions: &[f64],
-        sampler_params: &CellFillParams,
-        results: &mut [f64],
-    ) -> Result<(), DeviceError> {
-        let n = results.len();
-        if n == 0 {
-            return Ok(());
-        }
-        assert_eq!(positions.len(), n * 3);
-
-        if self.device.device_type() == crate::DeviceType::Cpu {
-            return Err(DeviceError::LaunchFailed(
-                "CPU device — use BatchAccelerator fallback".into(),
-            ));
-        }
-
-        // 提取 interpolator fill 参数
-        // 提取插值器参数：使用第一个采样器的配置
-        let total_octaves: i32 = sampler_params.num_octaves.iter().sum();
-        if total_octaves == 0 || sampler_params.perlin_configs.is_empty() {
-            return Err(DeviceError::LaunchFailed(
-                "interpolator fill: empty params — use CPU fallback".into(),
-            ));
-        }
-
-        let expected_len = (total_octaves * 8) as usize;
-        if sampler_params.perlin_configs.len() < expected_len {
-            return Err(DeviceError::LaunchFailed(
-                "interpolator fill: perlin_configs too short".into(),
-            ));
-        }
-
-        // 构建 dag_params：[amp, lac, org_x, org_y, org_z, xz_scale, y_scale, _] per octave
-        let dag_params: Vec<f64> = sampler_params.perlin_configs[..expected_len].to_vec();
-
-        // 置换表：优先使用参数中携带的真实 vanilla 表，缺失时回退 gen_perm_table 生成
-        let expected_perms = total_octaves as usize * 256;
-        let mut perms_data: Vec<u8> = Vec::with_capacity(expected_perms);
-        if sampler_params.perms.len() >= expected_perms {
-            perms_data.extend_from_slice(&sampler_params.perms[..expected_perms]);
-        } else {
-            for (s_idx, &no) in sampler_params.num_octaves.iter().enumerate() {
-                for o in 0..no as usize {
-                    let perm = gen_perm_table(0x496E_7465_7270_u64.wrapping_add(s_idx as u64), o);
-                    perms_data.extend_from_slice(&perm);
-                }
-            }
-        }
-
-        // GPU 内存分配（pos/res 按需，dag/perms 池化）
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
-        let d_res = self.device.alloc_f64(n)?;
-        let mut d_dag = self.take_f64(dag_params.len())?;
-        let mut d_perms = self.take_u8(perms_data.len())?;
-
-        self.device.copy_to_device(&mut d_pos, positions)?;
-        self.device.copy_to_device(&mut d_dag, &dag_params)?;
-        self.device.copy_to_device(&mut d_perms, &perms_data)?;
-
-        // 启动 GPU kernel
-        let ok = self.try_launch(
-            "interpolator_fill_f64",
-            n,
-            vec![
-                KernelArg::BufferRef(0),
-                KernelArg::BufferRef(1),
-                KernelArg::BufferRef(2),
-                KernelArg::BufferRef(3),
-                KernelArg::I32(n as i32),
-                KernelArg::I32(total_octaves),
-            ],
-            vec![
-                GpuBufferRef::F64(&d_pos),
-                GpuBufferRef::F64(&d_dag),
-                GpuBufferRef::U8(&d_perms),
-                GpuBufferRef::F64(&d_res),
-            ],
-        );
-
-        if ok {
-            self.device.copy_from_device(&d_res, results)?;
-        } else {
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.put_f64(d_dag);
-            self.put_u8(d_perms);
-            return Err(DeviceError::LaunchFailed(
-                "interpolator fill: GPU kernel launch failed — use BatchAccelerator CPU fallback"
-                    .into(),
-            ));
-        }
-
-        self.device.free(d_pos)?;
-        self.device.free(d_res)?;
-        self.put_f64(d_dag);
-        self.put_u8(d_perms);
-        Ok(())
-    }
-
-    /// Helper: try to launch GPU kernel, return true if successful.
-    fn try_launch(
-        &self,
-        name: &str,
-        n: usize,
-        args: Vec<KernelArg<'_>>,
-        gpu_buffers: Vec<GpuBufferRef<'_>>,
-    ) -> bool {
-        self.device.try_launch_kernel(name, n, args, gpu_buffers)
-    }
 }
 
 // ============================================================================
@@ -475,6 +156,13 @@ impl GpuAquiferBatchSampler {
         } else {
             "aquifer_batch_f64"
         };
+        // tiled kernel 的尾部 __local / extern __shared__ 参数大小（字节）：
+        // tile_positions [M*3] f64 + tile_densities [M] f64
+        let local_mem_bytes = if kernel_name == "aquifer_batch_tiled_f64" {
+            vec![m * 3 * size_of::<f64>(), m * size_of::<f64>()]
+        } else {
+            Vec::new()
+        };
         let ok = self.try_launch(
             kernel_name,
             n,
@@ -498,6 +186,7 @@ impl GpuAquiferBatchSampler {
                 GpuBufferRef::I32(&d_bids),
                 GpuBufferRef::U8(&d_flags),
             ],
+            local_mem_bytes,
         );
 
         if ok {
@@ -533,8 +222,10 @@ impl GpuAquiferBatchSampler {
         n: usize,
         args: Vec<KernelArg<'_>>,
         gpu_buffers: Vec<GpuBufferRef<'_>>,
+        local_mem_bytes: Vec<usize>,
     ) -> bool {
-        self.device.try_launch_kernel(name, n, args, gpu_buffers)
+        self.device
+            .try_launch_kernel(name, n, args, gpu_buffers, local_mem_bytes)
     }
 }
 
@@ -543,22 +234,26 @@ impl GpuAquiferBatchSampler {
 // ============================================================================
 
 /// 预计算的 24³ beard kernel 缓存（静态数据，全局复用）。
+///
+/// 布局与 vanilla `Beardifier::get_beard_kernel` 一致（zi-major：`zi*576 + xi*24 + yi`），
+/// 值也与 vanilla 相同：`exp(-(dx² + (dy+0.5)² + dz²)/16)`。
 static BEARD_KERNEL_GPU: std::sync::OnceLock<Box<[f64]>> = std::sync::OnceLock::new();
 
 fn get_beard_kernel_gpu() -> &'static [f64] {
     BEARD_KERNEL_GPU.get_or_init(|| {
-        const KS: usize = 24;
-        const KV: usize = KS * KS * KS;
+        const KS: i32 = 24;
+        const KR: i32 = 12;
+        const KV: usize = (KS * KS * KS) as usize;
         let mut kernel = vec![0.0f64; KV].into_boxed_slice();
-        let ksh = KS as f64 * 0.5;
         for zi in 0..KS {
             for xi in 0..KS {
                 for yi in 0..KS {
-                    let dx = xi as f64 - ksh;
-                    let dy = yi as f64 - ksh + 0.5;
-                    let dz = zi as f64 - ksh;
-                    let dist_sq = dx * dx + dy * dy + dz * dz;
-                    kernel[xi * KS * KS + yi * KS + zi] = (-dist_sq / 16.0).exp();
+                    let dx = xi - KR;
+                    let dy = (yi - KR) as f64 + 0.5;
+                    let dz = zi - KR;
+                    let dist_sq = (dx as f64).powi(2) + dy.powi(2) + (dz as f64).powi(2);
+                    kernel[(zi * 24 * 24 + xi * 24 + yi) as usize] =
+                        std::f64::consts::E.powf(-dist_sq / 16.0);
                 }
             }
         }
@@ -584,19 +279,20 @@ impl GpuBeardifierBatchSampler {
         }
     }
 
-    /// 批量 Beardifier 计算。
+    /// 批量 Beardifier 计算（与 vanilla `Beardifier::sample` 逐位一致）。
     ///
-    /// 对每个位置累加来自结构和连接点的 beard 贡献。
+    /// `affected_box` 为 `[min_x, min_y, min_z, max_x, max_y, max_z]`（包含边界），
+    /// 盒子外的位置直接输出 0（与 vanilla 一致）。
     #[allow(clippy::too_many_lines)]
     pub fn batch_beardifier(
         &mut self,
         positions: &[f64],
         structures: &[BeardifierStructureData],
         junctions: &[BeardifierJunctionData],
+        affected_box: [i32; 6],
         results: &mut [f64],
     ) -> Result<(), DeviceError> {
-        const KERNEL_SIZE: usize = 24;
-        const KERNEL_VOLUME: usize = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE; // 13824
+        const KERNEL_VOLUME: usize = 24 * 24 * 24; // 13824
 
         let n = results.len();
         if n == 0 {
@@ -611,7 +307,7 @@ impl GpuBeardifierBatchSampler {
             ));
         }
 
-        // 构建预计算的 beard kernel (24³三线性采样核) — GPU 持久化缓存
+        // 构建预计算的 beard kernel（vanilla 24³ 表，zi-major 布局）— GPU 持久化缓存
         let beard_kernel = get_beard_kernel_gpu();
         if self.beard_kernel_buf.is_none() {
             let mut buf = self.device.alloc_f64(KERNEL_VOLUME)?;
@@ -623,20 +319,19 @@ impl GpuBeardifierBatchSampler {
             DeviceError::LaunchFailed("beardifier: kernel buffer not initialized".into())
         })?;
 
-        // 扁平化结构数据（9 doubles per structure）
+        // 扁平化结构数据（8 f64 per structure：包围盒 + adaptation + ground_delta）
         let struct_flat: Vec<f64> = structures
             .iter()
             .flat_map(|s| {
                 vec![
-                    s.center_x,
-                    s.center_y,
-                    s.center_z,
-                    s.radius_x,
-                    s.radius_y,
-                    s.radius_z,
-                    s.min_y,
-                    s.ground_delta_y,
-                    s.max_y,
+                    f64::from(s.box_min_x),
+                    f64::from(s.box_min_y),
+                    f64::from(s.box_min_z),
+                    f64::from(s.box_max_x),
+                    f64::from(s.box_max_y),
+                    f64::from(s.box_max_z),
+                    f64::from(s.adaptation),
+                    f64::from(s.ground_delta),
                 ]
             })
             .collect();
@@ -646,21 +341,20 @@ impl GpuBeardifierBatchSampler {
             .flat_map(|j| vec![f64::from(j.x), f64::from(j.ground_y), f64::from(j.z)])
             .collect();
 
-        // structure_to_junction — kernel 声明但未使用，传递零填充占位数组
-        let struct_to_junction: Vec<i32> = vec![0i32; structures.len()];
+        let affected_flat: Vec<f64> = affected_box.iter().map(|&v| f64::from(v)).collect();
 
         // GPU 内存分配（kernel 已缓存，其余按需）
         let mut d_pos = self.device.alloc_f64(n * 3)?;
         let d_res = self.device.alloc_f64(n)?;
         let mut d_struct = self.device.alloc_f64(struct_flat.len())?;
         let mut d_junct = self.device.alloc_f64(junct_flat.len())?;
-        let mut d_stoj = self.device.alloc_i32(struct_to_junction.len())?;
+        let mut d_affected = self.device.alloc_f64(6)?;
 
         self.device.copy_to_device(&mut d_pos, positions)?;
         self.device.copy_to_device(&mut d_struct, &struct_flat)?;
         self.device.copy_to_device(&mut d_junct, &junct_flat)?;
         self.device
-            .copy_to_device(&mut d_stoj, &struct_to_junction)?;
+            .copy_to_device(&mut d_affected, &affected_flat)?;
 
         let ok = self.try_launch(
             "beardifier_batch_f64",
@@ -670,20 +364,18 @@ impl GpuBeardifierBatchSampler {
                 KernelArg::BufferRef(1), // beard_kernel
                 KernelArg::BufferRef(2), // structures
                 KernelArg::BufferRef(3), // junctions
-                KernelArg::BufferRef(4), // structure_to_junction
+                KernelArg::BufferRef(4), // affected box
                 KernelArg::BufferRef(5), // beard_values (output)
                 KernelArg::I32(n as i32),
                 KernelArg::I32(structures.len() as i32),
                 KernelArg::I32(junctions.len() as i32),
-                KernelArg::I32(KERNEL_SIZE as i32),
-                KernelArg::F64(1.0 / KERNEL_SIZE as f64),
             ],
             vec![
                 GpuBufferRef::F64(&d_pos),
                 GpuBufferRef::F64(d_kernel),
                 GpuBufferRef::F64(&d_struct),
                 GpuBufferRef::F64(&d_junct),
-                GpuBufferRef::I32(&d_stoj),
+                GpuBufferRef::F64(&d_affected),
                 GpuBufferRef::F64(&d_res),
             ],
         );
@@ -695,7 +387,7 @@ impl GpuBeardifierBatchSampler {
             self.device.free(d_res)?;
             self.device.free(d_struct)?;
             self.device.free(d_junct)?;
-            self.device.free(d_stoj)?;
+            self.device.free(d_affected)?;
             return Err(DeviceError::LaunchFailed("beardifier batch failed".into()));
         }
 
@@ -703,7 +395,7 @@ impl GpuBeardifierBatchSampler {
         self.device.free(d_res)?;
         self.device.free(d_struct)?;
         self.device.free(d_junct)?;
-        self.device.free(d_stoj)?;
+        self.device.free(d_affected)?;
         Ok(())
     }
 
@@ -714,192 +406,9 @@ impl GpuBeardifierBatchSampler {
         args: Vec<KernelArg<'_>>,
         gpu_buffers: Vec<GpuBufferRef<'_>>,
     ) -> bool {
-        self.device.try_launch_kernel(name, n, args, gpu_buffers)
-    }
-}
-
-// ============================================================================
-// GpuVeinBatchSampler
-// ============================================================================
-
-/// GPU 矿脉批量采样器。
-///
-/// 对批量位置判定矿脉类型（无矿脉/矿石/粗矿/围岩）。
-pub struct GpuVeinBatchSampler {
-    pub device: GpuDevice,
-}
-
-impl GpuVeinBatchSampler {
-    #[must_use]
-    pub fn new(device: GpuDevice) -> Self {
-        Self { device }
-    }
-
-    /// 批量矿脉采样。
-    ///
-    /// # Returns
-    ///
-    /// `results[i]`:
-    /// - 0 = 无矿脉
-    /// - 1 = 矿石
-    /// - 2 = 粗矿
-    /// - 3 = 围岩
-    #[allow(clippy::too_many_lines)]
-    pub fn batch_vein_sample(
-        &mut self,
-        positions: &[f64],
-        vein_params: &VeinParams,
-        results: &mut [i32],
-    ) -> Result<(), DeviceError> {
-        let n = results.len();
-        if n == 0 {
-            return Ok(());
-        }
-        assert_eq!(positions.len(), n * 3);
-
-        if self.device.device_type() == crate::DeviceType::Cpu {
-            return Err(DeviceError::LaunchFailed(
-                "CPU device — use BatchAccelerator fallback".into(),
-            ));
-        }
-
-        // 提取矿脉参数
-        let octaves_per_vein = (vein_params.toggle_config.len() / 8) as i32;
-        if octaves_per_vein == 0 {
-            return Err(DeviceError::LaunchFailed(
-                "vein sample: empty toggle_config".into(),
-            ));
-        }
-
-        let num_veins: i32 = 1; // Minecraft 使用单一矿脉噪声集
-        let total_octaves = (num_veins * 3 * octaves_per_vein) as usize;
-        let expected_toggle = (octaves_per_vein * 8) as usize;
-
-        if vein_params.toggle_config.len() < expected_toggle
-            || vein_params.ridged_config.len() < expected_toggle
-            || vein_params.gap_config.len() < expected_toggle
-        {
-            return Err(DeviceError::LaunchFailed(
-                "vein sample: configs too short".into(),
-            ));
-        }
-
-        // 展平矿脉噪声参数：toggle + ridged + gap，每段 8 doubles/octave
-        let mut vein_noise_flat = Vec::with_capacity(total_octaves * 8);
-        vein_noise_flat.extend_from_slice(&vein_params.toggle_config[..expected_toggle]);
-        vein_noise_flat.extend_from_slice(&vein_params.ridged_config[..expected_toggle]);
-        vein_noise_flat.extend_from_slice(&vein_params.gap_config[..expected_toggle]);
-
-        // 构建 perms_data：每个 octave 256 字节
-        let mut perms_data: Vec<u8> = Vec::with_capacity(total_octaves * 256);
-        for v in 0..num_veins as usize {
-            for _seg in 0..3usize {
-                for o in 0..octaves_per_vein as usize {
-                    let perm = gen_perm_table(
-                        0x7665_696E5F6Eu64
-                            .wrapping_add(v as u64)
-                            .wrapping_add(o as u64),
-                        o,
-                    );
-                    perms_data.extend_from_slice(&perm);
-                }
-            }
-        }
-
-        // 阈值和权重（与 OreveinSampler / cpu_vein_detect 一致）
-        let vein_thresholds: Vec<f64> = vec![
-            0.0,  // toggle threshold (> 0 → Copper, < 0 → Iron)
-            0.0,  // ridged threshold (must be < 0)
-            -0.3, // gap threshold (must be > -0.3)
-        ];
-        let vein_weights: Vec<f64> = vec![1.0];
-
-        // GPU 内存分配
-        let mut d_pos = self.device.alloc_f64(n * 3)?;
-        let d_res = self.device.alloc_i32(n)?;
-        let mut d_noise = self.device.alloc_f64(vein_noise_flat.len())?;
-        let mut d_perms = self.device.alloc_u8(perms_data.len())?;
-        let mut d_thresh = self.device.alloc_f64(vein_thresholds.len())?;
-        let mut d_weights = self.device.alloc_f64(vein_weights.len())?;
-
-        self.device.copy_to_device(&mut d_pos, positions)?;
-        self.device.copy_to_device(&mut d_noise, &vein_noise_flat)?;
-        self.device.copy_to_device(&mut d_perms, &perms_data)?;
         self.device
-            .copy_to_device(&mut d_thresh, &vein_thresholds)?;
-        self.device.copy_to_device(&mut d_weights, &vein_weights)?;
-
-        let ok = self.try_launch(
-            "vein_batch_f64",
-            n,
-            vec![
-                KernelArg::BufferRef(0), // pos
-                KernelArg::BufferRef(1), // vein_noise_params
-                KernelArg::BufferRef(2), // perms_data
-                KernelArg::BufferRef(3), // vein_thresholds
-                KernelArg::BufferRef(4), // vein_weights
-                KernelArg::BufferRef(5), // vein_types (output)
-                KernelArg::I32(n as i32),
-                KernelArg::I32(num_veins),
-                KernelArg::I32(octaves_per_vein),
-            ],
-            vec![
-                GpuBufferRef::F64(&d_pos),
-                GpuBufferRef::F64(&d_noise),
-                GpuBufferRef::U8(&d_perms),
-                GpuBufferRef::F64(&d_thresh),
-                GpuBufferRef::F64(&d_weights),
-                GpuBufferRef::I32(&d_res),
-            ],
-        );
-
-        if ok {
-            self.device.copy_from_device(&d_res, results)?;
-            self.device.free(d_pos)?;
-            self.device.free(d_res)?;
-            self.device.free(d_noise)?;
-            self.device.free(d_perms)?;
-            self.device.free(d_thresh)?;
-            self.device.free(d_weights)?;
-            return Ok(());
-        }
-
-        self.device.free(d_pos)?;
-        self.device.free(d_res)?;
-        self.device.free(d_noise)?;
-        self.device.free(d_perms)?;
-        self.device.free(d_thresh)?;
-        self.device.free(d_weights)?;
-        Err(DeviceError::LaunchFailed("vein batch failed".into()))
+            .try_launch_kernel(name, n, args, gpu_buffers, Vec::new())
     }
-
-    fn try_launch(
-        &self,
-        name: &str,
-        n: usize,
-        args: Vec<KernelArg<'_>>,
-        gpu_buffers: Vec<GpuBufferRef<'_>>,
-    ) -> bool {
-        self.device.try_launch_kernel(name, n, args, gpu_buffers)
-    }
-}
-
-// ============================================================================
-// 共享 Perlin 置换表工具
-// ============================================================================
-
-/// 生成确定性置换表（每个 octave 一个 256 字节表）。
-// Duplicate of pumpkin-world/src/batch_accel.rs:gen_perm_table — keep in sync
-pub(crate) fn gen_perm_table(seed: u64, octave: usize) -> [u8; 256] {
-    let mut perm = [0u8; 256];
-    for (i, p) in perm.iter_mut().enumerate() {
-        let h = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(octave as u64)
-            .wrapping_add(i as u64);
-        *p = (h ^ (h >> 24)) as u8;
-    }
-    perm
 }
 
 // ============================================================================
@@ -914,50 +423,14 @@ mod tests {
         GpuDevice::init()
     }
 
-    #[test]
-    fn cell_cache_zero_count() {
-        let mut s = GpuCellBatchSampler::new(mk_device());
-        let params = CellFillParams {
-            perlin_configs: vec![],
-            num_octaves: vec![],
-            sampler_types: vec![],
-            perms: vec![],
-        };
-        let mut results: [f64; 0] = [];
-        s.batch_fill_cell_caches(&[], &params, &mut results)
-            .unwrap();
-    }
-
-    #[test]
-    fn cell_cache_cpu_fallback() {
-        let mut s = GpuCellBatchSampler::new(mk_device());
-        let params = CellFillParams {
-            perlin_configs: vec![],
-            num_octaves: vec![],
-            sampler_types: vec![],
-            perms: vec![],
-        };
-        let positions = [0.0f64, 0.0, 0.0, 1.0, 1.0, 1.0];
-        let mut results = [0.0f64; 2];
-        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
-        let result = s.batch_fill_cell_caches(&positions, &params, &mut results);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn interpolator_cpu_fallback() {
-        let mut s = GpuCellBatchSampler::new(mk_device());
-        let params = CellFillParams {
-            perlin_configs: vec![],
-            num_octaves: vec![],
-            sampler_types: vec![],
-            perms: vec![],
-        };
-        let positions = [0.0f64, 0.0, 0.0, 1.0, 2.0, 3.0];
-        let mut results = [0.0f64; 2];
-        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
-        let result = s.batch_fill_interpolators(&positions, &params, &mut results);
-        assert!(result.is_err());
+    /// 强制 CPU 后端（不依赖本机是否有 GPU）。
+    fn mk_cpu_device() -> GpuDevice {
+        GpuDevice::from_config(&pumpkin_config::gpu::GpuConfig {
+            enabled: true,
+            batch_acceleration: true,
+            backend: pumpkin_config::gpu::GpuBackend::Cpu,
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -969,23 +442,18 @@ mod tests {
     }
 
     #[test]
-    fn aquifer_gpu_unavailable_returns_error() {
-        let mut s = GpuAquiferBatchSampler::new(mk_device());
+    fn aquifer_cpu_device_returns_error() {
+        let mut s = GpuAquiferBatchSampler::new(mk_cpu_device());
         // 构造一个简单的含水层网格
         let positions = [0.0f64, -60.0, 0.0];
         let densities = [-1.0f64];
-        // packed_grid: M=1 → 1 个网格点 (4 个 i64: x, y, z, density)
-        let grid_x = 0.0f64;
-        let grid_y = -60.0f64;
-        let grid_z = -2.0f64;
-        let grid_den = -1.0f64;
         let packed_grid = [
-            grid_x.to_bits() as i64,
-            grid_y.to_bits() as i64,
-            grid_z.to_bits() as i64,
-            grid_den.to_bits() as i64,
+            0.0f64.to_bits() as i64,
+            (-60.0f64).to_bits() as i64,
+            (-2.0f64).to_bits() as i64,
+            (-1.0f64).to_bits() as i64,
         ];
-        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
+        // CPU 后端应返回错误（由上层 BatchAccelerator 处理 CPU 回退）
         let result = s.batch_aquifer_apply(&positions, &densities, &packed_grid, -10000.0, 0.3);
         assert!(result.is_err());
     }
@@ -994,15 +462,14 @@ mod tests {
     fn beardifier_gpu_unavailable_returns_error() {
         let mut s = GpuBeardifierBatchSampler::new(mk_device());
         let structures = [BeardifierStructureData {
-            center_x: 0.0,
-            center_y: 65.0,
-            center_z: 0.0,
-            radius_x: 5.0,
-            radius_y: 5.0,
-            radius_z: 5.0,
-            min_y: 60.0,
-            ground_delta_y: 5.0,
-            max_y: 70.0,
+            box_min_x: -5,
+            box_min_y: 60,
+            box_min_z: -5,
+            box_max_x: 5,
+            box_max_y: 70,
+            box_max_z: 5,
+            adaptation: 1, // BeardThin
+            ground_delta: 5,
         }];
         let junctions = [BeardifierJunctionData {
             x: 0,
@@ -1011,7 +478,13 @@ mod tests {
         }];
         let positions = [0.0f64, 64.0, 0.0];
         let mut results = [0.0f64];
-        let result = s.batch_beardifier(&positions, &structures, &junctions, &mut results);
+        let result = s.batch_beardifier(
+            &positions,
+            &structures,
+            &junctions,
+            [-10, 50, -10, 10, 80, 10],
+            &mut results,
+        );
         // GPU 不可用（CPU 后端）时必须返回错误，由上层 BatchAccelerator 处理 CPU 回退；
         // 真 GPU 环境下 kernel 正常执行、返回 Ok 是合法行为。
         if s.device.device_type() == crate::DeviceType::Cpu {
@@ -1020,17 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn vein_cpu_fallback() {
-        let mut s = GpuVeinBatchSampler::new(mk_device());
-        let params = VeinParams {
-            toggle_config: vec![],
-            ridged_config: vec![],
-            gap_config: vec![],
-        };
-        let positions = [0.0f64, -30.0, 0.0];
-        let mut results = [0i32];
-        // GPU 不可用时应返回 LaunchFailed 错误（由上层 BatchAccelerator 处理 CPU 回退）
-        let result = s.batch_vein_sample(&positions, &params, &mut results);
-        assert!(result.is_err());
+    fn aquifer_tile_threshold_default() {
+        // 尚未设置时返回默认值 2048
+        assert_eq!(get_aquifer_tile_threshold(), 2048);
     }
 }

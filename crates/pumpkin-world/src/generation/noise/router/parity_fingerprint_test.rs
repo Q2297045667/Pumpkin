@@ -97,8 +97,4 @@ fn overworld_cell_caches_are_batchable() {
         router.build_interpolator_fill_specs().is_none(),
         "overworld interpolator DAG 包含复杂结构，应回退 CPU；若变为 Some，请验证 GPU 规格求值"
     );
-    assert!(
-        router.build_vein_fill_specs().is_none(),
-        "overworld vein DAG 包含 Interpolated/Linear 结构，应回退 CPU；若变为 Some，请验证 GPU 规格求值"
-    );
 }

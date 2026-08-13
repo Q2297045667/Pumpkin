@@ -119,14 +119,16 @@ impl CudaBackend {
 
     #[cfg(feature = "pumpkin-util")]
     pub fn compile_jit_kernel(
-        &mut self,
+        &self,
         jit_kernel: &crate::jit::JitSpecializedKernel,
     ) -> Result<(), DeviceError> {
         self.launcher.compile_jit_kernel(jit_kernel)
     }
 
     /// 按需编译单个预注册 kernel（延迟加载）。
-    /// 在 kernel 列表中找到对应名称的源码并编译。
+    ///
+    /// 从全局 CUDA 源码注册表查找源码并编译；失败仅记录日志，
+    /// 上层 `try_launch_kernel` 会回退到 CPU 路径。
     pub fn compile_kernel_by_name(&self, name: &str) {
         self.launcher.compile_kernel_by_name(name);
     }

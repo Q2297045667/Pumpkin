@@ -1,6 +1,31 @@
 //! CPU 回退后端。
 
 use crate::common::{DeviceError, GpuBuffer, KernelLauncher, buffer::RawBuffer};
+use std::sync::OnceLock;
+
+/// 缓存 CPU 品牌名——`sysinfo::System::new_all()` 成本高（~100ms），
+/// 且 `CpuBackend` 与 `logging::log_gpu_startup` 都会频繁获取 CPU 名。
+#[cfg(feature = "gpu")]
+static CPU_NAME: OnceLock<String> = OnceLock::new();
+
+/// 获取 CPU 品牌名（进程内缓存）。
+///
+/// `sysinfo::System::new_all()` 需要枚举全部硬件（~100ms），
+/// 因此首次调用后缓存结果，后续调用零成本。
+#[cfg(feature = "gpu")]
+pub(crate) fn cpu_name() -> String {
+    use sysinfo::System;
+
+    CPU_NAME
+        .get_or_init(|| {
+            let sys = System::new_all();
+            sys.cpus().first().map_or_else(
+                || String::from("CPU Fallback"),
+                |cpu| format!("CPU: {} ({})", cpu.brand(), cpu.name()),
+            )
+        })
+        .clone()
+}
 
 /// CPU 回退后端。
 pub struct CpuBackend {
@@ -12,7 +37,10 @@ impl CpuBackend {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            name: get_cpu_name(),
+            #[cfg(feature = "gpu")]
+            name: cpu_name(),
+            #[cfg(not(feature = "gpu"))]
+            name: String::from("CPU Fallback"),
             launcher: CpuKernelLauncher,
         }
     }
@@ -115,22 +143,6 @@ impl CpuBackend {
     pub fn kernel_launcher(&self) -> Option<&dyn KernelLauncher> {
         Some(&self.launcher)
     }
-}
-
-#[cfg(feature = "gpu")]
-fn get_cpu_name() -> String {
-    use sysinfo::System;
-
-    let sys = System::new_all();
-    sys.cpus().first().map_or_else(
-        || String::from("CPU Fallback"),
-        |cpu| format!("CPU: {} ({})", cpu.brand(), cpu.name()),
-    )
-}
-
-#[cfg(not(feature = "gpu"))]
-fn get_cpu_name() -> String {
-    String::from("CPU Fallback")
 }
 
 struct CpuKernelLauncher;

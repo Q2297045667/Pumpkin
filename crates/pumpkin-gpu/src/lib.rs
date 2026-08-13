@@ -110,9 +110,7 @@ impl GpuDevice {
         );
         // 注入全局默认配置（与 from_config 保持一致）
         #[cfg(feature = "pumpkin-util")]
-        {
-            crate::compile::init_kernel_registry();
-        }
+        crate::compile::init_kernel_registry();
         device.log_startup();
         device
     }
@@ -493,14 +491,19 @@ impl GpuDevice {
 
     /// 尝试启动 GPU kernel，成功返回 true。
     /// 代理到 `BackendImpl::try_launch_kernel`。
+    ///
+    /// `local_mem_bytes` 为 kernel 尾部 local / shared 内存参数大小（字节），
+    /// 常规 kernel 传空。
     pub(crate) fn try_launch_kernel(
         &self,
         name: &str,
         n: usize,
         args: Vec<crate::common::kernel::KernelArg<'_>>,
         gpu_buffers: Vec<crate::common::kernel::GpuBufferRef<'_>>,
+        local_mem_bytes: Vec<usize>,
     ) -> bool {
-        self.backend.try_launch_kernel(name, n, args, gpu_buffers)
+        self.backend
+            .try_launch_kernel(name, n, args, gpu_buffers, local_mem_bytes)
     }
 
     /// 编译一个 JIT 特化 kernel。
@@ -512,7 +515,7 @@ impl GpuDevice {
     /// 编译失败或当前为 CPU 后端时返回错误。
     #[cfg(feature = "pumpkin-util")]
     pub fn compile_jit_kernel(
-        &mut self,
+        &self,
         jit_kernel: &crate::jit::JitSpecializedKernel,
     ) -> Result<(), DeviceError> {
         self.backend.compile_jit_kernel(jit_kernel)
@@ -629,13 +632,13 @@ mod tests {
     fn init_initializes_kernel_registry() {
         let _device = GpuDevice::init();
 
-        // 基础 kernel（OpenCL/CUDA 共用注册表）应可用
-        assert!(crate::compile::lookup_kernel_source("sky_light_fill_u8").is_some());
-        assert!(crate::compile::lookup_kernel_source("octave_perlin_sample_f64").is_some());
-        // CUDA 专属 kernel 在启用 cuda feature 时应注册
+        // 基础 kernel 应注册到 OpenCL 注册表
+        assert!(crate::compile::lookup_opencl_kernel_source("sky_light_fill_u8").is_some());
+        assert!(crate::compile::lookup_opencl_kernel_source("octave_perlin_sample_f64").is_some());
+        // CUDA 专属 kernel 在启用 cuda feature 时应注册到 CUDA 注册表
         #[cfg(feature = "cuda")]
         assert!(
-            crate::compile::lookup_kernel_source("light_propagate_u8_persistent").is_some(),
+            crate::compile::lookup_cuda_kernel_source("light_propagate_u8_persistent").is_some(),
             "CUDA 专属 kernel 应注册到注册表"
         );
     }

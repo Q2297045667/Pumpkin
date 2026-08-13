@@ -102,16 +102,16 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 
 | 测试 | CPU | GPU | 结果 |
 |------|-----|-----|------|
-| CellCache | `cpu_cell_cache_fill_impl` | `batch_fill_cell_caches` | ✅ |
-| Interpolator | `cpu_interpolator_fill_impl` | `batch_fill_interpolators` | ✅ |
+| CellCache | `DoublePerlinNoiseSampler::sample` | `batch_fill_cell_caches_vanilla` | ✅ |
+| Interpolator | `DoublePerlinNoiseSampler::sample` | `batch_fill_cell_caches_vanilla` | ✅ |
 | Aquifer | `cpu_aquifer_apply` | `batch_aquifer_apply` | ✅ |
 | Beardifier | `cpu_beardifier` | `batch_beardifier` | ✅ |
-| Vein | `cpu_vein_detect` | `batch_vein_sample` | ✅ |
 | Trilinear | `cpu_trilinear_impl` | `batch_trilinear` | ✅ |
 
-> 注（2026-08-13）：上表覆盖通用批量 API 的一致性（仍然有效）。worldgen 集成路径已改用
-> vanilla 语义的 spec 批量（§12.3）；CellCache/Interpolator 的 CPU fallback 已重写为 GPU
-> kernel 逐行镜像（§12.2）。
+> 注（2026-08-13 更新）：旧八度和近似批量 API（`batch_fill_cell_caches` /
+> `batch_fill_interpolators` / `batch_vein_sample`）已整体移除（§12.6）。
+> CellCache/Interpolator 批量现使用 vanilla `Noise` 语义的 spec 路径
+> （`CellCacheFillSpec` + `batch_fill_cell_caches_vanilla`，§12.3）。
 
 ### 光照
 
@@ -136,16 +136,13 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 
 ## 8. CUDA ↔ OpenCL 对齐
 
-### 完全对齐: 15/15 kernel
+### 完全对齐: 11/11 kernel
 
 | Kernel | 状态 |
 |--------|------|
 | `perlin_core` | ✅ |
-| `cell_cache_fill_f64` | ✅ |
-| `interpolator_fill_f64` | ✅ |
 | `trilinear_interpolate_f64` | ✅ |
 | `aquifer_batch_f64` | ✅ |
-| `vein_batch_f64` | ✅ |
 | `beardifier_batch_f64` | ✅ |
 | `octave_perlin_sample_f64` | ✅ |
 | `double_perlin_sample_f64` | ✅ |
@@ -154,6 +151,9 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | `block_light_scan_u8` | ✅ |
 | `light_propagate_u8` | ✅ |
 | `sky_light_horizontal_propagate_u8` | ✅ |
+
+> `cell_cache_fill_f64` / `interpolator_fill_f64` / `vein_batch_f64` 三个 kernel
+> 已随旧八度和近似 API 一并移除（§12.6）。
 
 ### CUDA 独有: 1
 
@@ -177,10 +177,11 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | 天空光水平 | ✅ | `LightEngine::try_gpu_sky_horizontal` |
 | 方块光扫描 | ✅ | `LightEngine::try_gpu_block_propagate` |
 | Beardifier | ✅ | `beardifier_batch_f64` |
-| Vein | ⚠️ 门控 | `precompute_gpu_veins` — 1.21.x DAG 含 Interpolated/Linear，回退 CPU（§12.4） |
+| Vein | ➖ 已移除 | GPU 矿脉路径已随旧 API 删除（§12.6）；worldgen 矿脉永远走 CPU DAG |
 | Aquifer 缓存 | ✅ | `GpuAquiferCache` |
-| 噪声缓存回填 | ✅ | `backfill_noise_cache` (本次会话) |
-| JIT fmad/opt 分离 | ✅ | 常规与 JIT kernel 均 `--fmad=false --prec-div/sqrt=true`（§12.1），JIT 保留 O3 |
+| 噪声缓存回填 | ➖ 已移除 | `backfill_noise_cache` 及 `fill_noise_cache` 调用点已删除（`sampler_id` 从未被赋值，死路径，§12.6）；`pumpkin-util` 中的 `set_noise_cache`/`lookup_noise_cache`/`sampler_id` 机制已整体移除（§13.4） |
+| JIT fmad/opt 分离 | ✅ | 常规与 JIT kernel 均 `--fmad=false --prec-div/sqrt=true`（§12.1），JIT 保留 O3；JIT 已覆盖全部密度程序（§13.2） |
+| 延迟编译 | ✅ | CUDA/OpenCL 的 `compile_kernel_by_name` 从 stub 改为真实按需编译（§13.1） |
 | 缓冲池统一 | ✅ | `GpuBufferPool` |
 
 ---
@@ -253,6 +254,7 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 - `CellFillParams` 新增 `perms: Vec<u8>`（sampler-major→octave-major，每表 256B）；`compute_cell_fill_params`/`compute_interpolator_fill_params` 从 `sampler.samplers[o].sampler.permutation()` 序列化**真实 vanilla 表**；缺失时回退 `gen_perm_table`（兼容旧参数构造）
 - **CPU fallback 重写**：原 `sample_perlin` 本身是坏的（Perlin-2002 梯度 + `lerp3` 参数错位），重写为 GPU `sample_no_fade_core` 的逐行镜像（vanilla 16 梯度表、fade、lerp 顺序、maintain_precision）
 - 新增 `cell_cache_fill_vanilla_table_parity` / `interpolator_fill_vanilla_table_parity`（batch vs 独立参考实现逐位一致，GPU/CPU 两条路径同锁）
+  - 注：这两个测试随旧 API 一并移除（§12.6）；等价验证由 `cell_cache_fill_vanilla_double_perlin_parity`（vanilla spec 路径）承担
 
 ### 12.3 多噪声映射（第二层）
 
@@ -274,8 +276,9 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 
 ### 12.4 vein 门控 + 旧 API 清理标记
 
-- `precompute_gpu_veins` 增加 `build_vein_fill_specs().is_none()` 门控——1.21.x overworld 矿脉回退 CPU（正确性恢复；GPU 矿脉路径待完整 DAG kernel 后重启）
-- 旧 API 标记：`build_cell_fill_params`、`build_interpolator_fill_params` 加 `#[deprecated]`（指向 spec 版本）；`build_vein_params` 文档注明近似协议
+- `precompute_gpu_veins` 增加 `build_vein_fill_specs().is_none()` 门控——1.21.x overworld 矿脉回退 CPU（正确性恢复）
+- 旧 API 标记：`build_cell_fill_params`、`build_interpolator_fill_params` 加 `#[deprecated]`（指向 spec 版本）
+- **（2026-08-13 收尾）上述标记的旧 API 已在 §12.6 全部移除**
 
 ### 12.5 当前状态与遗留
 
@@ -284,7 +287,139 @@ cargo-machete didn't find any unused dependencies in this directory. Good job!
 | GPU/CPU 数值一致性（噪声五族 + JIT + double） | ✅ 真 GPU 逐位一致 |
 | CellCache/Interpolator/Vein 正确性（1.21.x overworld） | ✅ 复杂 DAG 干净回退 CPU，简单 `Noise` DAG 逐位等价 vanilla |
 | 真 GPU 上 worldgen 级加速 | ⏳ 需完整密度函数 DAG 移植（Beardifier/Binary/RangeChoice/Interpolated 等）——独立工程 |
-| 旧八度和近似 API（`batch_fill_cell_caches` 等） | ℹ️ 保留供测试/插件，worldgen 不再使用 |
-| vein GPU kernel 近似实现 | ⚠️ 待完整 DAG kernel 后重启 |
+| 旧八度和近似 API（`batch_fill_cell_caches` 等） | ✅ 已移除（§12.6） |
+| vein GPU kernel 近似实现 | ✅ 已移除（重启需完整 DAG kernel） |
 | 验证：pumpkin-world 全套件 (gpu feature, 串行) | ✅ 150 lib + 全部集成测试通过 |
 | 验证：pumpkin-gpu 全套件 (gpu feature, 真 GPU) | ✅ 全绿 |
+
+### 12.6 旧 API 移除（收尾）
+
+将前几轮标记为 `#[deprecated]`、且已无 worldgen 调用方的旧八度和近似 GPU 代码整体删除：
+
+| 删除项 | 位置 |
+|------|------|
+| `CellFillParams` / `VeinParams` 结构与 `GpuCellBatchSampler` / `GpuVeinBatchSampler` 实现 | `pumpkin-gpu/src/noise/batch_cell.rs` |
+| `batch_fill_cell_caches`（旧）/ `batch_fill_interpolators` / `batch_vein_sample` 及 CPU fallback（`cpu_cell_cache_fill_impl` / `cpu_interpolator_fill_impl` / `cpu_vein_detect` / `gen_perm_table` / `sample_perlin` / `grad_perlin` / `sample_no_fade_core` 等） | `pumpkin-world/src/batch_accel.rs` |
+| `precompute_gpu_veins` / `invalidate_vein_cache` / `gpu_vein_cache` 字段 | `pumpkin-world/src/generation/noise/mod.rs` |
+| `build_cell_fill_params` / `build_interpolator_fill_params` / `build_vein_params` / `build_vein_fill_specs` / `compute_*_fill_params` / `collect_noise_samplers` / `NoiseSamplerInfo` 等 | `pumpkin-world/src/generation/noise/router/chunk_noise_router.rs` |
+| `backfill_noise_cache` 及两个调用点（`sampler_id` 从未被赋值 → 死路径） | `chunk_noise_router.rs` |
+| kernel 常量注册与源文件 `cell_cache` / `interpolator_fill` / `vein_batch`（OpenCL + CUDA） | `pumpkin-gpu/src/compile.rs`、`pumpkin-gpu/kernels/` |
+| 旧 API 测试（`cell_cache_fill_consistency` / `interpolator_fill_consistency` / `vein_sample_consistency` / `all_batch_types` 旧段 / `perf_batch_cell` / `bench_cellcache_*` / `stress_cellcache_262k` 等） | `pumpkin-world/tests/` |
+
+保留：`CellCacheFillSpec` + `batch_fill_cell_caches_vanilla` + `build_cell_cache_fill_specs` /
+`build_interpolator_fill_specs`（vanilla 语义）；`batch_aquifer_apply` / `batch_beardifier` /
+`batch_trilinear` 及其 GPU 采样器。
+
+验证（本次收尾）：
+- `cargo clippy -p pumpkin-gpu --no-default-features --features gpu` ✅
+- `cargo clippy -p pumpkin-world --features gpu --tests` ✅
+- `cargo clippy -p pumpkin-world --tests` ✅
+- `cargo test -p pumpkin-gpu --no-default-features --features gpu` ✅ 60 项全绿
+- `cargo test -p pumpkin-world --features gpu -- --test-threads=1` ✅ 全绿
+
+---
+
+## 13. 功能链路整合 (2026-08-13)
+
+目标：GPU 加速器完整接入生产管线、CUDA/OpenCL 功能对齐、失败回退 CPU、
+清理无用代码、JIT 专用内核路径覆盖全部密度程序。
+
+### 13.1 CUDA / OpenCL 功能对齐
+
+- **分离源码注册表**：`KERNEL_REGISTRY_CL` / `KERNEL_REGISTRY_CU` 独立维护，
+  避免 OpenCL 延迟编译误取到 `.cu` 源码；两套查询函数 `lookup_opencl_kernel_source` /
+  `lookup_cuda_kernel_source`。
+- **真实延迟编译**：CUDA 与 OpenCL 的 `compile_kernel_by_name` 从日志 stub 改为
+  真实按需编译（查注册表 → 编译 → 插入）。启动器内部编译器改为 `parking_lot::Mutex`
+  包裹以支持 `&self` 路径下补编译；编译失败仅记日志，上层 `try_launch_kernel` 回退 CPU。
+- **构建标志一致**：编译器持有配置标志，常规编译与延迟编译共用；OpenCL JIT 编译
+  从空标志改为与常规 kernel 相同的精度标志（数值一致）。
+- **清单对齐测试**：`kernel_names_cuda_opencl_aligned` 钉住两后端 kernel 名单——
+  OpenCL 有的 CUDA 必须有；CUDA 独有 kernel 必须在 `CUDA_ONLY_KERNELS`
+  豁免名单（当前仅 `light_propagate_u8_persistent`，cooperative groups）并附理由。
+- **失败回退审计**：全部 GPU 调用点（噪声/双 Perlin/Shift/FlatCache/三线性、
+  Aquifer/Beardifier、天空光/方块光/传播）均在 kernel 缺失或启动失败时回退 CPU 路径。
+
+### 13.2 JIT 专用内核路径全覆盖（配置驱动）
+
+`jit_enabled` 开启时，所有密度程序走 JIT 编译的专用内核（八度参数烘焙为常量）：
+
+| 密度程序 | JIT 内核 | 接入点 |
+|---------|---------|-------|
+| 八度 Perlin | `octave_perlin_sample_f64_jit_m*` | `sample_octave_jit`（原有） |
+| 双 Perlin | `double_perlin_sample_f64_jit_m*_*` | `sample_double_perlin_jit`（原有） |
+| ShiftA / ShiftB | `shift_*_sample_f64_jit_m*` | `sample_shift_*_jit`（原有） |
+| Surface | 双 Perlin JIT | `precompute_surface`（原有） |
+| **FlatCache** | `flatcache_precompute_f64_jit_m*` | `precompute_flatcache`（本次新增） |
+| **Cell Cache / Interpolator 规格填充** | 双 Perlin JIT | `batch_fill_cell_caches_vanilla`（本次新增，JIT → batch → CPU 级联） |
+
+配置接线：`from_config` 将 `jit_enabled ? jit_max_unroll : 0` 注入全局，
+所有 JIT 入口通过 `get_jit_max_unroll()` 判定是否特化；八度数超过上限自动回退标准 kernel。
+
+### 13.3 测试补充
+
+- `compile.rs`：注册表幂等/分离测试、CUDA/OpenCL 清单对齐测试。
+- `jit_tests.rs`：`specialize_flatcache` / `specialize_double_perlin` 生成与跳过大八度测试。
+- `jit_numerical_consistency.rs`：`jit_flatcache_vs_batch`（含 CPU 直接采样逐位一致）。
+- `batch_fingerprint.rs`：`cell_cache_fill_vanilla_jit_parity`（JIT 级联路径与 vanilla 参考逐位一致）。
+- `gpu_backend_alignment.rs`（新）：真 GPU 上 JIT vs batch 的八度/双 Perlin/FlatCache 逐位一致、
+  核心 kernel 注册检查；无 GPU 自动跳过。
+
+### 13.4 无用代码清理
+
+- 删除陈旧测试输出日志 `gpu_test_results.log` / `gpu_edge_test_results.log`。
+- 移除 `pumpkin-util` 噪声缓存机制（`NOISE_CACHE` / `set_noise_cache` / `clear_noise_cache` /
+  `lookup_noise_cache` / `OctavePerlinNoiseSampler::sampler_id` / `set_sampler_id`）与
+  `NoiseAccelerator::fill_noise_cache` / `insert_into_cache`——`sampler_id` 全仓库从未赋值，
+  属死路径；`sample()` 移除每调用一次的缓存查表分支。
+
+### 13.5 验证
+
+- `cargo clippy -p pumpkin-gpu --no-default-features --features gpu --tests` ✅
+- `cargo clippy -p pumpkin-world --features gpu --tests` ✅
+- `cargo test -p pumpkin-gpu --no-default-features --features gpu` ✅ 全绿
+- `cargo test -p pumpkin-world --features gpu -- --test-threads=1` ✅ 全绿（含真 GPU JIT 对齐）
+
+---
+
+## 14. 世界生成测试全面铺开 (2026-08-13)
+
+### 14.1 测试新增
+
+| 文件 | 类型 | 覆盖 |
+|------|------|------|
+| `tests/worldgen_multi_seed_consistency.rs` | 一致性 | 5 种子 × 多八度配置：八度/双 Perlin/ShiftA/B/FlatCache/Surface/CellCache vanilla/Aquifer/Beardifier/三线性 |
+| `tests/worldgen_cpu_fallback_consistency.rs` | 一致性 | 强制 `enabled=false` 的 CPU 回退分支：全部噪声家族逐元素对比、CellCache vanilla、Aquifer、Beardifier、天空光/方块光/传播 |
+| `tests/worldgen_light_gpu_consistency.rs` | 一致性 | 真 GPU 光照 kernel vs CPU 参考（天空光填充/方块光扫描/迭代传播/水平传播），无 GPU 自动跳过 |
+| `tests/worldgen_stress.rs` | 压力 | 262k 八度、65k 双 Perlin/FlatCache、131k 三线性、16 规格 CellCache、2197 点 Aquifer、64 结构 Beardifier、边界尺寸、极端坐标、50 次重复调用、18×18×384 光照 |
+| `tests/worldgen_perf.rs` | 基准 | 八度/双 Perlin/FlatCache/三线性/Aquifer/Beardifier/天空光/Surface 的 CPU vs 加速器计时与加速比（宽松时限防 CI 抖动，同时校验输出一致性） |
+| `tests/worldgen_pipeline_fingerprint.rs` | 指纹 | 初始化全局 GPU 加速器后端到端密度管线（FlatCache→CellCache→插值器→三线性→采样）指纹钉住 |
+| `src/generation/noise/gpu_pipeline_test.rs` | 指纹 | 同上，但注入**真实 beardifier 结构**，端到端验证 GPU beardifier kernel 输出进入最终密度且指纹稳定 |
+| `pumpkin-gpu` 单元测试 | 单元 | `aos3d_to_soa` 往返、`GpuBufferPool` 复用、`NoiseCache` 幂等/键隔离/地址复用替换、Aquifer 阈值默认、`specialize_shift`/`specialize_flatcache`/`specialize_double_perlin` |
+
+### 14.2 测试暴露并修复的两个真实 bug
+
+**1. NoiseCache 地址复用导致的过期配置（正确性）**
+
+`GpuNoiseSampler` 的配置缓存以 `ptr::from_ref(sampler)` 为键；worldgen 每 chunk 重建采样器，
+地址复用后命中旧采样器的序列化配置，GPU 用错误置换表/振幅计算噪声——静默世界生成错误。
+多种子循环测试首先触发。
+
+修复：`NoiseCache` 条目记录内容指纹（置换表+全部参数的无分配 FNV-1a），命中时校验、
+不一致透明替换（`pumpkin-gpu/src/noise/cache.rs`）；`get_or_insert` 直接返回配置克隆，
+简化 9 处调用点。
+
+**2. Beardifier GPU kernel 与 vanilla 不一致（正确性）**
+
+原 `beardifier_batch_f64` kernel 使用「中心+半径+24³ 高斯表三线性采样」的自创算法，
+与 vanilla `Beardifier::sample`（整数网格核表 + Borg 公式 + 地形适应分支 + `*0.8`/`*0.4`）
+数值不同。GPU 启用时 overworld CellCache 填充中的 beard 贡献偏离 vanilla——
+一致性测试（盒内位置）首先触发；此前的「一致性」测试位置全在包围盒外，是平凡全零比较。
+
+修复（重写为 vanilla 逐位等价）：
+- `BeardifierStructureData` 改为包围盒（min/max）+ `adaptation`（None/BeardThin/BeardBox/Bury/Encapsulate）+ `ground_delta`；
+- kernel（OpenCL + CUDA）实现 vanilla `sample` 的全部分支（`beard_contrib`/`bury_contrib`、
+  受影响盒检查、连接点 `*0.4`），核表布局改为 vanilla 的 zi-major；
+- `cpu_beardifier`（batch_accel）重写为 vanilla 等价参考；
+- `Beardifier::fill` 传递真实包围盒与 `affected_box`（无盒时全零）；
+- 相关测试全部更新为 vanilla 语义，并在盒内位置验证非零贡献。

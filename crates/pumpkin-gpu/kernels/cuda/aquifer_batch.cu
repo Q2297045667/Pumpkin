@@ -29,10 +29,11 @@ extern "C" __global__ void aquifer_batch_f64(
 
     // 4-NN linear search (aquifer grids are typically small)
     int best_idx[4];
+    // NVRTC 不定义 INFINITY 宏；用远大于任何现实坐标距离平方的有限值代替。
+    // （网格坐标为小整数，dist = dx²+dy²+dz² 远小于 1e300）
     double best_dist[4];
     for (int k = 0; k < 4; k++) {
-        best_idx[k]  = -1;
-        best_dist[k] = INFINITY;
+        best_dist[k] = 1.0e300;
     }
 
     for (int j = 0; j < M; j++) {

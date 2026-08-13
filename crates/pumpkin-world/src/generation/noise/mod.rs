@@ -1,4 +1,6 @@
 pub mod aquifer_sampler;
+#[cfg(all(test, feature = "gpu"))]
+mod gpu_pipeline_test;
 pub mod ore_sampler;
 pub mod perlin;
 pub mod router;
@@ -173,19 +175,13 @@ pub struct ChunkNoiseGenerator<'a> {
 
     pub router: ChunkNoiseRouter<'a>,
 
-    /// GPU 批量加速器 —— 为 Cell Cache、Aquifer、Beardifier、Vein 提供批量采样。
+    /// GPU 批量加速器 —— 为 Cell Cache、Aquifer、Beardifier 提供批量采样。
     /// 仅在 `gpu` feature 启用且 GPU 可用时存在。
     #[cfg(feature = "gpu")]
     batch_accel: Option<&'a crate::batch_accel::BatchAccelerator>,
 
-    /// GPU 矿脉批量预计算结果缓存。
-    /// Key: 展平的本地块索引 (`local_x` + `local_y` * `stride_x` + `local_z` * `stride_x` * `stride_y`)
-    /// Value: 矿脉类型码 (0=无, 1=矿石, 2=粗矿, 3=围岩)
-    #[cfg(feature = "gpu")]
-    gpu_vein_cache: Option<Vec<i32>>,
-
     /// GPU 批量预计算 cell cache 结果（整个 chunk 所有 cell 一次性 GPU 填充）。
-    /// 布局：`[cell_flat_index * hb² * vb + local_index]`
+    /// 布局：`[cache_index][cell_flat_index * hb² * vb + local_index]`
     #[cfg(feature = "gpu")]
     gpu_cell_cache: Option<Vec<f64>>,
 }
@@ -286,9 +282,6 @@ impl<'a> ChunkNoiseGenerator<'a> {
 
             #[cfg(feature = "gpu")]
             batch_accel,
-
-            #[cfg(feature = "gpu")]
-            gpu_vein_cache: None,
 
             #[cfg(feature = "gpu")]
             gpu_cell_cache: None,
@@ -395,7 +388,7 @@ impl<'a> ChunkNoiseGenerator<'a> {
             let hb = self.horizontal_cell_block_count() as usize;
             let vb = self.vertical_cell_block_count() as usize;
             let hc = self.horizontal_cell_count;
-            let vc = self.vertical_cell_count as usize;
+            let vc = self.vertical_cell_count;
             let ppc = hb * hb * vb; // positions per cell
             let total_cells = hc * hc * vc;
             let per_cache = ppc * total_cells;
@@ -459,40 +452,6 @@ impl<'a> ChunkNoiseGenerator<'a> {
     ) -> Option<&'static BlockState> {
         let pos = Vector3::new(start_x + cell_x, start_y + cell_y, start_z + cell_z);
 
-        // GPU 矿脉批量预计算：若缓存命中则直接返回矿脉结果，绕过 CPU DAG。
-        #[cfg(feature = "gpu")]
-        if let Some(ref cache) = self.gpu_vein_cache {
-            let h_blocks = self.horizontal_cell_block_count() as i32;
-            let v_blocks = self.vertical_cell_block_count() as i32;
-            let total_x = h_blocks * self.horizontal_cell_count as i32;
-            let total_y = v_blocks * self.vertical_cell_count as i32;
-            // 展平索引布局与 precompute_gpu_veins 一致: X → Y → Z
-            let local_x = pos.x - (self.start_cell_pos_x * h_blocks);
-            let local_y = pos.y - (self.minimum_cell_y * v_blocks);
-            let local_z = pos.z - (self.start_cell_pos_z * h_blocks);
-            if local_x >= 0 && local_y >= 0 && local_z >= 0 {
-                let idx = (local_x + local_y * total_x + local_z * total_x * total_y) as usize;
-                if idx < cache.len() {
-                    let vein_type = cache[idx];
-                    if vein_type != 0 {
-                        // 根据 Y 坐标确定矿脉种类（与 OreVeinSampler 一致）
-                        let block_y = pos.y;
-                        let vein_def: &ore_sampler::VeinType = if (0..=50).contains(&block_y) {
-                            &ore_sampler::vein_type::COPPER
-                        } else {
-                            &ore_sampler::vein_type::IRON
-                        };
-                        return match vein_type {
-                            1 => Some(vein_def.ore.default_state),
-                            2 => Some(vein_def.raw_ore.default_state),
-                            3 => Some(vein_def.stone.default_state),
-                            _ => None,
-                        };
-                    }
-                }
-            }
-        }
-
         let options = ChunkNoiseFunctionSampleOptions::new(
             false,
             SampleAction::CellCaches(WrapperData::new(
@@ -516,75 +475,9 @@ impl<'a> ChunkNoiseGenerator<'a> {
         )
     }
 
-    /// GPU 批量矿脉预计算。
-    ///
-    /// 收集当前区块所有块位置，一次性调用 GPU `batch_vein_sample`，
-    /// 将结果写入内部缓存。后续 `sample_block_state` 调用将直接查表
-    /// 绕过 CPU DAG 矿脉噪声计算。
-    ///
-    /// 矿脉 DAG 不可精确批量化时（1.21.x overworld 的 vein_toggle/ridged 含
-    /// Interpolated/Linear 结构）直接跳过，回退 CPU DAG 求值。
-    ///
-    /// 仅在 `gpu` feature 启用且 `batch_accel` 可用时生效。
-    #[cfg(feature = "gpu")]
-    pub fn precompute_gpu_veins(&mut self) {
-        let Some(accel) = self.batch_accel else {
-            return;
-        };
-
-        // 仅当三个矿脉噪声的 DAG 根均为独立 Noise 时才可批量；否则回退 CPU。
-        // 注：当前 vanilla 1.21.x 路由均不满足（见 build_vein_fill_specs 文档），
-        // 该 GPU 路径实际处于待启用状态，待矿脉 kernel 支持完整 DAG 后重启。
-        if self.router.build_vein_fill_specs().is_none() {
-            return;
-        }
-
-        let h_blocks = self.horizontal_cell_block_count() as i32;
-        let v_blocks = self.vertical_cell_block_count() as i32;
-        let h_cells = self.horizontal_cell_count as i32;
-        let v_cells = self.vertical_cell_count as i32;
-        let min_cell_y = self.minimum_cell_y;
-
-        let total_x = (h_blocks * h_cells) as usize;
-        let total_y = (v_blocks * v_cells) as usize;
-        let total_z = (h_blocks * h_cells) as usize;
-        let total_blocks = total_x * total_y * total_z;
-
-        if total_blocks == 0 {
-            return;
-        }
-
-        // 收集所有块位置（展平为 f64 数组，布局 X → Y → Z）
-        let mut positions = Vec::with_capacity(total_blocks * 3);
-        let start_block_x = self.start_cell_pos_x * h_blocks;
-        let start_block_z = self.start_cell_pos_z * h_blocks;
-        let start_block_y = min_cell_y * v_blocks;
-
-        for z in 0..total_z as i32 {
-            for y in 0..total_y as i32 {
-                for x in 0..total_x as i32 {
-                    positions.push((start_block_x + x) as f64);
-                    positions.push((start_block_y + y) as f64);
-                    positions.push((start_block_z + z) as f64);
-                }
-            }
-        }
-
-        let vein_params = self.router.build_vein_params();
-        let mut vein_results = vec![0i32; total_blocks];
-        accel.batch_vein_sample(&positions, &vein_params, &mut vein_results);
-        self.gpu_vein_cache = Some(vein_results);
-    }
-
-    /// 清除 GPU 矿脉缓存（在区块切换时调用）。
-    #[cfg(feature = "gpu")]
-    pub fn invalidate_vein_cache(&mut self) {
-        self.gpu_vein_cache = None;
-    }
-
     /// GPU 批量预计算 Cell Cache（合并 N 次调用为 1 次）。
     ///
-    /// 收集当前区块所有 cell 的所有角点位置，一次性调用 GPU `batch_fill_cell_caches`，
+    /// 收集当前区块所有 cell 的所有角点位置，一次性调用 GPU `batch_fill_cell_caches_vanilla`，
     /// 将结果写入内部缓存。后续 `on_sampled_cell_corners` 调用将直接从缓存复制
     /// 绕过 GPU kernel launch。
     #[cfg(feature = "gpu")]

@@ -1,6 +1,6 @@
-//! 世界生成指纹测试 — 覆盖 CellCache/Interpolator/Vein/Aquifer/Beardifier 全路径。
+//! 世界生成指纹测试 — 覆盖 Aquifer/Beardifier/Trilinear/噪声采样全路径。
 //!
-//! 使用固定种子生成确定性噪声配置，对比 GPU 批量路径与 CPU 逐位求值的指纹哈希。
+//! 使用固定种子生成确定性噪声配置，验证 GPU 批量路径输出的确定性与有限性。
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -21,12 +21,11 @@
 #![cfg(feature = "gpu")]
 
 use pumpkin_config::gpu::GpuConfig;
-use pumpkin_gpu::noise::batch_cell::{BeardifierStructureData, CellFillParams, VeinParams};
+use pumpkin_gpu::noise::batch_cell::BeardifierStructureData;
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};
 use pumpkin_world::batch_accel::BatchAccelerator;
 use pumpkin_world::noise_accel::NoiseAccelerator;
-use std::hint::black_box;
 
 const SEED: u64 = 138_782_381_985_206;
 
@@ -88,138 +87,6 @@ fn noise_accel() -> NoiseAccelerator {
     })
 }
 
-/// 从 `OctavePerlinNoiseSampler` 提取 cell cache 参数。
-fn extract_cell_params(sampler: &OctavePerlinNoiseSampler) -> CellFillParams {
-    let no = sampler.samplers.len() as i32;
-    let mut configs = vec![no as f64];
-    for sd in &sampler.samplers {
-        configs.push(sd.amplitude * sd.persistence);
-    }
-    for sd in &sampler.samplers {
-        configs.push(sd.lacunarity);
-    }
-    for sd in &sampler.samplers {
-        configs.push(sd.sampler.x_origin());
-        configs.push(sd.sampler.y_origin());
-        configs.push(sd.sampler.z_origin());
-    }
-    let mut perms = Vec::with_capacity(no as usize * 256);
-    for sd in &sampler.samplers {
-        perms.extend_from_slice(sd.sampler.permutation());
-    }
-    CellFillParams {
-        perlin_configs: configs,
-        num_octaves: vec![no],
-        sampler_types: vec![0],
-        perms,
-    }
-}
-
-/// 从 `OctavePerlinNoiseSampler` 提取 interpolator 参数 (8 doubles/octave)。
-fn extract_interp_params(sampler: &OctavePerlinNoiseSampler, xz: f64, ys: f64) -> CellFillParams {
-    let no = sampler.samplers.len() as i32;
-    let mut configs = Vec::with_capacity(no as usize * 8);
-    for sd in &sampler.samplers {
-        configs.push(sd.amplitude * sd.persistence);
-        configs.push(sd.lacunarity);
-        configs.push(sd.sampler.x_origin());
-        configs.push(sd.sampler.y_origin());
-        configs.push(sd.sampler.z_origin());
-        configs.push(xz);
-        configs.push(ys);
-        configs.push(0.0);
-    }
-    let mut perms = Vec::with_capacity(no as usize * 256);
-    for sd in &sampler.samplers {
-        perms.extend_from_slice(sd.sampler.permutation());
-    }
-    CellFillParams {
-        perlin_configs: configs,
-        num_octaves: vec![no],
-        sampler_types: vec![0],
-        perms,
-    }
-}
-
-// ============================================================================
-// Cell Cache 指纹 — 多种八度配置
-// ============================================================================
-
-#[test]
-fn cellcache_1oct() {
-    let sampler = mk_sampler(SEED, &[0]);
-    let params = extract_cell_params(&sampler);
-    let n = 512;
-    let pos = mk_pos3d(n);
-    let mut res1 = vec![0.0; n];
-    let mut res2 = vec![0.0; n];
-    accel().batch_fill_cell_caches(&pos, &params, &mut res1);
-    accel().batch_fill_cell_caches(&pos, &params, &mut res2);
-    assert_eq!(
-        f64_hash(&res1),
-        f64_hash(&res2),
-        "cellcache_1oct: deterministic"
-    );
-    assert!(res1.iter().any(|&v| v.abs() > 1e-12), "non-zero output");
-}
-
-#[test]
-fn cellcache_3oct() {
-    let sampler = mk_sampler(SEED, &[0, 1, 2]);
-    let params = extract_cell_params(&sampler);
-    let n = 1024;
-    let pos = mk_pos3d(n);
-    let mut res = vec![0.0; n];
-    accel().batch_fill_cell_caches(&pos, &params, &mut res);
-    let hash = f64_hash(&res);
-    assert!(res.iter().all(|&v| v.is_finite()));
-    assert_ne!(hash, 0);
-}
-
-#[test]
-fn cellcache_8oct() {
-    let sampler = mk_sampler(SEED, &[0, 1, 2, 3, 4, 5, 6, 7]);
-    let params = extract_cell_params(&sampler);
-    let n = 256;
-    let pos = mk_pos3d(n);
-    let mut res = vec![0.0; n];
-    accel().batch_fill_cell_caches(&pos, &params, &mut res);
-    assert!(res.iter().all(|&v| v.is_finite()));
-    assert_ne!(f64_hash(&res), 0);
-}
-
-// ============================================================================
-// Interpolator 指纹
-// ============================================================================
-
-#[test]
-fn interp_3oct() {
-    let sampler = mk_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
-    let params = extract_interp_params(&sampler, 0.25, 0.125);
-    let n = 512;
-    let pos = mk_pos3d(n);
-    let mut res = vec![0.0; n];
-    accel().batch_fill_interpolators(&pos, &params, &mut res);
-    assert!(res.iter().all(|&v| v.is_finite()));
-    assert_ne!(f64_hash(&res), 0);
-}
-
-#[test]
-fn interp_empty_params() {
-    let params = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![],
-        sampler_types: vec![],
-        perms: vec![],
-    };
-    let n = 64;
-    let pos = mk_pos3d(n);
-    let mut res = vec![0.0; n];
-    accel().batch_fill_interpolators(&pos, &params, &mut res);
-    // Empty params should produce zeros
-    assert!(res.iter().all(|&v| v == 0.0 || !v.is_nan()));
-}
-
 // ============================================================================
 // Aquifer 指纹
 // ============================================================================
@@ -260,21 +127,26 @@ fn aquifer_empty_grid() {
 #[test]
 fn beardier_1struct() {
     let structures = [BeardifierStructureData {
-        center_x: 0.0,
-        center_y: 65.0,
-        center_z: 0.0,
-        radius_x: 5.0,
-        radius_y: 5.0,
-        radius_z: 5.0,
-        min_y: 60.0,
-        ground_delta_y: 5.0,
-        max_y: 70.0,
+        box_min_x: -5,
+        box_min_y: 60,
+        box_min_z: -5,
+        box_max_x: 5,
+        box_max_y: 70,
+        box_max_z: 5,
+        adaptation: 1, // BeardThin
+        ground_delta: 5,
     }];
     let junctions = [];
     let positions = [0.0f64, 64.0, 0.0, 3.0, 64.0, 3.0, -3.0, 64.0, -3.0];
     let n = 3;
     let mut res = vec![0.0; n];
-    accel().batch_beardifier(&positions, &structures, &junctions, &mut res);
+    accel().batch_beardifier(
+        &positions,
+        &structures,
+        &junctions,
+        [-10, 55, -10, 10, 75, 10],
+        &mut res,
+    );
     assert!(res.iter().all(|&v| v.is_finite()));
     // Center position should have positive contribution
     assert!(
@@ -282,23 +154,6 @@ fn beardier_1struct() {
         "center should have non-negative beard: {}",
         res[0]
     );
-}
-
-// ============================================================================
-// Vein 指纹 — 多种配置
-// ============================================================================
-
-#[test]
-fn vein_empty_params() {
-    let params = VeinParams {
-        toggle_config: vec![],
-        ridged_config: vec![],
-        gap_config: vec![],
-    };
-    let positions = [0.0, -30.0, 0.0];
-    let mut res = [0i32];
-    accel().batch_vein_sample(&positions, &params, &mut res);
-    assert_eq!(res[0], 0, "empty params should yield no vein");
 }
 
 // ============================================================================
@@ -386,104 +241,4 @@ fn trilinear_fingerprint() {
     accel().batch_trilinear(&corners, &deltas, &mut res1);
     accel().batch_trilinear(&corners, &deltas, &mut res2);
     assert_eq!(f64_hash(&res1), f64_hash(&res2), "trilinear deterministic");
-}
-
-// ============================================================================
-// 边界条件
-// ============================================================================
-
-#[test]
-fn all_zero_inputs() {
-    // 全零位置 → 应产生合法输出
-    let params = CellFillParams {
-        perlin_configs: vec![1.0, 1.0, 2.0, 0.0, 0.0, 0.0],
-        num_octaves: vec![1],
-        sampler_types: vec![0],
-        perms: vec![],
-    };
-    let positions = vec![0.0; 96]; // 32 positions at origin
-    let n = 32;
-    let mut res = vec![0.0; n];
-    accel().batch_fill_cell_caches(&positions, &params, &mut res);
-    assert!(
-        res.iter().all(|&v| v.is_finite()),
-        "origin positions must produce finite output"
-    );
-}
-
-#[test]
-fn single_position() {
-    let sampler = mk_sampler(SEED, &[0, 1]);
-    let params = extract_cell_params(&sampler);
-    let positions = [1.5, -30.0, 2.7];
-    let mut res = [0.0];
-    accel().batch_fill_cell_caches(&positions, &params, &mut res);
-    assert!(res[0].is_finite());
-}
-
-#[test]
-fn large_batch_65536() {
-    let sampler = mk_sampler(SEED, &[0, 1, 2]);
-    let params = extract_cell_params(&sampler);
-    let n = 65536;
-    let pos = mk_pos3d(n);
-    let mut res = vec![0.0; n];
-    let start = std::time::Instant::now();
-    accel().batch_fill_cell_caches(black_box(&pos), black_box(&params), black_box(&mut res));
-    let elapsed = start.elapsed();
-    assert!(res.iter().all(|&v| v.is_finite()));
-    let hash = f64_hash(&res);
-    assert_ne!(hash, 0);
-    println!("cellcache 65536: {elapsed:?} (hash: {hash:#x})");
-}
-
-// ============================================================================
-// CPU 参照验证测试
-// ============================================================================
-
-#[test]
-fn cellcache_gpu_vs_cpu_reference() {
-    // CellCache GPU 算法与 vanilla sampler.sample() 使用不同的置换表生成逻辑，
-    // 因此不能直接比较。完整的一致性验证在 batch_fingerprint.rs:cell_cache_fill_consistency
-    // 中通过 cpu_cell_cache_fill_impl（同一算法）完成。
-    // 此测试验证 GPU 路径输出确定性 + 有限性。
-    let sampler = mk_sampler(SEED, &[0, 1, 2, 3]);
-    let params = extract_cell_params(&sampler);
-    let n = 512;
-    let pos = mk_pos3d(n);
-
-    let mut res1 = vec![0.0; n];
-    let mut res2 = vec![0.0; n];
-    accel().batch_fill_cell_caches(&pos, &params, &mut res1);
-    accel().batch_fill_cell_caches(&pos, &params, &mut res2);
-
-    assert_eq!(f64_hash(&res1), f64_hash(&res2), "deterministic");
-    assert!(res1.iter().all(|&v| v.is_finite()), "all finite");
-    assert!(res1.iter().any(|&v| v.abs() > 1e-12), "non-zero output");
-}
-
-#[test]
-fn interpolator_gpu_vs_cpu_reference() {
-    let sampler = mk_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
-    let params = extract_interp_params(&sampler, 0.25, 0.125);
-    let n = 256;
-    let pos = mk_pos3d(n);
-
-    let mut gpu_res = vec![0.0; n];
-    accel().batch_fill_interpolators(&pos, &params, &mut gpu_res);
-
-    // CPU reference: direct perlin with xz/ys scaling
-    let mut cpu_res = vec![0.0; n];
-    let xz_scale = 0.25;
-    let y_scale = 0.125;
-    for i in 0..n {
-        cpu_res[i] = sampler.sample(
-            pos[i * 3] * xz_scale,
-            pos[i * 3 + 1] * y_scale,
-            pos[i * 3 + 2] * xz_scale,
-        );
-    }
-
-    assert!(gpu_res.iter().all(|v| v.is_finite()));
-    assert_ne!(f64_hash(&gpu_res), 0);
 }

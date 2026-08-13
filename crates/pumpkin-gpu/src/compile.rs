@@ -17,14 +17,18 @@ use crate::noise::kernels_extra;
 #[cfg(feature = "pumpkin-util")]
 use crate::noise::kernels_light;
 
-/// 全局 kernel 源码注册表（用于延迟编译）。
-static KERNEL_REGISTRY: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+/// 全局 OpenCL kernel 源码注册表（用于延迟编译）。
+static KERNEL_REGISTRY_CL: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+/// 全局 CUDA kernel 源码注册表（用于延迟编译）。
+#[cfg(feature = "cuda")]
+static KERNEL_REGISTRY_CU: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
 
 /// 初始化全局 kernel 注册表。在设备初始化时调用一次。
 ///
 /// 幂等：使用 [`OnceLock::get_or_init`]，重复调用不会重复泄漏源码字符串。
+/// 两套注册表分开维护，避免 OpenCL 延迟编译时误取到 CUDA 源码。
 pub(crate) fn init_kernel_registry() {
-    KERNEL_REGISTRY.get_or_init(|| {
+    KERNEL_REGISTRY_CL.get_or_init(|| {
         let mut map = HashMap::new();
         for k in all_kernel_sources() {
             // 将源码泄漏为 'static（编译时嵌入的字符串字面量本身是 'static）
@@ -32,7 +36,11 @@ pub(crate) fn init_kernel_registry() {
             let name: &'static str = Box::leak(k.name.into_boxed_str());
             map.insert(name, source);
         }
-        #[cfg(feature = "cuda")]
+        map
+    });
+    #[cfg(feature = "cuda")]
+    KERNEL_REGISTRY_CU.get_or_init(|| {
+        let mut map = HashMap::new();
         for k in all_cuda_kernel_sources() {
             let source: &'static str = Box::leak(k.source.into_boxed_str());
             let name: &'static str = Box::leak(k.name.into_boxed_str());
@@ -42,10 +50,17 @@ pub(crate) fn init_kernel_registry() {
     });
 }
 
-/// 按名称查找 kernel 源码（用于延迟编译）。
+/// 按名称查找 OpenCL kernel 源码（用于延迟编译）。
 #[must_use]
-pub(crate) fn lookup_kernel_source(name: &str) -> Option<&'static str> {
-    KERNEL_REGISTRY.get().and_then(|m| m.get(name).copied())
+pub(crate) fn lookup_opencl_kernel_source(name: &str) -> Option<&'static str> {
+    KERNEL_REGISTRY_CL.get().and_then(|m| m.get(name).copied())
+}
+
+/// 按名称查找 CUDA kernel 源码（用于延迟编译）。
+#[cfg(feature = "cuda")]
+#[must_use]
+pub(crate) fn lookup_cuda_kernel_source(name: &str) -> Option<&'static str> {
+    KERNEL_REGISTRY_CU.get().and_then(|m| m.get(name).copied())
 }
 
 /// 编译好的 kernel 元数据。
@@ -81,14 +96,6 @@ pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
                 source: kernels::SHIFT_B_SAMPLE_CL.into(),
             },
             CompiledKernel {
-                name: "cell_cache_fill_f64".into(),
-                source: kernels_cell::CELL_CACHE_FILL_CL.into(),
-            },
-            CompiledKernel {
-                name: "interpolator_fill_f64".into(),
-                source: kernels_cell::INTERPOLATOR_FILL_CL.into(),
-            },
-            CompiledKernel {
                 name: "aquifer_batch_f64".into(),
                 source: kernels_cell::AQUIFER_BATCH_CL.into(),
             },
@@ -99,10 +106,6 @@ pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
             CompiledKernel {
                 name: "beardifier_batch_f64".into(),
                 source: kernels_cell::BEARDIFIER_BATCH_CL.into(),
-            },
-            CompiledKernel {
-                name: "vein_batch_f64".into(),
-                source: kernels_cell::VEIN_BATCH_CL.into(),
             },
             CompiledKernel {
                 name: "trilinear_interpolate_f64".into(),
@@ -164,14 +167,6 @@ pub(crate) fn all_cuda_kernel_sources() -> Vec<CompiledKernel> {
                 source: kernels::SHIFT_B_SAMPLE_CU.into(),
             },
             CompiledKernel {
-                name: "cell_cache_fill_f64".into(),
-                source: kernels_cell::CELL_CACHE_FILL_CU.into(),
-            },
-            CompiledKernel {
-                name: "interpolator_fill_f64".into(),
-                source: kernels_cell::INTERPOLATOR_FILL_CU.into(),
-            },
-            CompiledKernel {
                 name: "aquifer_batch_f64".into(),
                 source: kernels_cell::AQUIFER_BATCH_CU.into(),
             },
@@ -182,10 +177,6 @@ pub(crate) fn all_cuda_kernel_sources() -> Vec<CompiledKernel> {
             CompiledKernel {
                 name: "beardifier_batch_f64".into(),
                 source: kernels_cell::BEARDIFIER_BATCH_CU.into(),
-            },
-            CompiledKernel {
-                name: "vein_batch_f64".into(),
-                source: kernels_cell::VEIN_BATCH_CU.into(),
             },
             CompiledKernel {
                 name: "trilinear_interpolate_f64".into(),
@@ -235,13 +226,16 @@ pub mod cuda_compile {
     pub struct CudaKernelCompiler {
         pub compiled: HashMap<String, cudarc::driver::CudaFunction>,
         compile_ptx_arch: Option<String>,
+        /// 用户配置的额外 NVRTC 标志（后传入，优先级高于默认精度选项）。
+        compile_flags: Vec<String>,
     }
 
     impl CudaKernelCompiler {
-        pub fn new(compile_ptx: Option<&str>) -> Self {
+        pub fn new(compile_ptx: Option<&str>, flags: &[String]) -> Self {
             Self {
                 compiled: HashMap::default(),
                 compile_ptx_arch: compile_ptx.map(String::from),
+                compile_flags: flags.to_vec(),
             }
         }
 
@@ -250,7 +244,7 @@ pub mod cuda_compile {
         /// 仅包含架构目标和用户配置标志。
         /// 精度优先：默认禁用 FMA 融合与快速数学，保证与 CPU 路径逐位一致
         /// （用户可通过 flags 覆盖，后传入的选项优先）。
-        fn build_compile_opts(&self, flags: &[String]) -> cudarc::nvrtc::CompileOptions {
+        fn build_compile_opts(&self) -> cudarc::nvrtc::CompileOptions {
             let mut opts = cudarc::nvrtc::CompileOptions::default();
             if let Some(ref arch) = self.compile_ptx_arch {
                 opts.options.push(format!("--gpu-architecture={arch}"));
@@ -261,7 +255,7 @@ pub mod cuda_compile {
             opts.options.push("--prec-div=true".into());
             opts.options.push("--prec-sqrt=true".into());
             opts.options.push("--restrict".into());
-            for flag in flags {
+            for flag in &self.compile_flags {
                 opts.options.push(flag.clone());
             }
             opts
@@ -269,9 +263,9 @@ pub mod cuda_compile {
 
         /// 构建 JIT 特化 kernel 的 NVRTC CompileOptions。
         ///
-        /// JIT kernel 八度数 ≤ 16、循环完全展开、常量全部内联，
-        /// 激进优化（`--opt-level=3`）。但保持 `--fmad=false` 等精度选项，
-        /// 确保与 CPU 路径逐位一致。
+        /// JIT kernel 八度数 ≤ 16、循环完全展开、常量全部内联。
+        /// 保持 `--fmad=false` 等精度选项，确保与 CPU 路径逐位一致。
+        /// NVRTC 设备码始终启用优化，无需（也不支持）`--opt-level` 选项。
         fn build_jit_compile_opts(&self) -> cudarc::nvrtc::CompileOptions {
             let mut opts = cudarc::nvrtc::CompileOptions::default();
             if let Some(ref arch) = self.compile_ptx_arch {
@@ -281,7 +275,6 @@ pub mod cuda_compile {
             opts.options.push("--ftz=false".into());
             opts.options.push("--prec-div=true".into());
             opts.options.push("--prec-sqrt=true".into());
-            opts.options.push("--opt-level=3".into());
             opts.options.push("--restrict".into());
             opts
         }
@@ -289,9 +282,8 @@ pub mod cuda_compile {
         pub fn compile_all(
             &mut self,
             ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
-            flags: &[String],
         ) -> Result<(), DeviceError> {
-            let opts = self.build_compile_opts(flags);
+            let opts = self.build_compile_opts();
             for kernel in all_cuda_kernel_sources() {
                 if kernel.source.is_empty() {
                     continue;
@@ -316,16 +308,38 @@ pub mod cuda_compile {
             Ok(())
         }
 
+        /// 延迟编译单个预注册 kernel（与 `compile_all` 使用同一组编译选项）。
+        ///
+        /// 用于按需加载：初始化时编译失败的 kernel 或运行时注入的新 kernel
+        /// 可在此处补编译；失败不阻断（返回 `Err`，由调用方记录）。
+        pub fn compile_by_name(
+            &mut self,
+            ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
+            name: &str,
+            source: &str,
+        ) -> Result<(), DeviceError> {
+            if self.compiled.contains_key(name) {
+                return Ok(());
+            }
+            let opts = self.build_compile_opts();
+            let func = Self::compile_one(ctx, name, source, &opts)?;
+            self.compiled.insert(name.to_string(), func);
+            tracing::info!("CUDA NVRTC: lazily compiled '{name}'");
+            Ok(())
+        }
+
         /// 编译一个 JIT 特化 kernel。
         ///
-        /// JIT kernel 源码中不包含 `PERLIN_CORE_CL` 辅助函数，
+        /// JIT kernel 源码中不包含 `PERLIN_CORE_CU` 辅助函数，
         /// 此处将其拼接后再通过 NVRTC 编译。
+        /// CUDA 方言源码（`jit_kernel.cuda_source`）与 OpenCL 方言
+        /// 语义逐位一致，仅线程索引与函数签名语法不同。
         pub fn compile_jit_kernel(
             &mut self,
             ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
             jit_kernel: &crate::jit::JitSpecializedKernel,
         ) -> Result<(), DeviceError> {
-            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, jit_kernel.source);
+            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CU, jit_kernel.cuda_source);
             // JIT 特化 kernel：使用激进优化（FMA + O3），不受配置 `--fmad=false` 约束。
             let opts = self.build_jit_compile_opts();
             let ptx = cudarc::nvrtc::compile_ptx_with_opts(full_source, opts).map_err(|e| {
@@ -402,12 +416,15 @@ pub mod opencl_compile {
 
     pub struct OpenClKernelCompiler {
         compiled: HashMap<String, CompiledEntry>,
+        /// 用户配置的 OpenCL 构建标志（同时用于常规与 JIT 编译，保证数值一致）。
+        compile_flags: Vec<String>,
     }
 
     impl OpenClKernelCompiler {
-        pub fn new() -> Self {
+        pub fn new(flags: &[String]) -> Self {
             Self {
                 compiled: HashMap::default(),
+                compile_flags: flags.to_vec(),
             }
         }
 
@@ -415,13 +432,18 @@ pub mod opencl_compile {
             &mut self,
             ctx: &Context,
             device_id: cl_device_id,
-            flags: &[String],
         ) -> Result<(), DeviceError> {
             for kernel in all_kernel_sources() {
                 if kernel.source.is_empty() {
                     continue;
                 }
-                match Self::compile_one(ctx, device_id, &kernel.name, &kernel.source, flags) {
+                match Self::compile_one(
+                    ctx,
+                    device_id,
+                    &kernel.name,
+                    &kernel.source,
+                    &self.compile_flags,
+                ) {
                     Ok(entry) => {
                         self.compiled.insert(kernel.name.clone(), entry);
                         tracing::info!("OpenCL: compiled '{}'", kernel.name);
@@ -441,18 +463,41 @@ pub mod opencl_compile {
             Ok(())
         }
 
+        /// 延迟编译单个预注册 kernel（与 `compile_all` 使用同一组构建标志）。
+        pub fn compile_by_name(
+            &mut self,
+            ctx: &Context,
+            device_id: cl_device_id,
+            name: &str,
+            source: &str,
+        ) -> Result<(), DeviceError> {
+            if self.compiled.contains_key(name) {
+                return Ok(());
+            }
+            let entry = Self::compile_one(ctx, device_id, name, source, &self.compile_flags)?;
+            self.compiled.insert(name.to_string(), entry);
+            tracing::info!("OpenCL: lazily compiled '{name}'");
+            Ok(())
+        }
+
         /// 编译一个 JIT 特化 kernel。
         ///
         /// JIT kernel 源码中不包含 `PERLIN_CORE_CL` 辅助函数，
         /// 此处将其拼接后再通过 OpenCL 运行时编译。
+        /// 使用与常规 kernel 相同的精度标志，保证数值一致。
         pub fn compile_jit_kernel(
             &mut self,
             ctx: &Context,
             device_id: cl_device_id,
             jit_kernel: &crate::jit::JitSpecializedKernel,
         ) -> Result<(), DeviceError> {
-            let entry =
-                Self::compile_one(ctx, device_id, &jit_kernel.name, &jit_kernel.source, &[])?;
+            let entry = Self::compile_one(
+                ctx,
+                device_id,
+                &jit_kernel.name,
+                &jit_kernel.source,
+                &self.compile_flags,
+            )?;
             self.compiled.insert(jit_kernel.name.clone(), entry);
             tracing::info!("OpenCL JIT: compiled '{}'", jit_kernel.name);
             Ok(())
@@ -461,6 +506,10 @@ pub mod opencl_compile {
         /// 编译单个 OpenCL kernel。
         ///
         /// 使用 `create_from_source` + `build` + `Kernel::create` 的 API 链。
+        /// 源码头部注入 `#pragma OPENCL FP_CONTRACT OFF`：
+        /// NVIDIA 的 OpenCL 编译器对 f64 默认开启 FMA 收缩（且拒绝
+        /// `-fmad=false` 等 CUDA 风格标志），只有该标准 pragma 能关闭收缩，
+        /// 保证与 CPU / CUDA 路径逐位一致。
         fn compile_one(
             ctx: &Context,
             device_id: cl_device_id,
@@ -468,7 +517,11 @@ pub mod opencl_compile {
             source: &str,
             flags: &[String],
         ) -> Result<CompiledEntry, DeviceError> {
-            let full_source = format!("{}\n\n{}", kernels::PERLIN_CORE_CL, source);
+            let full_source = format!(
+                "#pragma OPENCL FP_CONTRACT OFF\n{}\n\n{}",
+                kernels::PERLIN_CORE_CL,
+                source
+            );
             let flag_str = flags.join(" ");
 
             let mut program = Program::create_from_source(ctx, &full_source).map_err(|e| {
@@ -506,5 +559,88 @@ pub mod opencl_compile {
         pub fn get_kernel(&self, name: &str) -> Option<&Kernel> {
             self.compiled.get(name).map(|e| &e.kernel)
         }
+    }
+}
+
+// ============================================================================
+// Kernel 清单测试 — 保证 CUDA / OpenCL 功能对齐
+// ============================================================================
+
+#[cfg(all(test, feature = "pumpkin-util"))]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// CUDA 独有的 kernel 名单。
+    /// OpenCL 列表之外的任何新增 CUDA kernel 都必须在此登记并给出理由，
+    /// 否则本测试失败——强制两个后端功能对齐。
+    const CUDA_ONLY_KERNELS: &[&str] = &[
+        // Cooperative groups（grid-wide 栅栏）— OpenCL 1.2 无法表达。
+        "light_propagate_u8_persistent",
+    ];
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn kernel_names_cuda_opencl_aligned() {
+        let cl_kernels = all_kernel_sources();
+        let cl: HashSet<&str> = cl_kernels.iter().map(|k| k.name.as_str()).collect();
+        let cu_kernels = all_cuda_kernel_sources();
+        let cu: HashSet<&str> = cu_kernels.iter().map(|k| k.name.as_str()).collect();
+
+        // CUDA 必须覆盖所有 OpenCL kernel（功能对齐：OpenCL 有的 CUDA 必须有）
+        for name in &cl {
+            assert!(
+                cu.contains(name),
+                "CUDA kernel list missing '{name}' (present in OpenCL list)"
+            );
+        }
+
+        // CUDA 额外 kernel 必须在豁免名单内
+        for name in &cu {
+            if !cl.contains(name) {
+                assert!(
+                    CUDA_ONLY_KERNELS.contains(name),
+                    "CUDA-only kernel '{name}' not whitelisted — add it to CUDA_ONLY_KERNELS with a reason"
+                );
+            }
+        }
+
+        // 两个列表都不应为空（保证测试确实在比较实际清单）
+        assert!(!cl.is_empty(), "OpenCL kernel list is empty");
+        assert!(!cu.is_empty(), "CUDA kernel list is empty");
+    }
+
+    #[test]
+    fn kernel_registry_is_idempotent_and_split() {
+        init_kernel_registry();
+        init_kernel_registry(); // 重复调用必须无副作用
+
+        let cl_kernels = all_kernel_sources();
+        let cl_names: HashSet<&str> = cl_kernels.iter().map(|k| k.name.as_str()).collect();
+        for name in &cl_names {
+            assert!(
+                lookup_opencl_kernel_source(name).is_some(),
+                "OpenCL registry missing '{name}'"
+            );
+        }
+
+        #[cfg(feature = "cuda")]
+        {
+            let cu_kernels = all_cuda_kernel_sources();
+            let cu_names: HashSet<&str> = cu_kernels.iter().map(|k| k.name.as_str()).collect();
+            for name in &cu_names {
+                assert!(
+                    lookup_cuda_kernel_source(name).is_some(),
+                    "CUDA registry missing '{name}'"
+                );
+            }
+            // CUDA-only kernel 不得出现在 OpenCL 注册表中（防止误取 .cu 源码）
+            for name in CUDA_ONLY_KERNELS {
+                assert!(lookup_opencl_kernel_source(name).is_none());
+            }
+        }
+
+        // 未知 kernel 应返回 None
+        assert!(lookup_opencl_kernel_source("nonexistent_kernel").is_none());
     }
 }

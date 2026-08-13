@@ -4,11 +4,13 @@ use crate::common::DeviceError;
 use crate::common::kernel::{GpuBufferRef, KernelArg, KernelLaunch, KernelLauncher};
 use crate::compile::cuda_compile::CudaKernelCompiler;
 use cudarc::driver::PushKernelArg;
+use parking_lot::Mutex;
 use std::sync::Arc;
 
 /// CUDA Kernel 启动器。
 pub struct CudaKernelLauncher {
-    compiler: Option<CudaKernelCompiler>,
+    /// 编译器由 `Mutex` 包裹以支持延迟编译（`KernelLauncher` trait 方法为 `&self`）。
+    compiler: Mutex<Option<CudaKernelCompiler>>,
     stream: Option<Arc<cudarc::driver::CudaStream>>,
     /// 是否启用 persistent kernel 模式（光照传播等迭代算法）
     persistent_enabled: bool,
@@ -18,7 +20,7 @@ impl CudaKernelLauncher {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            compiler: None,
+            compiler: Mutex::new(None),
             stream: None,
             persistent_enabled: false,
         }
@@ -33,13 +35,13 @@ impl CudaKernelLauncher {
         persistent_enabled: bool,
         compile_ptx: Option<&str>,
     ) {
-        let mut compiler = CudaKernelCompiler::new(compile_ptx);
         let default_flags: &[String] = &[];
         let flags = flags.unwrap_or(default_flags);
-        if let Err(e) = compiler.compile_all(ctx, flags) {
+        let mut compiler = CudaKernelCompiler::new(compile_ptx, flags);
+        if let Err(e) = compiler.compile_all(ctx) {
             tracing::warn!("CUDA NVRTC kernel compilation failed: {e}. CPU fallback will be used.");
         }
-        self.compiler = Some(compiler);
+        *self.compiler.lock() = Some(compiler);
         self.stream = Some(stream);
         self.persistent_enabled = persistent_enabled;
         if persistent_enabled {
@@ -50,7 +52,7 @@ impl CudaKernelLauncher {
     /// 编译一个 JIT 特化 kernel。
     #[cfg(feature = "pumpkin-util")]
     pub fn compile_jit_kernel(
-        &mut self,
+        &self,
         jit_kernel: &crate::jit::JitSpecializedKernel,
     ) -> Result<(), DeviceError> {
         let ctx = self
@@ -58,7 +60,7 @@ impl CudaKernelLauncher {
             .as_ref()
             .map(|s| s.context().clone())
             .ok_or_else(|| DeviceError::Internal("CUDA stream not initialized".into()))?;
-        self.compiler.as_mut().map_or_else(
+        self.compiler.lock().as_mut().map_or_else(
             || {
                 Err(DeviceError::Unsupported(
                     "CUDA compiler not initialized".into(),
@@ -69,13 +71,30 @@ impl CudaKernelLauncher {
     }
 
     /// 按需编译单个预注册 kernel（延迟加载）。
-    #[allow(unused_variables)]
-    #[allow(clippy::unused_self)]
+    ///
+    /// 从全局 CUDA 源码注册表查找源码，使用与 `compile_all` 相同的编译选项。
+    /// 编译失败仅记录日志——上层 `try_launch_kernel` 会看到 kernel 仍不存在并回退 CPU。
     pub fn compile_kernel_by_name(&self, name: &str) {
-        if crate::compile::lookup_kernel_source(name).is_some() {
-            tracing::debug!("CUDA lazy: source found for '{}', compile pending", name);
-        } else {
-            tracing::debug!("CUDA lazy: '{}' not in registry", name);
+        let Some(source) = crate::compile::lookup_cuda_kernel_source(name) else {
+            tracing::debug!("CUDA lazy: '{name}' not in registry");
+            return;
+        };
+        let Some(ctx) = self.stream.as_ref().map(|s| s.context().clone()) else {
+            tracing::debug!("CUDA lazy: stream not initialized for '{name}'");
+            return;
+        };
+        let mut guard = self.compiler.lock();
+        let Some(compiler) = guard.as_mut() else {
+            return;
+        };
+        if let Err(e) = compiler.compile_by_name(&ctx, name, source) {
+            tracing::warn!("CUDA lazy: compile '{name}' failed: {e}");
+            crate::logging::log_fallback(
+                &crate::logging::FallbackReason::KernelCompileFailed(format!(
+                    "CUDA lazy '{name}': {e}"
+                )),
+                "cuda_kernel::compile_kernel_by_name",
+            );
         }
     }
 }
@@ -88,7 +107,8 @@ impl Default for CudaKernelLauncher {
 
 impl KernelLauncher for CudaKernelLauncher {
     fn launch(&self, launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
-        let compiler = self.compiler.as_ref().ok_or_else(|| {
+        let compiler_guard = self.compiler.lock();
+        let compiler = compiler_guard.as_ref().ok_or_else(|| {
             DeviceError::Unsupported("CUDA kernel compiler not initialized".into())
         })?;
         let stream = self
@@ -166,10 +186,12 @@ impl KernelLauncher for CudaKernelLauncher {
             .map_or(256u32, |l| l[0] as u32)
             .min(n);
         let grid_dim = n.div_ceil(block_dim);
+        // 动态共享内存（extern __shared__ kernel 使用）：汇总各参数大小
+        let shared_mem_bytes = launch.local_mem_bytes.iter().sum::<usize>() as u32;
         let cfg = cudarc::driver::LaunchConfig {
             grid_dim: (grid_dim, 1, 1),
             block_dim: (block_dim, 1, 1),
-            shared_mem_bytes: 0,
+            shared_mem_bytes,
         };
 
         // 检测是否为 persistent kernel 变体（名称含 "_persistent"）
@@ -193,7 +215,7 @@ impl KernelLauncher for CudaKernelLauncher {
     }
 
     fn has_kernel(&self, name: &str) -> bool {
-        self.compiler.as_ref().is_some_and(|c| c.has(name))
+        self.compiler.lock().as_ref().is_some_and(|c| c.has(name))
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {

@@ -1,156 +1,117 @@
-// Beardifier batch: 累加来自结构与连接点的地形适应量。
-// structures: [num_structures * 9] →
-//   (center_x, center_y, center_z,
-//    radius_x, radius_y, radius_z,
-//    min_y, ground_delta_y, max_y)
-// junctions: [num_junctions * 3] → (x, y, z)
-// beard_kernel: 预计算 24³ 核表 (f64)
+// Beardifier batch: 与 vanilla `Beardifier.sample` 逐位一致的批量 kernel。
+//
+// structures: [num_structures * 8] f64 →
+//   (box_min_x, box_min_y, box_min_z, box_max_x, box_max_y, box_max_z,
+//    adaptation, ground_delta)
+//   adaptation: 0=None 1=BeardThin 2=BeardBox 3=Bury 4=Encapsulate
+// junctions: [num_junctions * 3] f64 → (x, ground_y, z)
+// affected:  [6] f64 → (min_x, min_y, min_z, max_x, max_y, max_z)，包含边界
+// beard_kernel: 24³ 预计算核表 (f64)，zi-major 布局: kernel[zi*576 + xi*24 + yi]
+//               值 = exp(-(dx² + (dy+0.5)² + dz²)/16)，与 vanilla 表逐位一致
+
+// 与 vanilla `get_beard_contribution(dx, dy, dz, y_to_ground)` 逐位一致
+static double beard_contrib(
+    int dx, int dy, int dz, int y_to_ground,
+    __global const double* kernel_table
+) {
+    int xi = dx + 12;
+    int yi = dy + 12;
+    int zi = dz + 12;
+    if (xi >= 0 && xi < 24 && yi >= 0 && yi < 24 && zi >= 0 && zi < 24) {
+        double dy_off = (double)y_to_ground + 0.5;
+        double dsq = (double)(dx * dx) + dy_off * dy_off + (double)(dz * dz);
+        double value = (-dy_off) * (1.0 / sqrt(dsq / 2.0)) / 2.0;
+        return value * kernel_table[zi * 576 + xi * 24 + yi];
+    }
+    return 0.0;
+}
+
+// 与 vanilla `get_bury_contribution` 逐位一致
+static double bury_contrib(double dx, double dy, double dz) {
+    double dist = sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist < 0.0) return 1.0;
+    if (dist > 6.0) return 0.0;
+    return 1.0 - dist / 6.0;
+}
+
 __kernel void beardifier_batch_f64(
-    __global const double* pos,              // [N*3] 位置
-    __global const double* beard_kernel,     // [K*K*K] 预计算核 (K=24)
-    __global const double* structures,       // [num_structures * 9] 结构包围盒
-    __global const double* junctions,        // [num_junctions * 3] 连接点
-    __global const int* structure_to_junction, // [num_structures] 每个结构对应的连接点索引
-    __global double* beard_values,           // [N] beard 贡献输出
+    __global const double* pos,             // [N*3] 位置（整数块坐标的 f64 表示）
+    __global const double* beard_kernel,    // [24*24*24] 核表
+    __global const double* structures,      // [num_structures * 8]
+    __global const double* junctions,       // [num_junctions * 3]
+    __global const double* affected,        // [6] 受影响盒
+    __global double* beard_values,          // [N] 输出
     int N,
     int num_structures,
-    int num_junctions,
-    int kernel_size,                         // 24
-    double kernel_scale                      // 1.0 / kernel_size, 用于坐标映射
+    int num_junctions
 ) {
     int i = get_global_id(0);
     if (i >= N) return;
 
-    double x = pos[i * 3];
-    double y = pos[i * 3 + 1];
-    double z = pos[i * 3 + 2];
+    int x = (int)pos[i * 3];
+    int y = (int)pos[i * 3 + 1];
+    int z = (int)pos[i * 3 + 2];
 
-    double beard = 0.0;
-    int ks  = kernel_size;
-    int ks2 = ks * ks;
-    double ksh = (double)ks * 0.5;           // kernel half-size
-
-    // ---- 结构贡献 ----
-    for (int s = 0; s < num_structures; s++) {
-        int sb = s * 9;
-        double cx = structures[sb];
-        double cy = structures[sb + 1];
-        double cz = structures[sb + 2];
-        double rx = structures[sb + 3];
-        double ry = structures[sb + 4];
-        double rz = structures[sb + 5];
-        double min_y = structures[sb + 6];
-        double ground_dy = structures[sb + 7];
-        double max_y = structures[sb + 8];
-
-        if (rx <= 0.0 || ry <= 0.0 || rz <= 0.0) continue;
-
-        // 将世界坐标映射到核坐标
-        double kx = (x - cx) * kernel_scale / rx + ksh;
-        double ky = (y - cy) * kernel_scale / ry + ksh;
-        double kz = (z - cz) * kernel_scale / rz + ksh;
-
-        if (kx < 0.0 || kx >= (double)(ks - 1) ||
-            ky < 0.0 || ky >= (double)(ks - 1) ||
-            kz < 0.0 || kz >= (double)(ks - 1)) {
-            continue;
-        }
-
-        int ix = (int)floor(kx);
-        int iy = (int)floor(ky);
-        int iz = (int)floor(kz);
-
-        // 边界钳制
-        if (ix < 0) ix = 0; if (ix > ks - 2) ix = ks - 2;
-        if (iy < 0) iy = 0; if (iy > ks - 2) iy = ks - 2;
-        if (iz < 0) iz = 0; if (iz > ks - 2) iz = ks - 2;
-
-        double fx = kx - (double)ix;
-        double fy = ky - (double)iy;
-        double fz = kz - (double)iz;
-
-        // 三线性采样
-        double c000 = beard_kernel[ ix      * ks2 +  iy      * ks +  iz     ];
-        double c100 = beard_kernel[(ix + 1) * ks2 +  iy      * ks +  iz     ];
-        double c010 = beard_kernel[ ix      * ks2 + (iy + 1) * ks +  iz     ];
-        double c110 = beard_kernel[(ix + 1) * ks2 + (iy + 1) * ks +  iz     ];
-        double c001 = beard_kernel[ ix      * ks2 +  iy      * ks + (iz + 1)];
-        double c101 = beard_kernel[(ix + 1) * ks2 +  iy      * ks + (iz + 1)];
-        double c011 = beard_kernel[ ix      * ks2 + (iy + 1) * ks + (iz + 1)];
-        double c111 = beard_kernel[(ix + 1) * ks2 + (iy + 1) * ks + (iz + 1)];
-
-        double v00 = c000 + fx * (c100 - c000);
-        double v10 = c010 + fx * (c110 - c010);
-        double v01 = c001 + fx * (c101 - c001);
-        double v11 = c011 + fx * (c111 - c011);
-        double v0  = v00  + fy * (v10  - v00 );
-        double v1  = v01  + fy * (v11  - v01 );
-        double val = v0   + fz * (v1   - v0  );
-
-        // 含高度约束的贡献权重
-        double y_contrib = 1.0;
-        if (y < min_y) {
-            y_contrib = 0.0;
-        } else if (y < min_y + ground_dy && ground_dy > 0.0) {
-            y_contrib = (y - min_y) / ground_dy;
-        }
-        beard += val * y_contrib * kernel_scale;
+    // 受影响盒外 → 0（与 vanilla affected_box.contains 一致，含边界）
+    int aminx = (int)affected[0], aminy = (int)affected[1], aminz = (int)affected[2];
+    int amaxx = (int)affected[3], amaxy = (int)affected[4], amaxz = (int)affected[5];
+    if (x < aminx || x > amaxx || y < aminy || y > amaxy || z < aminz || z > amaxz) {
+        beard_values[i] = 0.0;
+        return;
     }
 
-    // ---- 连接点贡献 ----
+    double weight = 0.0;
+
+    for (int s = 0; s < num_structures; s++) {
+        int sb = s * 8;
+        int bminx = (int)structures[sb];
+        int bminy = (int)structures[sb + 1];
+        int bminz = (int)structures[sb + 2];
+        int bmaxx = (int)structures[sb + 3];
+        int bmaxy = (int)structures[sb + 4];
+        int bmaxz = (int)structures[sb + 5];
+        int adapt = (int)structures[sb + 6];
+        int ground_delta = (int)structures[sb + 7];
+
+        int dx = max(0, max(bminx - x, x - bmaxx));
+        int dz = max(0, max(bminz - z, z - bmaxz));
+        int ground_y = bminy + ground_delta;
+        int dy_to_ground = y - ground_y;
+
+        int dy = 0;
+        if (adapt == 0) {
+            dy = 0; // None
+        } else if (adapt == 1 || adapt == 3) {
+            dy = dy_to_ground; // BeardThin / Bury
+        } else if (adapt == 2) {
+            dy = max(0, max(ground_y - y, y - bmaxy)); // BeardBox
+        } else {
+            dy = max(0, max(bminy - y, y - bmaxy)); // Encapsulate
+        }
+
+        if (adapt == 0) {
+            continue; // None → 0.0
+        }
+        if (adapt == 3) {
+            // Bury
+            weight += bury_contrib((double)dx, (double)dy / 2.0, (double)dz);
+        } else if (adapt == 1 || adapt == 2) {
+            // BeardThin / BeardBox
+            weight += beard_contrib(dx, dy, dz, dy_to_ground, beard_kernel) * 0.8;
+        } else {
+            // Encapsulate
+            weight +=
+                bury_contrib((double)dx / 2.0, (double)dy / 2.0, (double)dz / 2.0) * 0.8;
+        }
+    }
+
     for (int j = 0; j < num_junctions; j++) {
         int jb = j * 3;
-        double jx = junctions[jb];
-        double jy = junctions[jb + 1];
-        double jz = junctions[jb + 2];
-
-        double dx = x - jx;
-        double dy = y - jy;
-        double dz = z - jz;
-
-        // 连接点半径 = 12 格 (Minecraft 默认)
-        double jr = 12.0;
-        double kx = dx * kernel_scale / jr + ksh;
-        double ky = dy * kernel_scale / jr + ksh;
-        double kz = dz * kernel_scale / jr + ksh;
-
-        if (kx < 0.0 || kx >= (double)(ks - 1) ||
-            ky < 0.0 || ky >= (double)(ks - 1) ||
-            kz < 0.0 || kz >= (double)(ks - 1)) {
-            continue;
-        }
-
-        int ix = (int)floor(kx);
-        int iy = (int)floor(ky);
-        int iz = (int)floor(kz);
-
-        if (ix < 0) ix = 0; if (ix > ks - 2) ix = ks - 2;
-        if (iy < 0) iy = 0; if (iy > ks - 2) iy = ks - 2;
-        if (iz < 0) iz = 0; if (iz > ks - 2) iz = ks - 2;
-
-        double fx = kx - (double)ix;
-        double fy = ky - (double)iy;
-        double fz = kz - (double)iz;
-
-        double c000 = beard_kernel[ ix      * ks2 +  iy      * ks +  iz     ];
-        double c100 = beard_kernel[(ix + 1) * ks2 +  iy      * ks +  iz     ];
-        double c010 = beard_kernel[ ix      * ks2 + (iy + 1) * ks +  iz     ];
-        double c110 = beard_kernel[(ix + 1) * ks2 + (iy + 1) * ks +  iz     ];
-        double c001 = beard_kernel[ ix      * ks2 +  iy      * ks + (iz + 1)];
-        double c101 = beard_kernel[(ix + 1) * ks2 +  iy      * ks + (iz + 1)];
-        double c011 = beard_kernel[ ix      * ks2 + (iy + 1) * ks + (iz + 1)];
-        double c111 = beard_kernel[(ix + 1) * ks2 + (iy + 1) * ks + (iz + 1)];
-
-        double v00 = c000 + fx * (c100 - c000);
-        double v10 = c010 + fx * (c110 - c010);
-        double v01 = c001 + fx * (c101 - c001);
-        double v11 = c011 + fx * (c111 - c011);
-        double v0  = v00  + fy * (v10  - v00 );
-        double v1  = v01  + fy * (v11  - v01 );
-        double val = v0   + fz * (v1   - v0  );
-
-        beard += val * kernel_scale;
+        int jdx = x - (int)junctions[jb];
+        int jdy = y - (int)junctions[jb + 1];
+        int jdz = z - (int)junctions[jb + 2];
+        weight += beard_contrib(jdx, jdy, jdz, jdy, beard_kernel) * 0.4;
     }
 
-    beard_values[i] = beard;
+    beard_values[i] = weight;
 }

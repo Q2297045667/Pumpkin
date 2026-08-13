@@ -5,51 +5,6 @@ use crate::{
 
 use super::GRADIENTS;
 
-// 线程本地噪声缓存，用于 GPU 批量预计算。
-// 当 GPU 加速器可用时，在批量生成开始前填充此缓存，
-// 后续的 `OctavePerlinNoiseSampler::sample` 调用将优先从缓存读取。
-
-#[allow(clippy::doc_markdown)]
-/// 噪声缓存键类型：(`sampler_id`, `x_fixed`, `y_fixed`, `z_fixed`)
-type NoiseCacheKey = (u64, i64, i64, i64);
-#[allow(clippy::doc_markdown)]
-/// 噪声缓存映射类型
-type NoiseCacheMap = std::collections::HashMap<NoiseCacheKey, f64>;
-
-thread_local! {
-    pub(crate) static NOISE_CACHE: std::cell::RefCell<Option<NoiseCacheMap>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// 设置线程本地噪声缓存（仅在 GPU 加速批量预计算时调用）。
-/// `sampler_id` 唯一标识一个 `OctavePerlinNoiseSampler` 实例。
-pub fn set_noise_cache(cache: impl Into<NoiseCacheMap>) {
-    NOISE_CACHE.with(|c| {
-        *c.borrow_mut() = Some(cache.into());
-    });
-}
-
-/// 清除线程本地噪声缓存。
-pub fn clear_noise_cache() {
-    NOISE_CACHE.with(|c| {
-        *c.borrow_mut() = None;
-    });
-}
-
-/// 从线程本地噪声缓存中查找。返回 `Some(value)` 表示缓存命中。
-#[inline]
-#[must_use]
-pub fn lookup_noise_cache(sampler_id: u64, x: f64, y: f64, z: f64) -> Option<f64> {
-    NOISE_CACHE.with(|c| {
-        c.borrow().as_ref().and_then(|cache| {
-            let ix = (x * 1_000_000.0) as i64;
-            let iy = (y * 1_000_000.0) as i64;
-            let iz = (z * 1_000_000.0) as i64;
-            cache.get(&(sampler_id, ix, iy, iz)).copied()
-        })
-    })
-}
-
 /// A 3D Perlin noise sampler implementation.
 ///
 /// Perlin noise is a gradient noise function commonly used for procedural generation
@@ -336,9 +291,6 @@ pub struct OctavePerlinNoiseSampler {
     pub samplers: Box<[SamplerData]>,
     /// The maximum possible absolute value this sampler can return.
     max_value: f64,
-    /// 唯一标识符，用于 GPU 噪声缓存的键。
-    /// 默认值为 0（表示不使用缓存）。
-    pub sampler_id: u64,
 }
 
 impl OctavePerlinNoiseSampler {
@@ -515,14 +467,7 @@ impl OctavePerlinNoiseSampler {
         Self {
             samplers,
             max_value,
-            sampler_id: 0,
         }
-    }
-
-    /// 设置此采样器的唯一 ID（用于 GPU 噪声缓存查找）。
-    #[inline]
-    pub const fn set_sampler_id(&mut self, id: u64) {
-        self.sampler_id = id;
     }
 
     /// Calculates the total amplitude for a given scale.
@@ -556,12 +501,6 @@ impl OctavePerlinNoiseSampler {
     #[inline]
     #[must_use]
     pub fn sample(&self, x: f64, y: f64, z: f64) -> f64 {
-        // GPU 噪声缓存查找：如果缓存中有预计算值，直接返回。
-        if self.sampler_id != 0
-            && let Some(cached) = lookup_noise_cache(self.sampler_id, x, y, z)
-        {
-            return cached;
-        }
         self.samplers
             .iter()
             .map(|data| {

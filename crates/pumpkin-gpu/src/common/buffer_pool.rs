@@ -1,7 +1,7 @@
 //! GPU 缓冲区池 — 持久化复用，减少分配/释放开销。
 //!
 //! 池按 buffer 长度分组，支持同一长度多个 buffer 共存。
-//! 适用于跨方法调用复用的场景（如 `GpuCellBatchSampler`、`GpuNoiseSampler`）。
+//! 适用于跨方法调用复用的场景（如 `GpuAquiferBatchSampler`、`GpuNoiseSampler`）。
 
 use crate::GpuBuffer;
 use crate::GpuDevice;
@@ -121,5 +121,51 @@ impl GpuBufferPool {
 impl Default for GpuBufferPool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_put_reuses_same_length() {
+        let device = GpuDevice::init();
+        let mut pool = GpuBufferPool::new();
+
+        // 空池：take 应新建
+        let buf1 = pool.take_f64(&device, 64).expect("alloc f64");
+        pool.put_f64(buf1);
+        // 同长度：take 应复用池中 buffer（len 一致）
+        let buf2 = pool.take_f64(&device, 64).expect("reuse f64");
+        assert_eq!(buf2.len(), 64);
+        pool.put_f64(buf2);
+
+        // 不同长度不应混用
+        let buf3 = pool.take_f64(&device, 128).expect("alloc f64 128");
+        assert_eq!(buf3.len(), 128);
+        pool.put_f64(buf3);
+
+        // u8 / i32 类型隔离
+        let u8_buf = pool.take_u8(&device, 64).expect("alloc u8");
+        assert_eq!(u8_buf.len(), 64);
+        pool.put_u8(u8_buf);
+        let i32_buf = pool.take_i32(&device, 64).expect("alloc i32");
+        assert_eq!(i32_buf.len(), 64);
+        pool.put_i32(i32_buf);
+
+        pool.free_all(&device).expect("free all");
+    }
+
+    #[test]
+    fn zero_length_buffers() {
+        let device = GpuDevice::init();
+        let mut pool = GpuBufferPool::new();
+        let buf = pool.take_f64(&device, 0).expect("zero-length alloc");
+        assert_eq!(buf.len(), 0);
+        pool.put_f64(buf);
+        let buf2 = pool.take_f64(&device, 0).expect("zero-length reuse");
+        assert_eq!(buf2.len(), 0);
+        pool.free_all(&device).expect("free all");
     }
 }

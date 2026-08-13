@@ -9,10 +9,12 @@ use crate::compile::opencl_compile::OpenClKernelCompiler;
 use opencl3::command_queue::CommandQueue;
 use opencl3::context::Context;
 use opencl3::device::Device;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct OpenClKernelLauncher {
-    compiler: Option<OpenClKernelCompiler>,
+    /// 编译器由 `Mutex` 包裹以支持延迟编译（`KernelLauncher` trait 方法为 `&self`）。
+    compiler: Mutex<Option<OpenClKernelCompiler>>,
     queues: Vec<CommandQueue>,
     /// 轮转计数器，用于多队列流水线
     next_queue: AtomicUsize,
@@ -22,7 +24,7 @@ impl OpenClKernelLauncher {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            compiler: None,
+            compiler: Mutex::new(None),
             queues: Vec::new(),
             next_queue: AtomicUsize::new(0),
         }
@@ -39,33 +41,58 @@ impl OpenClKernelLauncher {
         queues: Vec<CommandQueue>,
         flags: Option<&[String]>,
     ) {
-        let mut compiler = OpenClKernelCompiler::new();
         let flags = flags.map_or_else(
             || vec!["-cl-fp32-correctly-rounded-divide-sqrt".to_string()],
             <[String]>::to_vec,
         );
-        if let Err(e) = compiler.compile_all(ctx, device.id(), &flags) {
+        let mut compiler = OpenClKernelCompiler::new(&flags);
+        if let Err(e) = compiler.compile_all(ctx, device.id()) {
             tracing::warn!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
         }
         if queues.len() > 1 {
             tracing::debug!("OpenCL 流水线: {} 个命令队列（轮转模式）", queues.len());
         }
-        self.compiler = Some(compiler);
+        *self.compiler.lock() = Some(compiler);
         self.queues = queues;
     }
 
     /// 编译一个 JIT 特化 kernel。
     #[cfg(feature = "pumpkin-util")]
     pub fn compile_jit_kernel(
-        &mut self,
+        &self,
         ctx: &Context,
         device: &Device,
         jit_kernel: &crate::jit::JitSpecializedKernel,
     ) -> Result<(), crate::common::DeviceError> {
-        let compiler = self.compiler.as_mut().ok_or_else(|| {
+        let mut guard = self.compiler.lock();
+        let compiler = guard.as_mut().ok_or_else(|| {
             crate::common::DeviceError::Internal("OpenCL compiler not initialized".into())
         })?;
         compiler.compile_jit_kernel(ctx, device.id(), jit_kernel)
+    }
+
+    /// 按需编译单个预注册 kernel（延迟加载）。
+    ///
+    /// 从全局 OpenCL 源码注册表查找源码，使用与 `compile_all` 相同的构建标志。
+    /// 编译失败仅记录日志——上层 `try_launch_kernel` 会看到 kernel 仍不存在并回退 CPU。
+    pub fn compile_kernel_by_name(&self, ctx: &Context, device: &Device, name: &str) {
+        let Some(source) = crate::compile::lookup_opencl_kernel_source(name) else {
+            tracing::debug!("OpenCL lazy: '{name}' not in registry");
+            return;
+        };
+        let mut guard = self.compiler.lock();
+        let Some(compiler) = guard.as_mut() else {
+            return;
+        };
+        if let Err(e) = compiler.compile_by_name(ctx, device.id(), name, source) {
+            tracing::warn!("OpenCL lazy: compile '{name}' failed: {e}");
+            crate::logging::log_fallback(
+                &crate::logging::FallbackReason::KernelCompileFailed(format!(
+                    "OpenCL lazy '{name}': {e}"
+                )),
+                "opencl_kernel::compile_kernel_by_name",
+            );
+        }
     }
 
     /// 获取命令队列引用（供 `OpenClBackend` 的 buffer 操作使用）。
@@ -97,7 +124,8 @@ impl Default for OpenClKernelLauncher {
 
 impl KernelLauncher for OpenClKernelLauncher {
     fn launch(&self, launch: KernelLaunch<'_>) -> Result<(), DeviceError> {
-        let compiler = self.compiler.as_ref().ok_or_else(|| {
+        let compiler_guard = self.compiler.lock();
+        let compiler = compiler_guard.as_ref().ok_or_else(|| {
             DeviceError::Unsupported("OpenCL kernel compiler not initialized".into())
         })?;
         let queue = self.next_queue();
@@ -116,6 +144,18 @@ impl KernelLauncher for OpenClKernelLauncher {
                     })?;
                 }
                 KernelArg::F64(v) => {
+                    // SAFETY: kernel is valid and compiled; arg_index is within signature bounds
+                    unsafe { kernel.set_arg(arg_index, v) }.map_err(|e| {
+                        DeviceError::LaunchFailed(format!("set_arg {arg_index}: {e}"))
+                    })?;
+                }
+                KernelArg::U32(v) => {
+                    // SAFETY: kernel is valid and compiled; arg_index is within signature bounds
+                    unsafe { kernel.set_arg(arg_index, v) }.map_err(|e| {
+                        DeviceError::LaunchFailed(format!("set_arg {arg_index}: {e}"))
+                    })?;
+                }
+                KernelArg::USize(v) => {
                     // SAFETY: kernel is valid and compiled; arg_index is within signature bounds
                     unsafe { kernel.set_arg(arg_index, v) }.map_err(|e| {
                         DeviceError::LaunchFailed(format!("set_arg {arg_index}: {e}"))
@@ -146,13 +186,19 @@ impl KernelLauncher for OpenClKernelLauncher {
                 | KernelArg::U8Slice(_)
                 | KernelArg::U8SliceMut(_)
                 | KernelArg::I32Slice(_)
-                | KernelArg::I32SliceMut(_)
-                | KernelArg::USize(_)
-                | KernelArg::U32(_) => {
+                | KernelArg::I32SliceMut(_) => {
                     let msg = format!("Arg type not supported on OpenCL GPU path: {arg:?}");
                     return Err(DeviceError::Unsupported(msg));
                 }
             }
+        }
+
+        // 设置尾部 __local 内存参数（tiled kernel 等）
+        let local_base = launch.args.len() as u32;
+        for (offset, &size) in launch.local_mem_bytes.iter().enumerate() {
+            // SAFETY: arg_index 指向 kernel 签名的 __local 参数；size 为动态局部内存大小
+            unsafe { kernel.set_arg_local_buffer(local_base + offset as u32, size) }
+                .map_err(|e| DeviceError::LaunchFailed(format!("set_arg_local {offset}: {e}")))?;
         }
 
         // 执行 kernel
@@ -178,7 +224,7 @@ impl KernelLauncher for OpenClKernelLauncher {
     }
 
     fn has_kernel(&self, name: &str) -> bool {
-        self.compiler.as_ref().is_some_and(|c| c.has(name))
+        self.compiler.lock().as_ref().is_some_and(|c| c.has(name))
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {

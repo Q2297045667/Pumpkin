@@ -156,7 +156,9 @@ pub fn init_opencl(
     let n_queues = pipeline_queues.max(1);
     let mut queues = Vec::with_capacity(n_queues);
     for i in 0..n_queues {
-        let q = CommandQueue::create_default(&ctx, device.id() as u64)
+        // `create_default` 的第二个参数是队列属性位掩码（非设备 ID），
+        // 传 0 使用默认属性；队列绑定到 `Context::from_device` 的默认设备。
+        let q = CommandQueue::create_default(&ctx, 0)
             .map_err(|e| format!("创建 OpenCL 命令队列 [{i}/{n_queues}] 失败: {e}"))?;
         queues.push(q);
     }

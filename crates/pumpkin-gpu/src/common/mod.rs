@@ -156,6 +156,7 @@ impl BackendImpl {
         n: usize,
         args: Vec<crate::common::kernel::KernelArg<'_>>,
         gpu_buffers: Vec<crate::common::kernel::GpuBufferRef<'_>>,
+        local_mem_bytes: Vec<usize>,
     ) -> bool {
         self.kernel_launcher().is_some_and(|l| {
             if !l.has_kernel(name) {
@@ -168,6 +169,7 @@ impl BackendImpl {
                     local_work_size: Some([256, 1, 1]),
                     args,
                     gpu_buffers,
+                    local_mem_bytes,
                 })
                 .is_ok()
             } else {
@@ -177,6 +179,9 @@ impl BackendImpl {
     }
 
     /// 按需编译单个 kernel（延迟加载优化）。
+    ///
+    /// 后端从各自注册表查找源码并补编译；失败只记录日志，
+    /// `try_launch_kernel` 随后会因 kernel 不存在而回退到 CPU。
     fn try_compile_kernel_on_demand(&self, name: &str) {
         match self {
             #[cfg(feature = "cuda")]
@@ -192,7 +197,7 @@ impl BackendImpl {
     /// 仅在 GPU 后端（CUDA / OpenCL）下有效，CPU 后端返回错误。
     #[cfg(feature = "pumpkin-util")]
     pub(crate) fn compile_jit_kernel(
-        &mut self,
+        &self,
         jit_kernel: &crate::jit::JitSpecializedKernel,
     ) -> Result<(), DeviceError> {
         match self {

@@ -435,12 +435,12 @@ mod tests {
     fn merge_drops_unknown_sections() {
         // 未知字段（例如未启用 `gpu` feature 构建中的 `[gpu]` 段）
         // 应在合并时被移除，并触发配置回写。
-        let toml_str = r#"
+        let toml_str = r"
 [gpu]
 enabled = true
 
 unknown_section = 42
-"#;
+";
         let parsed: toml::Value = toml::from_str(toml_str).expect("parse");
         let (merged, changed) = PumpkinConfig::merge_with_default_toml(parsed);
         assert!(changed, "unknown keys should trigger a rewrite");
@@ -467,7 +467,7 @@ unknown_section = 42
     #[test]
     fn merge_of_default_config_is_unchanged() {
         let default_value: toml::Value =
-            toml::Value::try_from(&PumpkinConfig::default()).expect("default toml");
+            toml::Value::try_from(PumpkinConfig::default()).expect("default toml");
         let (merged, changed) = PumpkinConfig::merge_with_default_toml(default_value);
         assert!(!changed, "a complete default config should not change");
 

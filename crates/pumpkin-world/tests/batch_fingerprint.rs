@@ -1,4 +1,4 @@
-//! 批量 GPU 加速指纹测试 — Cell Cache、Aquifer、Beardifier、Vein。
+//! 批量 GPU 加速指纹测试 — Cell Cache（vanilla 规格）、Aquifer、Beardifier。
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -24,17 +24,25 @@
 
 use pumpkin_config::gpu::GpuConfig;
 use pumpkin_data::chunk::DoublePerlinNoiseParameters;
-use pumpkin_world::batch_accel::{BatchAccelerator, CellCacheFillSpec};
-
-#[cfg(feature = "gpu")]
 use pumpkin_gpu::noise::batch_cell::{
-    AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData, CellFillParams, VeinParams,
+    AquiferBatchResult, BeardifierJunctionData, BeardifierStructureData,
 };
-use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};
+use pumpkin_world::batch_accel::{BatchAccelerator, CellCacheFillSpec};
 use pumpkin_world::generation::noise::perlin::DoublePerlinNoiseSampler;
 
 const SEED: u64 = 138_782_381_985_206;
+
+fn make_jit_accel() -> BatchAccelerator {
+    BatchAccelerator::new(&GpuConfig {
+        enabled: true,
+        noise_acceleration: true,
+        batch_acceleration: true,
+        jit_enabled: true,
+        jit_max_unroll: 16,
+        ..Default::default()
+    })
+}
 
 // ============================================================================
 // FNV-1a 哈希辅助函数
@@ -177,64 +185,87 @@ fn cpu_aquifer_ref(
     }
 }
 
-/// CPU 参考：Beardifier 遍历结构与连接点。
-/// 与 `batch_accel::cpu_beardifier` 保持逻辑一致。
+/// 与 vanilla `Beardifier::get_beard_contribution` 逐位一致的参考实现。
+fn ref_beard_contrib(dx: i32, dy: i32, dz: i32, y_to_ground: i32) -> f64 {
+    let xi = dx + 12;
+    let yi = dy + 12;
+    let zi = dz + 12;
+    if (0..24).contains(&xi) && (0..24).contains(&yi) && (0..24).contains(&zi) {
+        let dy_off = f64::from(y_to_ground) + 0.5;
+        let dsq = f64::from(dx).powi(2) + dy_off.powi(2) + f64::from(dz).powi(2);
+        let value = -dy_off * (dsq / 2.0).sqrt().recip() / 2.0;
+        let kdsq = f64::from(dx).powi(2) + (f64::from(dy) + 0.5).powi(2) + f64::from(dz).powi(2);
+        value * std::f64::consts::E.powf(-kdsq / 16.0)
+    } else {
+        0.0
+    }
+}
+
+/// 与 vanilla `Beardifier::get_bury_contribution` 逐位一致。
+fn ref_bury_contrib(dx: f64, dy: f64, dz: f64) -> f64 {
+    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+    if distance < 0.0 {
+        1.0
+    } else if distance > 6.0 {
+        0.0
+    } else {
+        1.0 - distance / 6.0
+    }
+}
+
+/// CPU 参考：vanilla `Beardifier::sample` 的逐位等价实现。
 fn cpu_beardifier_ref(
     positions: &[f64],
     structures: &[BeardifierStructureData],
     junctions: &[BeardifierJunctionData],
+    affected_box: [i32; 6],
     results: &mut [f64],
 ) {
+    let [aminx, aminy, aminz, amaxx, amaxy, amaxz] = affected_box;
     for i in 0..results.len() {
-        let x = positions[i * 3];
-        let y = positions[i * 3 + 1];
-        let z = positions[i * 3 + 2];
-        let mut beard = 0.0;
+        let x = positions[i * 3] as i32;
+        let y = positions[i * 3 + 1] as i32;
+        let z = positions[i * 3 + 2] as i32;
 
-        // 结构贡献：距离反比衰减
+        if x < aminx || x > amaxx || y < aminy || y > amaxy || z < aminz || z > amaxz {
+            results[i] = 0.0;
+            continue;
+        }
+
+        let mut weight = 0.0;
         for s in structures {
-            let cx = s.center_x;
-            let cy = s.center_y;
-            let cz = s.center_z;
-            let rx = s.radius_x + 1.0;
-            let ry = s.radius_y + 1.0;
-            let rz = s.radius_z + 1.0;
-
-            if rx <= 0.0 || ry <= 0.0 || rz <= 0.0 {
-                continue;
-            }
-
-            let dx = (x - cx) / rx;
-            let dy = (y - cy) / ry;
-            let dz = (z - cz) / rz;
-            let dist_sq = dx * dx + dy * dy + dz * dz;
-
-            // 仅包围盒内（归一化距离 < 1）才贡献
-            if dist_sq < 1.0 {
-                let contrib = (1.0 - dist_sq.sqrt()).max(0.0);
-                let y_factor = if s.ground_delta_y > 0.0 {
-                    ((y - s.min_y) / s.ground_delta_y).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                beard += contrib * y_factor * 0.5;
-            }
+            let dx = 0.max((s.box_min_x - x).max(x - s.box_max_x));
+            let dz = 0.max((s.box_min_z - z).max(z - s.box_max_z));
+            let ground_y = s.box_min_y + s.ground_delta;
+            let dy_to_ground = y - ground_y;
+            let dy = match s.adaptation {
+                0 => 0,
+                1 | 3 => dy_to_ground,
+                2 => 0.max((ground_y - y).max(y - s.box_max_y)),
+                _ => 0.max((s.box_min_y - y).max(y - s.box_max_y)),
+            };
+            let contrib = match s.adaptation {
+                0 => 0.0,
+                3 => ref_bury_contrib(f64::from(dx), f64::from(dy) / 2.0, f64::from(dz)),
+                1 | 2 => ref_beard_contrib(dx, dy, dz, dy_to_ground) * 0.8,
+                _ => {
+                    ref_bury_contrib(
+                        f64::from(dx) / 2.0,
+                        f64::from(dy) / 2.0,
+                        f64::from(dz) / 2.0,
+                    ) * 0.8
+                }
+            };
+            weight += contrib;
         }
-
-        // 连接点贡献：固定半径高斯衰减
         for j in junctions {
-            let dx = x - f64::from(j.x);
-            let dy = y - f64::from(j.ground_y);
-            let dz = z - f64::from(j.z);
-            let jr: f64 = 12.0;
-            let dist_sq = dx * dx + dy * dy + dz * dz;
-            let norm = dist_sq / (jr * jr);
-            if norm < 1.0 {
-                beard += (1.0 - norm) * 0.25;
-            }
+            let jdx = x - j.x;
+            let jdy = y - j.ground_y;
+            let jdz = z - j.z;
+            weight += ref_beard_contrib(jdx, jdy, jdz, jdy) * 0.4;
         }
 
-        results[i] = beard;
+        results[i] = weight;
     }
 }
 
@@ -242,82 +273,7 @@ fn cpu_beardifier_ref(
 // 测试用例
 // ============================================================================
 
-/// 1. Cell Cache 填充一致性
-#[test]
-fn cell_cache_fill_consistency() {
-    let n = 1024;
-    let positions = make_positions_3d(n, SEED);
-
-    // 使用真实 perlin 配置（从 OctavePerlinNoiseSampler 提取）
-    let sampler = make_test_sampler(SEED, &[0, 1, 2, 3]);
-    let (perlin_configs, num_octaves, perms) = extract_cell_params_from_sampler(&sampler);
-
-    let params = CellFillParams {
-        perlin_configs,
-        num_octaves,
-        sampler_types: vec![0],
-        perms,
-    };
-
-    // 两次 GPU 调用应产生完全相同的结果（确定性验证）
-    let mut run1 = vec![0.0f64; n];
-    let mut run2 = vec![0.0f64; n];
-    make_accel().batch_fill_cell_caches(&positions, &params, &mut run1);
-    make_accel().batch_fill_cell_caches(&positions, &params, &mut run2);
-
-    let hash1 = fnv1a_f64(&run1);
-    let hash2 = fnv1a_f64(&run2);
-    assert_eq!(
-        hash1, hash2,
-        "cell_cache_fill: deterministic output expected, got {hash1:#x} vs {hash2:#x}"
-    );
-
-    // 非零配置应产生非零输出（验证 GPU 确实在执行计算）
-    let non_zero = run1.iter().any(|&v| v.abs() > 1e-12);
-    assert!(
-        non_zero,
-        "cell_cache_fill with real configs should produce non-zero output"
-    );
-}
-
-/// 2. 插值器缓冲填充一致性
-#[test]
-fn interpolator_fill_consistency() {
-    let n = 1024;
-    let positions = make_positions_3d(n, SEED);
-
-    let sampler = make_test_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
-    let (perlin_configs, num_octaves, perms) =
-        extract_interp_params_from_sampler(&sampler, 0.25, 0.125);
-
-    let params = CellFillParams {
-        perlin_configs,
-        num_octaves,
-        sampler_types: vec![0],
-        perms,
-    };
-
-    // 两次 GPU 调用应产生完全相同的结果（确定性验证）
-    let mut run1 = vec![0.0f64; n];
-    let mut run2 = vec![0.0f64; n];
-    make_accel().batch_fill_interpolators(&positions, &params, &mut run1);
-    make_accel().batch_fill_interpolators(&positions, &params, &mut run2);
-
-    let hash1 = fnv1a_f64(&run1);
-    let hash2 = fnv1a_f64(&run2);
-    assert_eq!(
-        hash1, hash2,
-        "interpolator_fill: deterministic output expected, got {hash1:#x} vs {hash2:#x}"
-    );
-
-    let non_zero = run1.iter().any(|&v| v.abs() > 1e-12);
-    assert!(
-        non_zero,
-        "interpolator_fill with real configs should produce non-zero output"
-    );
-}
-
-/// 构造测试用 DoublePerlinNoiseSampler。
+/// 构造测试用 `DoublePerlinNoiseSampler`。
 fn make_test_double_perlin(seed: u64) -> DoublePerlinNoiseSampler {
     let r = Xoroshiro::from_seed(seed);
     let mut g = RandomGenerator::Xoroshiro(r);
@@ -332,7 +288,7 @@ fn make_test_double_perlin(seed: u64) -> DoublePerlinNoiseSampler {
     DoublePerlinNoiseSampler::from_params(&mut g, &params, false)
 }
 
-/// 多 cache 批量填充（vanilla DoublePerlin 语义）与 `DoublePerlinNoiseSampler::sample` 逐位一致。
+/// 多 cache 批量填充（vanilla `DoublePerlin` 语义）与 `DoublePerlinNoiseSampler::sample` 逐位一致。
 /// 验证：每 cache 独立采样器、NoiseData 缩放、GPU/CPU 路径一致性。
 #[test]
 fn cell_cache_fill_vanilla_double_perlin_parity() {
@@ -386,212 +342,62 @@ fn cell_cache_fill_vanilla_double_perlin_parity() {
     );
 }
 
-// ============================================================================
-// vanilla 置换表一致性：batch 输出 vs 独立参考实现（镜像 GPU kernel 语义）
-// ============================================================================
-
-/// 参考实现：vanilla 梯度表点积（镜像 GPU `grad`）。
-fn ref_grad(hash: i32, x: f64, y: f64, z: f64) -> f64 {
-    pumpkin_util::noise::GRADIENTS[(hash & 15) as usize].dot(x, y, z)
-}
-
-/// 参考实现：vanilla fade（镜像 GPU `perlin_fade`）。
-fn ref_fade(t: f64) -> f64 {
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-/// 参考实现：vanilla maintainPrecision（镜像 GPU `maintain_precision`）。
-fn ref_maintain_precision(v: f64) -> f64 {
-    v - (v / 33_554_432.0 + 0.5).floor() * 33_554_432.0
-}
-
-/// 参考实现：与 GPU `sample_no_fade_core` 逐行一致。
-fn ref_sample_no_fade_core(
-    perm: &[u8; 256],
-    ox: f64,
-    oy: f64,
-    oz: f64,
-    x: f64,
-    y: f64,
-    z: f64,
-) -> f64 {
-    let tx = x + ox;
-    let ty = y + oy;
-    let tz = z + oz;
-    let xi = tx.floor();
-    let yi = ty.floor();
-    let zi = tz.floor();
-    let lx = tx - xi;
-    let ly = ty - yi;
-    let lz = tz - zi;
-    let ix = (xi as i32) & 255;
-    let iy = (yi as i32) & 255;
-    let iz = (zi as i32) & 255;
-    let i = i32::from(perm[ix as usize]);
-    let j = i32::from(perm[((ix + 1) & 255) as usize]);
-    let k = i32::from(perm[((i + iy) & 255) as usize]);
-    let l = i32::from(perm[((i + iy + 1) & 255) as usize]);
-    let m = i32::from(perm[((j + iy) & 255) as usize]);
-    let n = i32::from(perm[((j + iy + 1) & 255) as usize]);
-    let d = ref_grad(i32::from(perm[((k + iz) & 255) as usize]), lx, ly, lz);
-    let e = ref_grad(i32::from(perm[((m + iz) & 255) as usize]), lx - 1.0, ly, lz);
-    let f = ref_grad(i32::from(perm[((l + iz) & 255) as usize]), lx, ly - 1.0, lz);
-    let g = ref_grad(
-        i32::from(perm[((n + iz) & 255) as usize]),
-        lx - 1.0,
-        ly - 1.0,
-        lz,
-    );
-    let h = ref_grad(
-        i32::from(perm[((k + iz + 1) & 255) as usize]),
-        lx,
-        ly,
-        lz - 1.0,
-    );
-    let o = ref_grad(
-        i32::from(perm[((m + iz + 1) & 255) as usize]),
-        lx - 1.0,
-        ly,
-        lz - 1.0,
-    );
-    let p = ref_grad(
-        i32::from(perm[((l + iz + 1) & 255) as usize]),
-        lx,
-        ly - 1.0,
-        lz - 1.0,
-    );
-    let q = ref_grad(
-        i32::from(perm[((n + iz + 1) & 255) as usize]),
-        lx - 1.0,
-        ly - 1.0,
-        lz - 1.0,
-    );
-    let u = ref_fade(lx);
-    let v = ref_fade(ly);
-    let w = ref_fade(lz);
-    let du0 = d + u * (e - d);
-    let du1 = f + u * (g - f);
-    let du2 = h + u * (o - h);
-    let du3 = p + u * (q - p);
-    let dv0 = du0 + v * (du1 - du0);
-    let dv1 = du2 + v * (du3 - du2);
-    dv0 + w * (dv1 - dv0)
-}
-
-/// Cell cache 参考：镜像 GPU `cell_cache_fill_f64` kernel 语义
-///（amp 已预乘 persistence，仅取 first_sampler）。
-fn ref_cell_cache_fill(sampler: &OctavePerlinNoiseSampler, positions: &[f64], results: &mut [f64]) {
-    for (i, res) in results.iter_mut().enumerate() {
-        let x = positions[i * 3];
-        let y = positions[i * 3 + 1];
-        let z = positions[i * 3 + 2];
-        let mut sum = 0.0;
-        for sd in &sampler.samplers {
-            let amp = sd.amplitude * sd.persistence;
-            let lac = sd.lacunarity;
-            sum += amp
-                * ref_sample_no_fade_core(
-                    sd.sampler.permutation(),
-                    sd.sampler.x_origin(),
-                    sd.sampler.y_origin(),
-                    sd.sampler.z_origin(),
-                    ref_maintain_precision(x * lac),
-                    ref_maintain_precision(y * lac),
-                    ref_maintain_precision(z * lac),
-                );
-        }
-        *res = sum;
-    }
-}
-
-/// 插值器参考：镜像 GPU `interpolator_fill_f64` kernel 语义。
-fn ref_interp_fill(
-    sampler: &OctavePerlinNoiseSampler,
-    xz_scale: f64,
-    y_scale: f64,
-    positions: &[f64],
-    results: &mut [f64],
-) {
-    for (i, res) in results.iter_mut().enumerate() {
-        let x = positions[i * 3];
-        let y = positions[i * 3 + 1];
-        let z = positions[i * 3 + 2];
-        let mut sum = 0.0;
-        for sd in &sampler.samplers {
-            let amp = sd.amplitude * sd.persistence;
-            let lac = sd.lacunarity;
-            sum += amp
-                * ref_sample_no_fade_core(
-                    sd.sampler.permutation(),
-                    sd.sampler.x_origin(),
-                    sd.sampler.y_origin(),
-                    sd.sampler.z_origin(),
-                    ref_maintain_precision(x * xz_scale * lac),
-                    ref_maintain_precision(y * y_scale * lac),
-                    ref_maintain_precision(z * xz_scale * lac),
-                );
-        }
-        *res = sum;
-    }
-}
-
-/// batch cell cache 填充（携带真实 vanilla 置换表）与参考实现逐位一致。
+/// vanilla spec 路径在 JIT 开启时与 vanilla 参考逐位一致。
+///
+/// 验证 `batch_fill_cell_caches_vanilla` 的 JIT → batch → CPU 级联：
+/// 有 GPU 时走 JIT 专用 kernel，无 GPU 时走 CPU 回退，两者都必须与
+/// `DoublePerlinNoiseSampler::sample` 逐位一致。
 #[test]
-fn cell_cache_fill_vanilla_table_parity() {
+fn cell_cache_fill_vanilla_jit_parity() {
     let n = 256;
     let positions = make_positions_3d(n, SEED);
-    let sampler = make_test_sampler(SEED, &[0, 1, 2, 3]);
-    let (perlin_configs, num_octaves, perms) = extract_cell_params_from_sampler(&sampler);
-    let params = CellFillParams {
-        perlin_configs,
-        num_octaves,
-        sampler_types: vec![0],
-        perms,
-    };
 
-    let mut batch = vec![0.0f64; n];
-    make_accel().batch_fill_cell_caches(&positions, &params, &mut batch);
+    let dbl1 = make_test_double_perlin(SEED);
+    let dbl2 = make_test_double_perlin(SEED.wrapping_add(7));
 
-    let mut reference = vec![0.0f64; n];
-    ref_cell_cache_fill(&sampler, &positions, &mut reference);
+    let specs = vec![
+        CellCacheFillSpec {
+            first: dbl1.first_sampler(),
+            second: dbl1.second_sampler(),
+            amplitude: dbl1.amplitude(),
+            xz_scale: 0.25,
+            y_scale: 0.125,
+        },
+        CellCacheFillSpec {
+            first: dbl2.first_sampler(),
+            second: dbl2.second_sampler(),
+            amplitude: dbl2.amplitude(),
+            xz_scale: 1.0,
+            y_scale: 1.0,
+        },
+    ];
+
+    let mut results = vec![0.0f64; n * 2];
+    make_jit_accel().batch_fill_cell_caches_vanilla(&positions, &specs, &mut results);
+
+    let mut reference = vec![0.0f64; n * 2];
+    for (c, spec) in specs.iter().enumerate() {
+        let out = &mut reference[c * n..(c + 1) * n];
+        for (i, res) in out.iter_mut().enumerate() {
+            let x = positions[i * 3] * spec.xz_scale;
+            let y = positions[i * 3 + 1] * spec.y_scale;
+            let z = positions[i * 3 + 2] * spec.xz_scale;
+            *res = if c == 0 {
+                dbl1.sample(x, y, z)
+            } else {
+                dbl2.sample(x, y, z)
+            };
+        }
+    }
 
     assert_eq!(
-        fnv1a_f64(&batch),
+        fnv1a_f64(&results),
         fnv1a_f64(&reference),
-        "cell cache fill 与 vanilla 置换表参考实现不一致"
+        "JIT 路径批量填充与 vanilla 参考不一致"
     );
 }
 
-/// batch 插值器填充（携带真实 vanilla 置换表）与参考实现逐位一致。
-#[test]
-fn interpolator_fill_vanilla_table_parity() {
-    let n = 256;
-    let positions = make_positions_3d(n, SEED);
-    let sampler = make_test_sampler(SEED.wrapping_add(1), &[0, 1, 2]);
-    let (xz_scale, y_scale) = (0.25, 0.125);
-    let (perlin_configs, num_octaves, perms) =
-        extract_interp_params_from_sampler(&sampler, xz_scale, y_scale);
-    let params = CellFillParams {
-        perlin_configs,
-        num_octaves,
-        sampler_types: vec![0],
-        perms,
-    };
-
-    let mut batch = vec![0.0f64; n];
-    make_accel().batch_fill_interpolators(&positions, &params, &mut batch);
-
-    let mut reference = vec![0.0f64; n];
-    ref_interp_fill(&sampler, xz_scale, y_scale, &positions, &mut reference);
-
-    assert_eq!(
-        fnv1a_f64(&batch),
-        fnv1a_f64(&reference),
-        "interpolator fill 与 vanilla 置换表参考实现不一致"
-    );
-}
-
-/// 3. 含水层判定一致性
+/// 含水层判定一致性
 #[test]
 fn aquifer_apply_consistency() {
     let n = 256;
@@ -671,46 +477,54 @@ fn aquifer_apply_consistency() {
     );
 }
 
-/// 4. Beardifier 一致性
+/// Beardifier 一致性（GPU kernel 与 vanilla `Beardifier::sample` 逐位一致）。
 #[test]
 fn beardifier_consistency() {
     let n = 512;
-    let positions = make_positions_3d(n, SEED.wrapping_add(2));
+    // 位置限定在受影响盒与结构包围盒附近（vanilla 语义下盒外输出 0，
+    // 若用随机大坐标会退化成全零的平凡比较）
+    let mut ps = SEED.wrapping_add(2);
+    let mut positions = Vec::with_capacity(n * 3);
+    for _ in 0..n {
+        positions.push((ps as f64 % 160.0) - 80.0);
+        ps = ps.wrapping_mul(1442695040888963407);
+        positions.push((ps as f64 % 96.0) - 48.0);
+        ps = ps.wrapping_mul(1442695040888963407);
+        positions.push((ps as f64 % 160.0) - 80.0);
+        ps = ps.wrapping_mul(1442695040888963407);
+    }
 
     // 创建 3 个结构数据（不同的 bbox + terrain_adaptation）
     let structures = vec![
         BeardifierStructureData {
-            center_x: 0.0,
-            center_y: -32.0,
-            center_z: 0.0,
-            radius_x: 32.0,
-            radius_y: 32.0,
-            radius_z: 32.0,
-            min_y: -64.0,
-            ground_delta_y: 8.0,
-            max_y: 0.0,
+            box_min_x: -32,
+            box_min_y: -64,
+            box_min_z: -32,
+            box_max_x: 32,
+            box_max_y: 0,
+            box_max_z: 32,
+            adaptation: 1, // BeardThin
+            ground_delta: 8,
         },
         BeardifierStructureData {
-            center_x: 64.0,
-            center_y: -16.0,
-            center_z: 64.0,
-            radius_x: 16.0,
-            radius_y: 32.0,
-            radius_z: 16.0,
-            min_y: -48.0,
-            ground_delta_y: 0.0,
-            max_y: 16.0,
+            box_min_x: 48,
+            box_min_y: -48,
+            box_min_z: 48,
+            box_max_x: 80,
+            box_max_y: 16,
+            box_max_z: 80,
+            adaptation: 3, // Bury
+            ground_delta: 0,
         },
         BeardifierStructureData {
-            center_x: -64.0,
-            center_y: 0.0,
-            center_z: 80.0,
-            radius_x: 16.0,
-            radius_y: 32.0,
-            radius_z: 16.0,
-            min_y: -32.0,
-            ground_delta_y: 16.0,
-            max_y: 32.0,
+            box_min_x: -80,
+            box_min_y: -32,
+            box_min_z: 64,
+            box_max_x: -48,
+            box_max_y: 32,
+            box_max_z: 96,
+            adaptation: 2, // BeardBox
+            ground_delta: 16,
         },
     ];
 
@@ -728,13 +542,27 @@ fn beardifier_consistency() {
         },
     ];
 
+    let affected_box = [-96, -80, -96, 96, 48, 112];
+
     // CPU 参考路径
     let mut cpu_results = vec![0.0f64; n];
-    cpu_beardifier_ref(&positions, &structures, &junctions, &mut cpu_results);
+    cpu_beardifier_ref(
+        &positions,
+        &structures,
+        &junctions,
+        affected_box,
+        &mut cpu_results,
+    );
 
     // GPU 路径
     let mut gpu_results = vec![0.0f64; n];
-    make_accel().batch_beardifier(&positions, &structures, &junctions, &mut gpu_results);
+    make_accel().batch_beardifier(
+        &positions,
+        &structures,
+        &junctions,
+        affected_box,
+        &mut gpu_results,
+    );
 
     let cpu_hash = fnv1a_f64(&cpu_results);
     let gpu_hash = fnv1a_f64(&gpu_results);
@@ -742,87 +570,17 @@ fn beardifier_consistency() {
         cpu_hash, gpu_hash,
         "beardifier_consistency: CPU={cpu_hash:#x} GPU={gpu_hash:#x}"
     );
-}
-
-/// 5. 矿脉判定一致性
-#[test]
-fn vein_sample_consistency() {
-    let n = 256;
-    let positions = make_positions_3d(n, SEED.wrapping_add(3));
-
-    // 确定性填充 VeinParams
-    let mut toggle_config = Vec::with_capacity(32);
-    let mut ridged_config = Vec::with_capacity(32);
-    let mut gap_config = Vec::with_capacity(32);
-    let mut sv = SEED.wrapping_add(99);
-    for _ in 0..32 {
-        toggle_config.push((sv as f64) * 1e-12);
-        sv = sv.wrapping_mul(1442695040888963407);
-        ridged_config.push((sv as f64) * 1e-12);
-        sv = sv.wrapping_mul(1442695040888963407);
-        gap_config.push((sv as f64) * 1e-12);
-        sv = sv.wrapping_mul(1442695040888963407);
-    }
-
-    let params = VeinParams {
-        toggle_config,
-        ridged_config,
-        gap_config,
-    };
-
-    // CPU 路径：全部返回 0（忽略 vein）
-    let mut cpu_results = vec![0i32; n];
-
-    // GPU 路径
-    let mut gpu_results = vec![0i32; n];
-    make_accel().batch_vein_sample(&positions, &params, &mut gpu_results);
-
-    let cpu_hash = fnv1a_i32(&cpu_results);
-    let gpu_hash = fnv1a_i32(&gpu_results);
-    assert_eq!(
-        cpu_hash, gpu_hash,
-        "vein_sample_consistency: CPU={cpu_hash:#x} GPU={gpu_hash:#x}"
+    // 非平凡：结构包围盒内应产生非零贡献
+    assert!(
+        cpu_results.iter().any(|&v| v != 0.0),
+        "beardifier 参考输出不应全零"
     );
-
-    // 逐元素比对
-    assert_eq!(cpu_results, gpu_results, "vein results mismatch");
 }
 
-/// 6. 全批量类型综合测试
+/// Aquifer + Beardifier 批量综合测试
 #[test]
-fn all_batch_types() {
+fn aquifer_beardifier_combined() {
     let accel = make_accel();
-
-    // --- Cell Cache (512 位置) ---
-    let n_cell = 512;
-    let pos_cell = make_positions_3d(n_cell, SEED.wrapping_add(10));
-    let params_cell = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![3, 3],
-        sampler_types: vec![0, 0],
-        perms: vec![],
-    };
-    let mut cpu_cell = vec![0.0f64; n_cell];
-    cpu_cell.fill(0.0);
-    let mut gpu_cell = vec![0.0f64; n_cell];
-    accel.batch_fill_cell_caches(&pos_cell, &params_cell, &mut gpu_cell);
-    assert_eq!(
-        fnv1a_f64(&cpu_cell),
-        fnv1a_f64(&gpu_cell),
-        "all_batch_types: cell_cache"
-    );
-
-    // --- Interpolator (512 位置) ---
-    let pos_interp = make_positions_3d(n_cell, SEED.wrapping_add(11));
-    let mut cpu_interp = vec![0.0f64; n_cell];
-    cpu_interp.fill(0.0);
-    let mut gpu_interp = vec![0.0f64; n_cell];
-    accel.batch_fill_interpolators(&pos_interp, &params_cell, &mut gpu_interp);
-    assert_eq!(
-        fnv1a_f64(&cpu_interp),
-        fnv1a_f64(&gpu_interp),
-        "all_batch_types: interpolator"
-    );
 
     // --- Aquifer (128 位置) ---
     let n_aq = 128;
@@ -873,38 +631,45 @@ fn all_batch_types() {
     assert_eq!(
         fnv1a_i32(&cpu_aq.block_ids),
         fnv1a_i32(&gpu_aq.block_ids),
-        "all_batch_types: aquifer block_ids"
+        "aquifer block_ids"
     );
     assert_eq!(
         cpu_aq.fluid_updates, gpu_aq.fluid_updates,
-        "all_batch_types: aquifer fluid_updates"
+        "aquifer fluid_updates"
     );
 
     // --- Beardifier (256 位置) ---
     let n_beard = 256;
-    let pos_beard = make_positions_3d(n_beard, SEED.wrapping_add(13));
+    let mut pb = SEED.wrapping_add(13);
+    let mut pos_beard = Vec::with_capacity(n_beard * 3);
+    for _ in 0..n_beard {
+        pos_beard.push((pb as f64 % 96.0) - 48.0);
+        pb = pb.wrapping_mul(1442695040888963407);
+        pos_beard.push((pb as f64 % 64.0) - 32.0);
+        pb = pb.wrapping_mul(1442695040888963407);
+        pos_beard.push((pb as f64 % 96.0) - 48.0);
+        pb = pb.wrapping_mul(1442695040888963407);
+    }
     let structures = vec![
         BeardifierStructureData {
-            center_x: 0.0,
-            center_y: -16.0,
-            center_z: 0.0,
-            radius_x: 16.0,
-            radius_y: 16.0,
-            radius_z: 16.0,
-            min_y: -32.0,
-            ground_delta_y: 8.0,
-            max_y: 0.0,
+            box_min_x: -16,
+            box_min_y: -32,
+            box_min_z: -16,
+            box_max_x: 16,
+            box_max_y: 0,
+            box_max_z: 16,
+            adaptation: 1, // BeardThin
+            ground_delta: 8,
         },
         BeardifierStructureData {
-            center_x: 48.0,
-            center_y: 0.0,
-            center_z: 48.0,
-            radius_x: 16.0,
-            radius_y: 16.0,
-            radius_z: 16.0,
-            min_y: -16.0,
-            ground_delta_y: 0.0,
-            max_y: 16.0,
+            box_min_x: 32,
+            box_min_y: -16,
+            box_min_z: 32,
+            box_max_x: 64,
+            box_max_y: 16,
+            box_max_z: 64,
+            adaptation: 2, // BeardBox
+            ground_delta: 0,
         },
     ];
     let junctions = vec![BeardifierJunctionData {
@@ -912,77 +677,30 @@ fn all_batch_types() {
         ground_y: -8,
         z: 48,
     }];
+    let affected_box = [-64, -48, -64, 96, 32, 96];
     let mut cpu_beard = vec![0.0f64; n_beard];
     let mut gpu_beard = vec![0.0f64; n_beard];
-    cpu_beardifier_ref(&pos_beard, &structures, &junctions, &mut cpu_beard);
-    accel.batch_beardifier(&pos_beard, &structures, &junctions, &mut gpu_beard);
-    assert_eq!(
-        fnv1a_f64(&cpu_beard),
-        fnv1a_f64(&gpu_beard),
-        "all_batch_types: beardifier"
+    cpu_beardifier_ref(
+        &pos_beard,
+        &structures,
+        &junctions,
+        affected_box,
+        &mut cpu_beard,
     );
-
-    // --- Vein (128 位置) ---
-    let n_vein = 128;
-    let pos_vein = make_positions_3d(n_vein, SEED.wrapping_add(14));
-    let mut tv = Vec::with_capacity(16);
-    let mut rv = Vec::with_capacity(16);
-    let mut gv = Vec::with_capacity(16);
-    let mut sv2 = SEED.wrapping_add(777);
-    for _ in 0..16 {
-        tv.push((sv2 as f64) * 1e-12);
-        sv2 = sv2.wrapping_mul(1442695040888963407);
-        rv.push((sv2 as f64) * 1e-12);
-        sv2 = sv2.wrapping_mul(1442695040888963407);
-        gv.push((sv2 as f64) * 1e-12);
-        sv2 = sv2.wrapping_mul(1442695040888963407);
-    }
-    let vein_params = VeinParams {
-        toggle_config: tv,
-        ridged_config: rv,
-        gap_config: gv,
-    };
-    let mut cpu_vein = vec![0i32; n_vein];
-    let mut gpu_vein = vec![0i32; n_vein];
-    accel.batch_vein_sample(&pos_vein, &vein_params, &mut gpu_vein);
-    assert_eq!(
-        fnv1a_i32(&cpu_vein),
-        fnv1a_i32(&gpu_vein),
-        "all_batch_types: vein"
+    accel.batch_beardifier(
+        &pos_beard,
+        &structures,
+        &junctions,
+        affected_box,
+        &mut gpu_beard,
     );
-    assert_eq!(cpu_vein, gpu_vein, "all_batch_types: vein element-wise");
+    assert_eq!(fnv1a_f64(&cpu_beard), fnv1a_f64(&gpu_beard), "beardifier");
 }
 
-/// 7. 空输入测试
+/// 空输入测试
 #[test]
 fn empty_batch() {
     let accel = make_accel();
-
-    // Cell Cache
-    {
-        let params = CellFillParams {
-            perlin_configs: vec![],
-            num_octaves: vec![],
-            sampler_types: vec![],
-            perms: vec![],
-        };
-        let mut results = vec![];
-        accel.batch_fill_cell_caches(&[], &params, &mut results);
-        assert!(results.is_empty());
-    }
-
-    // Interpolator
-    {
-        let params = CellFillParams {
-            perlin_configs: vec![],
-            num_octaves: vec![],
-            sampler_types: vec![],
-            perms: vec![],
-        };
-        let mut results = vec![];
-        accel.batch_fill_interpolators(&[], &params, &mut results);
-        assert!(results.is_empty());
-    }
 
     // Aquifer
     {
@@ -994,138 +712,7 @@ fn empty_batch() {
     // Beardifier
     {
         let mut results = vec![];
-        accel.batch_beardifier(&[], &[], &[], &mut results);
+        accel.batch_beardifier(&[], &[], &[], [0; 6], &mut results);
         assert!(results.is_empty());
     }
-
-    // Vein
-    {
-        let params = VeinParams {
-            toggle_config: vec![],
-            ridged_config: vec![],
-            gap_config: vec![],
-        };
-        let mut results = vec![];
-        accel.batch_vein_sample(&[], &params, &mut results);
-        assert!(results.is_empty());
-    }
-}
-
-/// 8. Cell Cache 填充性能基准
-#[test]
-fn perf_batch_cell() {
-    let n = 4096;
-    let positions = make_positions_3d(n, SEED);
-
-    let params = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![3, 3],
-        sampler_types: vec![0, 0],
-        perms: vec![],
-    };
-
-    let n_iter = 10u32;
-
-    // CPU 路径：零填充
-    let cpu_start = std::time::Instant::now();
-    for _ in 0..n_iter {
-        let mut results = vec![0.0f64; n];
-        results.fill(0.0);
-        // 防止优化消除
-        std::hint::black_box(&mut results);
-    }
-    let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1000.0 / n_iter as f64;
-
-    // GPU 路径（通过 BatchAccelerator）
-    let gpu_start = std::time::Instant::now();
-    for _ in 0..n_iter {
-        let mut results = vec![0.0f64; n];
-        make_accel().batch_fill_cell_caches(&positions, &params, &mut results);
-        std::hint::black_box(&mut results);
-    }
-    let gpu_ms = gpu_start.elapsed().as_secs_f64() * 1000.0 / n_iter as f64;
-
-    println!(
-        "Cell Cache fill (n={n}, iters={n_iter}): cpu={cpu_ms:.3}ms, gpu={gpu_ms:.3}ms, speedup={:.2}x",
-        cpu_ms / gpu_ms.max(1e-9)
-    );
-
-    assert!(
-        cpu_ms < 1000.0,
-        "CPU cell cache fill should complete within 1s per iteration (took {cpu_ms:.1}ms)"
-    );
-    assert!(
-        gpu_ms < 1000.0,
-        "GPU cell cache fill should complete within 1s per iteration (took {gpu_ms:.1}ms)"
-    );
-}
-
-// ============================================================================
-// 测试辅助函数：perlin 配置提取
-// ============================================================================
-
-/// 创建一个测试用的 `OctavePerlinNoiseSampler`。
-fn make_test_sampler(seed: u64, octaves: &[i32]) -> OctavePerlinNoiseSampler {
-    let r = Xoroshiro::from_seed(seed);
-    let (start, amplitudes) = OctavePerlinNoiseSampler::calculate_amplitudes(octaves);
-    let mut g = RandomGenerator::Xoroshiro(r);
-    OctavePerlinNoiseSampler::new(&mut g, start, &amplitudes, false)
-}
-
-/// 从 `OctavePerlinNoiseSampler` 提取 cell cache 编码的 perlin 配置。
-///
-/// 编码格式：`[num_octaves, amps[0..n], lacs[0..n], orgs[0..3n]]`
-/// 返回 `(configs, num_octaves, 真实置换表)`。
-fn extract_cell_params_from_sampler(
-    sampler: &OctavePerlinNoiseSampler,
-) -> (Vec<f64>, Vec<i32>, Vec<u8>) {
-    let num_octaves = sampler.samplers.len() as i32;
-    let mut config = Vec::with_capacity(1 + num_octaves as usize * 5);
-    config.push(num_octaves as f64);
-    for sd in &sampler.samplers {
-        config.push(sd.amplitude * sd.persistence);
-    }
-    for sd in &sampler.samplers {
-        config.push(sd.lacunarity);
-    }
-    for sd in &sampler.samplers {
-        config.push(sd.sampler.x_origin());
-        config.push(sd.sampler.y_origin());
-        config.push(sd.sampler.z_origin());
-    }
-    // 真实 vanilla 置换表
-    let mut perms = Vec::with_capacity(num_octaves as usize * 256);
-    for sd in &sampler.samplers {
-        perms.extend_from_slice(sd.sampler.permutation());
-    }
-    (config, vec![num_octaves], perms)
-}
-
-/// 从 `OctavePerlinNoiseSampler` 提取插值器编码的 perlin 配置。
-///
-/// 编码格式：每八度 8 个 f64 `[amp, lac, orgx, orgy, orgz, xz_scale, y_scale, 0.0]`
-/// 返回 `(configs, num_octaves, 真实置换表)`。
-fn extract_interp_params_from_sampler(
-    sampler: &OctavePerlinNoiseSampler,
-    xz_scale: f64,
-    y_scale: f64,
-) -> (Vec<f64>, Vec<i32>, Vec<u8>) {
-    let num_octaves = sampler.samplers.len() as i32;
-    let mut config = Vec::with_capacity(num_octaves as usize * 8);
-    for sd in &sampler.samplers {
-        config.push(sd.amplitude * sd.persistence);
-        config.push(sd.lacunarity);
-        config.push(sd.sampler.x_origin());
-        config.push(sd.sampler.y_origin());
-        config.push(sd.sampler.z_origin());
-        config.push(xz_scale);
-        config.push(y_scale);
-        config.push(0.0); // reserved
-    }
-    // 真实 vanilla 置换表
-    let mut perms = Vec::with_capacity(num_octaves as usize * 256);
-    for sd in &sampler.samplers {
-        perms.extend_from_slice(sd.sampler.permutation());
-    }
-    (config, vec![num_octaves], perms)
 }

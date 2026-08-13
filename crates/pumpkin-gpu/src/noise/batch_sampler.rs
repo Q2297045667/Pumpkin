@@ -106,12 +106,7 @@ impl GpuNoiseSampler {
         }
 
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let config = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let config = self.cache.get_or_insert(key, sampler);
 
         let m = config.num_octaves();
         let d_res = self.buffer_pool.take_f64(&self.device, n)?;
@@ -232,12 +227,7 @@ impl GpuNoiseSampler {
 
         // 获取采样器配置
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let config = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let config = self.cache.get_or_insert(key, sampler);
 
         // 尝试 JIT 特化
         let max_unroll = crate::jit::get_jit_max_unroll();
@@ -326,18 +316,8 @@ impl GpuNoiseSampler {
         let k1 = std::ptr::from_ref(first) as u64;
         let k2 = std::ptr::from_ref(second) as u64;
 
-        let g1 = self.cache.get_or_insert(k1, first);
-        let c1 = g1
-            .get(&k1)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(first));
-        drop(g1);
-        let g2 = self.double_cache.get_or_insert(k2, second);
-        let c2 = g2
-            .get(&k2)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(second));
-        drop(g2);
+        let c1 = self.cache.get_or_insert(k1, first);
+        let c2 = self.double_cache.get_or_insert(k2, second);
 
         let max_unroll = crate::jit::get_jit_max_unroll();
         if let Some(jit_kernel) =
@@ -423,18 +403,8 @@ impl GpuNoiseSampler {
         let k1 = std::ptr::from_ref(first) as u64;
         let k2 = std::ptr::from_ref(second) as u64;
 
-        let g1 = self.cache.get_or_insert(k1, first);
-        let c1 = g1
-            .get(&k1)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(first));
-        drop(g1);
-        let g2 = self.double_cache.get_or_insert(k2, second);
-        let c2 = g2
-            .get(&k2)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(second));
-        drop(g2);
+        let c1 = self.cache.get_or_insert(k1, first);
+        let c2 = self.double_cache.get_or_insert(k2, second);
 
         let m1 = c1.num_octaves();
         let m2 = c2.num_octaves();
@@ -522,12 +492,7 @@ impl GpuNoiseSampler {
             return Ok(());
         }
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let config = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let config = self.cache.get_or_insert(key, sampler);
         let m = config.num_octaves();
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
@@ -593,12 +558,7 @@ impl GpuNoiseSampler {
             return Ok(());
         }
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let config = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let config = self.cache.get_or_insert(key, sampler);
 
         let max_unroll = crate::jit::get_jit_max_unroll();
         if let Some(jit_kernel) = crate::jit::specialize_shift("shift_a", &config, max_unroll) {
@@ -663,12 +623,7 @@ impl GpuNoiseSampler {
             return Ok(());
         }
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let config = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let config = self.cache.get_or_insert(key, sampler);
         let m = config.num_octaves();
 
         let mut d_pos = self.buffer_pool.take_f64(&self.device, n * 2)?;
@@ -734,12 +689,7 @@ impl GpuNoiseSampler {
             return Ok(());
         }
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let config = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let config = self.cache.get_or_insert(key, sampler);
 
         let max_unroll = crate::jit::get_jit_max_unroll();
         if let Some(jit_kernel) = crate::jit::specialize_shift("shift_b", &config, max_unroll) {
@@ -795,7 +745,8 @@ impl GpuNoiseSampler {
         args: Vec<KernelArg<'_>>,
         gpu_buffers: Vec<GpuBufferRef<'_>>,
     ) -> bool {
-        self.device.try_launch_kernel(name, n, args, gpu_buffers)
+        self.device
+            .try_launch_kernel(name, n, args, gpu_buffers, Vec::new())
     }
 
     pub fn batch_trilinear(
@@ -870,13 +821,55 @@ impl GpuNoiseSampler {
         }
 
         let key = std::ptr::from_ref(sampler) as u64;
-        let guard = self.cache.get_or_insert(key, sampler);
-        let c = guard
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| SerializedOctaveConfig::from_sampler(sampler));
-        drop(guard);
+        let c = self.cache.get_or_insert(key, sampler);
         let m = c.num_octaves();
+
+        // JIT 特化路径：八度参数烘焙为常量（配置开启时）。
+        // 失败或未启用时回退到标准 kernel。
+        let max_unroll = crate::jit::get_jit_max_unroll();
+        if let Some(jit_kernel) = crate::jit::specialize_flatcache(&c, max_unroll) {
+            let mut d_pos = self.device.alloc_f64(n * 2)?;
+            let d_res = self.device.alloc_f64(n)?;
+            let mut d_perm = self.device.alloc_u8(m * 256)?;
+            self.device.copy_to_device(&mut d_pos, xz)?;
+            self.device
+                .copy_to_device(&mut d_perm, &c.packed_permutations())?;
+
+            if !self
+                .device
+                .kernel_launcher()
+                .is_some_and(|l| l.has_kernel(&jit_kernel.name))
+            {
+                let _ = self.device.compile_jit_kernel(&jit_kernel);
+            }
+
+            let ok = self.try_launch(
+                &jit_kernel.name,
+                n,
+                vec![
+                    KernelArg::BufferRef(0),
+                    KernelArg::BufferRef(1),
+                    KernelArg::BufferRef(2),
+                    KernelArg::I32(n as i32),
+                ],
+                vec![
+                    GpuBufferRef::F64(&d_pos),
+                    GpuBufferRef::U8(&d_perm),
+                    GpuBufferRef::F64(&d_res),
+                ],
+            );
+            if ok {
+                self.device.copy_from_device(&d_res, results)?;
+                self.device.free(d_pos)?;
+                self.device.free(d_res)?;
+                self.device.free(d_perm)?;
+                return Ok(());
+            }
+            self.device.free(d_pos)?;
+            self.device.free(d_res)?;
+            self.device.free(d_perm)?;
+        }
+
         let mut d_pos = self.device.alloc_f64(n * 2)?;
         let d_res = self.device.alloc_f64(n)?;
         let mut d_perm = self.device.alloc_u8(m * 256)?;

@@ -1,16 +1,30 @@
 // Persistent kernel variant: light_propagate_u8_persistent
 //
-// Uses atomic counter for grid-level synchronization.
 // Launched once with cooperative launch; internally iterates until convergence.
+// Requires: cudaLaunchCooperativeKernel (hardware support: SM 6.0+).
 //
-// Requires: cudaLaunchCooperativeKernel (hardware support: SM 6.0+)
+// Grid barrier design (corrected):
+// - Each block reduces its changes into `block_changed` (shared memory) and
+//   publishes it to `changed_flags[blockIdx.x]` with a `__threadfence()`.
+// - A monotonic atomic counter implements the grid barrier (no reset — a reset
+//   would race with the next iteration's atomicInc and deadlock spinning blocks).
+//   After iteration `iter` the counter equals (iter+1) * num_blocks.
+// - After the barrier, EVERY block independently scans `changed_flags` to decide
+//   convergence. This avoids a cross-block "convergence flag" whose write could
+//   race with blocks exiting their spin (the earlier design deadlocked exactly
+//   there: the last-arriving block alone decided convergence and exited while
+//   the others, not yet seeing the flag, entered the next iteration and spun
+//   forever on a counter that nobody would ever increment again).
+// - `__syncthreads()` after the barrier keeps each block in lockstep so no
+//   thread starts the next iteration (and writes light[]) while other blocks
+//   are still reading it.
 
 extern "C" __global__ void light_propagate_u8_persistent(
     unsigned char* light,
     const unsigned char* opacity,
     const int* neighbors,
-    volatile int* convergence_flag,  // host-visible: 0=running, -1=done
-    volatile int* sync_counter,      // grid sync: counts blocks that reached barrier
+    volatile int* sync_counter,           // grid sync: counts blocks that reached barrier
+    unsigned char* changed_flags,         // [num_blocks] per-block change flags
     int N,
     int max_iters
 ) {
@@ -39,38 +53,51 @@ extern "C" __global__ void light_propagate_u8_persistent(
             }
         }
 
-        // Converge any change within block using shared memory + warp reduce
+        // Block-level reduction of changes
         __shared__ unsigned char block_changed;
         if (threadIdx.x == 0) block_changed = 0;
         __syncthreads();
-
         if (changed_this_thread) block_changed = 1;
         __syncthreads();
 
-        // Global barrier: atomic counter
-        unsigned int ticket = atomicInc((unsigned int*)sync_counter, 0xFFFFFFFF);
-        if (ticket == (unsigned int)(num_blocks - 1)) {
-            // Last block: reset counter for next iteration
-            *sync_counter = 0;
+        // Publish block change flag (device-scope visible to all blocks)
+        if (threadIdx.x == 0) {
+            changed_flags[blockIdx.x] = block_changed;
+        }
+        __threadfence();
+        __syncthreads();
 
-            // Check if any block had changes this iteration
-            if (block_changed == 0) {
-                // No changes across all blocks — converged
-                if (threadIdx.x == 0) {
-                    *convergence_flag = -1;  // Signal host
+        // Grid barrier: only thread 0 of each block participates.
+        // Monotonic counter design (no reset, see header comment).
+        if (threadIdx.x == 0) {
+            unsigned int target = (unsigned int)(iter + 1) * (unsigned int)num_blocks;
+            unsigned int ticket = atomicInc((unsigned int*)sync_counter, 0xFFFFFFFF);
+            if (ticket != target - 1) {
+                // Spin until every block of this iteration has arrived
+                while (*sync_counter < target) {
+                    // volatile read via the sync_counter pointer
                 }
             }
-        } else {
-            // Spin-wait until last block resets the counter
-            while (*sync_counter != 0) {
-                __threadfence_block();
-            }
         }
+        __syncthreads();
 
-        // If converged, exit
-        if (*convergence_flag == -1) break;
+        // Every block decides convergence independently: the barrier guarantees
+        // all blocks' flags were written (flag write + fence precedes each
+        // block's atomicInc, and the spin exits only after the last arrival).
+        __shared__ unsigned char converged_shared;
+        if (threadIdx.x == 0) {
+            __threadfence();
+            int any_changed = 0;
+            for (int b = 0; b < num_blocks; b++) {
+                any_changed |= changed_flags[b];
+            }
+            converged_shared = (any_changed == 0) ? 1 : 0;
+        }
+        __syncthreads();
+
+        if (converged_shared) break;
     }
 
-    // Ensure convergence flag is visible to host
+    // Ensure final light[] writes are visible to the host before kernel exit
     __threadfence_system();
 }

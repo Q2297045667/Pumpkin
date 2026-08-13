@@ -222,6 +222,12 @@ impl MutableChunkNoiseFunctionComponentImpl for Beardifier {
             use pumpkin_gpu::noise::batch_cell::{BeardifierJunctionData, BeardifierStructureData};
 
             if let Some(accel) = crate::gpu::get_batch_accel() {
+                // vanilla 语义：无受影响盒时所有位置输出 0
+                let Some(affected_box) = self.affected_box.as_ref() else {
+                    array.fill(0.0);
+                    return;
+                };
+
                 let num_positions = array.len();
                 let mut positions = Vec::with_capacity(num_positions * 3);
                 for i in 0..num_positions {
@@ -237,15 +243,20 @@ impl MutableChunkNoiseFunctionComponentImpl for Beardifier {
                     .map(|s| {
                         let bb = &s.bounding_box;
                         BeardifierStructureData {
-                            center_x: (f64::from(bb.min.x) + f64::from(bb.max.x)) * 0.5,
-                            center_y: (f64::from(bb.min.y) + f64::from(bb.max.y)) * 0.5,
-                            center_z: (f64::from(bb.min.z) + f64::from(bb.max.z)) * 0.5,
-                            radius_x: (f64::from(bb.max.x) - f64::from(bb.min.x)).abs() * 0.5,
-                            radius_y: (f64::from(bb.max.y) - f64::from(bb.min.y)).abs() * 0.5,
-                            radius_z: (f64::from(bb.max.z) - f64::from(bb.min.z)).abs() * 0.5,
-                            min_y: f64::from(bb.min.y),
-                            ground_delta_y: f64::from(s.ground_level_delta),
-                            max_y: f64::from(bb.max.y),
+                            box_min_x: bb.min.x,
+                            box_min_y: bb.min.y,
+                            box_min_z: bb.min.z,
+                            box_max_x: bb.max.x,
+                            box_max_y: bb.max.y,
+                            box_max_z: bb.max.z,
+                            adaptation: match s.terrain_adaptation {
+                                TerrainAdaptation::None => 0,
+                                TerrainAdaptation::BeardThin => 1,
+                                TerrainAdaptation::BeardBox => 2,
+                                TerrainAdaptation::Bury => 3,
+                                TerrainAdaptation::Encapsulate => 4,
+                            },
+                            ground_delta: s.ground_level_delta,
                         }
                     })
                     .collect();
@@ -260,7 +271,20 @@ impl MutableChunkNoiseFunctionComponentImpl for Beardifier {
                     })
                     .collect();
 
-                accel.batch_beardifier(&positions, &gpu_structures, &gpu_junctions, array);
+                accel.batch_beardifier(
+                    &positions,
+                    &gpu_structures,
+                    &gpu_junctions,
+                    [
+                        affected_box.min.x,
+                        affected_box.min.y,
+                        affected_box.min.z,
+                        affected_box.max.x,
+                        affected_box.max.y,
+                        affected_box.max.z,
+                    ],
+                    array,
+                );
                 return;
             }
         }

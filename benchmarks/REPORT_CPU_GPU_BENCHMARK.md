@@ -94,16 +94,17 @@
 | surface_noise_consistency | DoublePerlin CPU | precompute_surface | ✅ |
 | noise_empty_input | 空输入 | sample_octave_batch | ✅ |
 
-### 3.2 Cell Cache / Interpolator / Batch
+### 3.2 Cell Cache / Aquifer / Beardifier Batch
 
 | 测试 | CPU 路径 | GPU 路径 | 结果 |
 |------|---------|---------|------|
-| cell_cache_fill_consistency | cpu_cell_cache_fill_impl | batch_fill_cell_caches | ✅ |
-| interpolator_fill_consistency | cpu_interpolator_fill_impl | batch_fill_interpolators | ✅ |
-| aquifer_apply_consistency | cpu_aquifer_apply | batch_aquifer_apply | ✅ |
-| beardifier_consistency | cpu_beardifier | batch_beardifier | ✅ |
-| vein_sample_consistency | cpu_vein_detect | batch_vein_sample | ✅ |
-| all_batch_types | 全部6种CPU | 全部6种GPU | ✅ |
+| cell_cache_fill_vanilla_double_perlin_parity | `DoublePerlinNoiseSampler::sample` | `batch_fill_cell_caches_vanilla` | ✅ |
+| aquifer_apply_consistency | cpu_aquifer_ref | batch_aquifer_apply | ✅ |
+| beardifier_consistency | cpu_beardifier_ref | batch_beardifier | ✅ |
+
+> 注（2026-08-13 更新）：旧八度和近似测试（`cell_cache_fill_consistency` /
+> `interpolator_fill_consistency` / `vein_sample_consistency` / `all_batch_types`）
+> 已随旧 API 移除（见 `FINAL_AUDIT_REPORT.md` §12.6）。
 
 ### 3.3 光照 CPU vs GPU
 

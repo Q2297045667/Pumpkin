@@ -52,15 +52,18 @@ pub struct GpuConfig {
     /// 默认值：`false`
     pub light_acceleration: bool,
 
-    /// 是否开启批量加速（Cell Cache、Aquifer、Beardifier、Vein）。
+    /// 是否开启批量加速（Cell Cache / Interpolator 规格填充、Aquifer、Beardifier）。
     ///
     /// 默认值：`false`
     pub batch_acceleration: bool,
 
     /// 是否启用 JIT 专用内核。
     ///
-    /// 开启后所有密度程序走 JIT 编译的专用内核路径，
-    /// 支持 `CUDA`（通过 NVRTC）和 `OpenCL`（在线编译）。
+    /// 开启后所有密度程序走 JIT 编译的专用内核路径：八度 Perlin、双 Perlin、
+    /// ShiftA/B、FlatCache 以及 Cell Cache / Interpolator 的 vanilla 规格填充，
+    /// 均通过运行时特化内核（八度参数烘焙为常量）执行，
+    /// 支持 `CUDA`（NVRTC）与 `OpenCL`（在线编译）两个后端。
+    /// 八度数超过 [`GpuConfig::jit_max_unroll`] 时自动回退标准 kernel。
     /// 默认值：`false`
     pub jit_enabled: bool,
 

@@ -1,4 +1,4 @@
-//! GPU 流水线集成测试 — JIT 配置、Surface 回退、矿脉缓存、噪声缓存回填。
+//! GPU 流水线集成测试 — JIT 配置、Surface 回退、Trilinear。
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,7 +19,6 @@
 #![cfg(feature = "gpu")]
 
 use pumpkin_config::gpu::GpuConfig;
-use pumpkin_gpu::noise::batch_cell::CellFillParams;
 use pumpkin_util::noise::perlin::OctavePerlinNoiseSampler;
 use pumpkin_util::random::{RandomGenerator, xoroshiro128::Xoroshiro};
 use pumpkin_world::batch_accel::BatchAccelerator;
@@ -284,45 +283,6 @@ fn noise_accel_precompute_surface_fallback_works() {
 }
 
 // ============================================================================
-// BatchAccelerator Cell Cache / Interpolator 测试
-// ============================================================================
-
-#[test]
-fn batch_cell_cache_empty_config() {
-    let config = GpuConfig::default();
-    let accel = BatchAccelerator::new(&config);
-    let params = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![],
-        sampler_types: vec![],
-        perms: vec![],
-    };
-    let mut results = vec![0.0f64; 32];
-    // Empty config should zero-fill or not crash
-    accel.batch_fill_cell_caches(&[0.0; 96], &params, &mut results);
-    for &r in &results {
-        assert!(r.is_finite(), "zero-fill: result should be finite");
-    }
-}
-
-#[test]
-fn batch_interpolator_empty_config() {
-    let config = GpuConfig::default();
-    let accel = BatchAccelerator::new(&config);
-    let params = CellFillParams {
-        perlin_configs: vec![],
-        num_octaves: vec![],
-        sampler_types: vec![],
-        perms: vec![],
-    };
-    let mut results = vec![0.0f64; 16];
-    accel.batch_fill_interpolators(&[0.0; 48], &params, &mut results);
-    for &r in &results {
-        assert!(r.is_finite());
-    }
-}
-
-// ============================================================================
 // 基准测试
 // ============================================================================
 
@@ -358,54 +318,6 @@ fn bench_trilinear_batch_1024() {
     assert!(results.iter().all(|&r| r.is_finite()));
     println!(
         "trilinear batch 1024 x10: {elapsed:?} (fingerprint: {})",
-        fnv1a_f64(&results)
-    );
-}
-
-#[test]
-fn bench_cell_cache_1024() {
-    let config = GpuConfig::default();
-    let accel = BatchAccelerator::new(&config);
-    let _sampler = mk_sampler(SEED, &[1, 2, 3, 4]);
-
-    // Build params from a real sampler
-    let n = 1024;
-    let positions: Vec<f64> = (0..n)
-        .flat_map(|i| {
-            let x = (i as f64) * 0.5;
-            [x, x * 0.3 + 1.0, x * 0.7 - 2.0]
-        })
-        .collect();
-
-    // Simple params (1 sampler, 4 octaves)
-    let mut perlin_configs = vec![4.0f64]; // num_octaves
-    for _o in 0..4i32 {
-        perlin_configs.push(1.0); // amp
-        perlin_configs.push(2.0); // lac
-        perlin_configs.push(0.0); // org_x
-        perlin_configs.push(0.0); // org_y
-        perlin_configs.push(0.0); // org_z
-    }
-    let params = CellFillParams {
-        perlin_configs,
-        num_octaves: vec![4],
-        sampler_types: vec![0],
-        perms: vec![],
-    };
-
-    let mut results = vec![0.0f64; n];
-    let start = std::time::Instant::now();
-    for _ in 0..5 {
-        accel.batch_fill_cell_caches(
-            black_box(&positions),
-            black_box(&params),
-            black_box(&mut results),
-        );
-    }
-    let elapsed = start.elapsed();
-    assert!(results.iter().all(|&r| r.is_finite()));
-    println!(
-        "cell_cache 1024 x5: {elapsed:?} (fingerprint: {})",
         fnv1a_f64(&results)
     );
 }

@@ -59,6 +59,10 @@ pub struct KernelLaunch<'a> {
     pub args: Vec<KernelArg<'a>>,
     /// GPU 缓冲区引用列表（通过 `BufferRef(usize)` 索引引用）
     pub gpu_buffers: Vec<GpuBufferRef<'a>>,
+    /// 尾部 local / shared 内存参数的大小（字节），按 kernel 签名顺序。
+    /// CUDA 后端汇总为 `LaunchConfig.shared_mem_bytes`；
+    /// OpenCL 后端通过 `set_arg_local_buffer` 依次设置。
+    pub local_mem_bytes: Vec<usize>,
 }
 
 /// Kernel 启动器 trait。

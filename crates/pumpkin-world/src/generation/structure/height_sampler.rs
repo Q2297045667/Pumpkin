@@ -81,10 +81,6 @@ impl<'a> NoiseHeightSampler<'a> {
         noise.sample_start_density();
         noise.sample_end_density(0);
 
-        // GPU 批量矿脉预计算
-        #[cfg(feature = "gpu")]
-        noise.precompute_gpu_veins();
-
         let minimum_cell_y = floor_div(i32::from(noise.min_y()), vertical);
         let cell_count = i32::from(noise.height()) / vertical;
         for cell_y in (0..cell_count).rev() {

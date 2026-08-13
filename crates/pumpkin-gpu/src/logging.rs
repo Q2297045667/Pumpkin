@@ -25,30 +25,16 @@ pub fn log_gpu_startup(device_type: DeviceType, device_name: &str) {
             tracing::info!("══════════════════════════════════════════");
         }
         DeviceType::Cpu => {
-            let cpu_name = get_cpu_name();
+            #[cfg(feature = "gpu")]
+            let cpu_name = crate::cpu::cpu_name();
+            #[cfg(not(feature = "gpu"))]
+            let cpu_name = String::from("Unknown CPU");
             tracing::info!("══════════════════════════════════════════");
             tracing::info!("  GPU 加速未启用 — 使用 CPU 回退");
             tracing::info!("  CPU: {cpu_name}");
             tracing::info!("══════════════════════════════════════════");
         }
     }
-}
-
-/// 获取 CPU 型号名称。
-#[cfg(feature = "gpu")]
-fn get_cpu_name() -> String {
-    use sysinfo::System;
-
-    let sys = System::new_all();
-    sys.cpus().first().map_or_else(
-        || String::from("Unknown CPU"),
-        |cpu| cpu.brand().to_string(),
-    )
-}
-
-#[cfg(not(feature = "gpu"))]
-fn get_cpu_name() -> String {
-    String::from("Unknown CPU")
 }
 
 /// CPU 回退原因记录。
