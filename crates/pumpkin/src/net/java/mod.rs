@@ -644,7 +644,6 @@ impl JavaClient {
         server: &Arc<Server>,
         packet: &RawPacket,
     ) -> Result<(), Box<dyn PumpkinError>> {
-        let mut payload = &packet.payload[..];
         let version = self.version.load();
 
         let mut event = crate::plugin::server::packet::PacketReceivedEvent::new(
@@ -657,7 +656,9 @@ impl JavaClient {
             return Ok(());
         }
 
-        match packet.id {
+        let mut payload = &event.payload[..];
+
+        match event.packet_id {
             id if id == SConfirmTeleport::to_id(version) => {
                 self.handle_confirm_teleport(
                     player,
@@ -948,6 +949,7 @@ impl JavaClient {
             }
             id if id == SRecipeBookChangeSettings::to_id(version) => {
                 self.handle_recipe_book_change_settings(
+                    server,
                     player,
                     SRecipeBookChangeSettings::read(&mut payload, &version)?,
                 )
@@ -955,6 +957,7 @@ impl JavaClient {
             }
             id if id == SRecipeBookSeenRecipe::to_id(version) => {
                 self.handle_recipe_book_seen_recipe(
+                    server,
                     player,
                     SRecipeBookSeenRecipe::read(&mut payload, &version)?,
                 )
@@ -995,7 +998,7 @@ impl JavaClient {
                 .await;
             }
             _ => {
-                warn!("Failed to handle player packet id {}", packet.id);
+                warn!("Failed to handle player packet id {}", event.packet_id);
             }
         }
         Ok(())

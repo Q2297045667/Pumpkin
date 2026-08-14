@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicU8, AtomicU32, Or
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use crate::plugin::api::events::enchantment::{EnchantItemEvent, PrepareItemEnchantEvent};
 use crate::world::scoreboard::{BedrockScoreboard, Scoreboard};
 use advancement::PlayerAdvancement;
 use arc_swap::ArcSwap;
@@ -3416,7 +3417,22 @@ impl Player {
         if self.abilities.lock().await.invulnerable {
             return;
         }
-        self.hunger_manager.add_exhaustion(exhaustion);
+        let mut exhaustion_event =
+            crate::plugin::api::events::entity::entity_exhaustion::EntityExhaustionEvent::new(
+                self.entity_id(),
+                exhaustion,
+            );
+        if let Some(server) = self.world().server.upgrade() {
+            server
+                .plugin_manager
+                .fire(&server, &mut exhaustion_event)
+                .await;
+        }
+        if exhaustion_event.cancelled {
+            return;
+        }
+        self.hunger_manager
+            .add_exhaustion(exhaustion_event.exhaustion);
     }
 
     pub async fn heal(&self, additional_health: f32) {
@@ -3563,7 +3579,18 @@ impl Player {
     }
 
     pub async fn set_food_level(&self, food_level: u8) {
-        self.hunger_manager.set_level(food_level);
+        let mut food_event =
+            crate::plugin::api::events::entity::food_level_change::FoodLevelChangeEvent::new(
+                self.living_entity.entity.entity_id,
+                food_level,
+            );
+        if let Some(server) = self.world().server.upgrade() {
+            server.plugin_manager.fire(&server, &mut food_event).await;
+        }
+        if food_event.cancelled {
+            return;
+        }
+        self.hunger_manager.set_level(food_event.food_level);
         self.send_health().await;
     }
 
@@ -4133,15 +4160,26 @@ impl Player {
                         let dx = pos.x - map_data.center_x as f64;
                         let dz = pos.z - map_data.center_z as f64;
 
-                        let icon_x = (dx / scale as f64 * 2.0).clamp(-128.0, 127.0) as i8;
-                        let icon_z = (dz / scale as f64 * 2.0).clamp(-128.0, 127.0) as i8;
+                        let raw_x = dx / scale as f64 * 2.0;
+                        let raw_z = dz / scale as f64 * 2.0;
+                        let is_off_map = !(-127.0..=127.0).contains(&raw_x)
+                            || !(-127.0..=127.0).contains(&raw_z);
+
+                        let icon_x = raw_x.clamp(-128.0, 127.0) as i8;
+                        let icon_z = raw_z.clamp(-128.0, 127.0) as i8;
 
                         let yaw = self.living_entity.entity.yaw.load();
                         let icon_direction =
                             ((((yaw * 16.0 / 360.0).round() as i32 + 8) % 16 + 16) % 16) as i8;
 
+                        let decoration_type = if is_off_map {
+                            &pumpkin_data::map_decoration::MapDecorationType::PLAYER_OFF_MAP
+                        } else {
+                            &pumpkin_data::map_decoration::MapDecorationType::PLAYER
+                        };
+
                         let icons = [MapIcon {
-                            icon_type: VarInt(0), // White pointer
+                            icon_type: VarInt(decoration_type.id as i32),
                             x: icon_x,
                             z: icon_z,
                             direction: icon_direction,
@@ -4524,6 +4562,20 @@ impl Player {
 
     pub async fn on_rename_item(self: &Arc<Self>, packet: SRenameItem<'_>) {
         self.update_last_action_time();
+
+        let mut prepare_event =
+            crate::plugin::api::events::inventory::prepare_anvil::PrepareAnvilEvent::new(
+                self.clone(),
+                packet.item_name.to_string(),
+                1,
+            );
+        if let Some(server) = self.world().server.upgrade() {
+            server
+                .plugin_manager
+                .fire(&server, &mut prepare_event)
+                .await;
+        }
+
         let screen_handler_arc = self.current_screen_handler.lock().await.clone();
         let mut screen_handler = screen_handler_arc.lock().await;
 
@@ -4798,7 +4850,7 @@ impl Player {
                 click_type,
                 slot,
                 raw_slot,
-                clicked_item,
+                clicked_item.clone(),
                 cursor_item,
                 i32::from(hotbar_button),
             );
@@ -4808,6 +4860,134 @@ impl Player {
                 return;
             }
         }}
+
+        let mut interact_event =
+            crate::plugin::api::events::inventory::inventory_interact::InventoryInteractEvent::new(
+                self.clone(),
+            );
+        if let Some(server) = self.world().server.upgrade() {
+            server
+                .plugin_manager
+                .fire(&server, &mut interact_event)
+                .await;
+        }
+        if interact_event.cancelled {
+            screen_handler.cancel().await;
+            return;
+        }
+
+        if slot == 0
+            && let Some(ref stack) = clicked_item
+            && !stack.is_empty()
+        {
+            let mut craft_event =
+                crate::plugin::api::events::inventory::craft_item::CraftItemEvent::new(
+                    self.clone(),
+                    stack.item.registry_key.to_string(),
+                );
+            let mut prep_craft =
+                crate::plugin::api::events::inventory::prepare_item_craft::PrepareItemCraftEvent::new(
+                    self.clone(),
+                    stack.item.registry_key.to_string(),
+                );
+            if let Some(server) = self.world().server.upgrade() {
+                server.plugin_manager.fire(&server, &mut craft_event).await;
+                server.plugin_manager.fire(&server, &mut prep_craft).await;
+            }
+            if craft_event.cancelled || prep_craft.cancelled {
+                screen_handler.cancel().await;
+                return;
+            }
+        }
+
+        if screen_handler.window_type() == Some(WindowType::Smithing)
+            && slot == 3
+            && let Some(ref stack) = clicked_item
+            && !stack.is_empty()
+        {
+            let mut smith_event =
+                crate::plugin::api::events::inventory::smith_item::SmithItemEvent::new(
+                    self.clone(),
+                    stack.item.registry_key.to_string(),
+                );
+            let mut prep_smith =
+                crate::plugin::api::events::inventory::prepare_smithing::PrepareSmithingEvent::new(
+                    self.clone(),
+                    Some(stack.item.registry_key.to_string()),
+                );
+            if let Some(server) = self.world().server.upgrade() {
+                server.plugin_manager.fire(&server, &mut smith_event).await;
+                server.plugin_manager.fire(&server, &mut prep_smith).await;
+            }
+            if smith_event.cancelled {
+                screen_handler.cancel().await;
+                return;
+            }
+        }
+
+        if (screen_handler.window_type() == Some(WindowType::Furnace)
+            || screen_handler.window_type() == Some(WindowType::BlastFurnace)
+            || screen_handler.window_type() == Some(WindowType::Smoker))
+            && slot == 2
+            && let Some(ref stack) = clicked_item
+            && !stack.is_empty()
+        {
+            let mut extract_event =
+                crate::plugin::api::events::inventory::furnace_extract::FurnaceExtractEvent::new(
+                    self.clone(),
+                    pumpkin_util::math::position::BlockPos::new(0, 0, 0),
+                    stack.item.registry_key.to_string(),
+                    stack.item_count as u32,
+                    0.0,
+                );
+            if let Some(server) = self.world().server.upgrade() {
+                server
+                    .plugin_manager
+                    .fire(&server, &mut extract_event)
+                    .await;
+            }
+        }
+
+        if screen_handler.window_type() == Some(WindowType::Grindstone)
+            && let Some(ref stack) = clicked_item
+        {
+            let mut prep_grindstone =
+                crate::plugin::api::events::inventory::prepare_grindstone::PrepareGrindstoneEvent::new(
+                    self.clone(),
+                    if stack.is_empty() { None } else { Some(stack.item.registry_key.to_string()) },
+                );
+            if let Some(server) = self.world().server.upgrade() {
+                server
+                    .plugin_manager
+                    .fire(&server, &mut prep_grindstone)
+                    .await;
+            }
+        }
+
+        if let Some(ref stack) = clicked_item {
+            let mut prep_result =
+                crate::plugin::api::events::inventory::prepare_inventory_result::PrepareInventoryResultEvent::new(
+                    self.clone(),
+                    if stack.is_empty() { None } else { Some(stack.item.registry_key.to_string()) },
+                );
+            if let Some(server) = self.world().server.upgrade() {
+                server.plugin_manager.fire(&server, &mut prep_result).await;
+            }
+        }
+
+        if packet.mode == SlotActionType::QuickCraft {
+            let mut drag_event =
+                crate::plugin::api::events::inventory::inventory_drag::InventoryDragEvent::new(
+                    self.clone(),
+                );
+            if let Some(server) = self.world().server.upgrade() {
+                server.plugin_manager.fire(&server, &mut drag_event).await;
+            }
+            if drag_event.cancelled {
+                screen_handler.cancel().await;
+                return;
+            }
+        }
 
         // Enforce flags
         let is_container_slot = slot >= 0 && i32::from(slot) < container_slots as i32;
@@ -6258,6 +6438,70 @@ impl InventoryPlayer for Player {
     ) -> PlayerFuture<'_, ()> {
         Box::pin(async move {
             self.increment_stat(category, stat_id, amount).await;
+        })
+    }
+
+    fn fire_prepare_item_enchant_event<'a>(
+        &'a self,
+        item: &'a ItemStack,
+        level_requirements: &'a mut [i32; 3],
+        enchantment_id: &'a mut [i32; 3],
+        enchantment_level: &'a mut [i32; 3],
+        bookshelf_count: i32,
+    ) -> PlayerFuture<'a, bool> {
+        Box::pin(async move {
+            let Some(player_arc) = self.world().get_player_by_uuid(self.gameprofile.id) else {
+                return false;
+            };
+            let Some(server) = self.world().server.upgrade() else {
+                return false;
+            };
+            let mut event = PrepareItemEnchantEvent::new(
+                player_arc,
+                item.clone(),
+                *level_requirements,
+                *enchantment_id,
+                *enchantment_level,
+                bookshelf_count,
+            );
+            server.plugin_manager.fire(&server, &mut event).await;
+            if event.cancelled {
+                return true;
+            }
+            *level_requirements = event.level_requirements;
+            *enchantment_id = event.enchantment_id;
+            *enchantment_level = event.enchantment_level;
+            false
+        })
+    }
+
+    fn fire_enchant_item_event<'a>(
+        &'a self,
+        item: &'a ItemStack,
+        option: i32,
+        exp_level_cost: i32,
+        enchantments_to_add: &'a mut Vec<(&'static pumpkin_data::Enchantment, i32)>,
+    ) -> PlayerFuture<'a, bool> {
+        Box::pin(async move {
+            let Some(player_arc) = self.world().get_player_by_uuid(self.gameprofile.id) else {
+                return false;
+            };
+            let Some(server) = self.world().server.upgrade() else {
+                return false;
+            };
+            let mut event = EnchantItemEvent::new(
+                player_arc,
+                item.clone(),
+                option,
+                exp_level_cost,
+                enchantments_to_add.clone(),
+            );
+            server.plugin_manager.fire(&server, &mut event).await;
+            if event.cancelled {
+                return true;
+            }
+            *enchantments_to_add = event.enchantments_to_add;
+            false
         })
     }
 }

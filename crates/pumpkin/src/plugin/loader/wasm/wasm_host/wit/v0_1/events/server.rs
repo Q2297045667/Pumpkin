@@ -6,15 +6,17 @@ use crate::plugin::{
             events::{ToFromWasmEvent, consume_text_component},
             generated_packets,
             pumpkin::plugin::event::{
-                ClientboundPacket, Event, PacketReceivedEventData, PacketSentEventData,
-                ServerBroadcastEventData, ServerCommandEventData, ServerListPingAddress,
-                ServerListPingEventData, ServerLoadEventData, ServerLoadType,
-                ServerTickEndEventData, ServerTickStartEventData, ServerboundPacket,
+                ClientboundPacket, Event, MapInitializeEventData, PacketReceivedEventData,
+                PacketSentEventData, ServerBroadcastEventData, ServerCommandEventData,
+                ServerListPingAddress, ServerListPingEventData, ServerLoadEventData,
+                ServerLoadType, ServerTickEndEventData, ServerTickStartEventData,
+                ServerboundPacket,
             },
         },
     },
     server::{
         list_ping::ServerListPingEvent,
+        map_initialize::MapInitializeEvent,
         packet::{PacketReceivedEvent, PacketSentEvent},
         server_broadcast::ServerBroadcastEvent,
         server_command::ServerCommandEvent,
@@ -58,6 +60,13 @@ impl ToFromWasmEvent for PacketReceivedEvent {
         })
     }
 
+    fn apply_wasm_event(&mut self, event: Event, _state: &mut PluginHostState) {
+        if let Event::PacketReceivedEvent(data) = event {
+            self.packet_id = data.packet_id;
+            self.payload = data.raw_payload.into();
+            self.cancelled = data.cancelled;
+        }
+    }
     fn from_wasm_event(event: Event, _state: &mut PluginHostState) -> Self {
         match event {
             Event::PacketReceivedEvent(_) => {
@@ -256,6 +265,23 @@ impl ToFromWasmEvent for ServerTickStartEvent {
     fn from_wasm_event(event: Event, _state: &mut PluginHostState) -> Self {
         match event {
             Event::ServerTickStartEvent(data) => Self { tick: data.tick },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for MapInitializeEvent {
+    fn to_wasm_event(&self, _state: &mut PluginHostState) -> Event {
+        Event::MapInitializeEvent(MapInitializeEventData {
+            map_id: self.map_id,
+        })
+    }
+
+    fn from_wasm_event(event: Event, _state: &mut PluginHostState) -> Self {
+        match event {
+            Event::MapInitializeEvent(data) => Self {
+                map_id: data.map_id,
+            },
             _ => panic!("unexpected event type"),
         }
     }
