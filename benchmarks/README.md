@@ -282,3 +282,99 @@ powershell.exe -NoProfile -Command \
 | `light_persistent_consistency` | 光照引擎 |
 | `jit_numerical_consistency` / `gpu_backend_alignment` / `matrix_jit_path` | JIT 编译、JIT 一致性 |
 | `worldgen_bench` / `gpu_features` / `gpu_pipeline_integration` | 测试总览、基准测试 |
+
+---
+
+## 9. 区块格式 GPU 加速选型规范
+
+> 本规范固化 GPU 加速模块的区块存储格式选型决策、评估维度与验收标准。
+> 分析对象:`crates/pumpkin-world/src/chunk/format/` 下的三种格式实现(anvil / linear / pump)。
+
+### 9.1 适用范围与边界
+
+本规范约束磁盘 I/O 侧的 GPU 加速能力,包括:
+
+- **批量区块加载**:服务器启动加载、流式加载的吞吐优化;
+- **序列化管线**:区块保存路径的 GPU 化。
+
+不在本规范范围内(但列为前置条件,见 §9.6):
+
+- 当前三大 GPU 加速器(noise / batch / light)的计算逻辑——它们操作内存中的 `ChunkData`,与磁盘格式无关;
+- 内存侧 palette 展开(`HeterogeneousPaletteData` 索引 → 全局 `BlockStateId`)与光照定长数组的 SoA 上传,属上传前置条件,不属格式选型。
+
+### 9.2 候选格式
+
+| 格式 | 实现文件 | 扩展名 | 定位 |
+|------|---------|--------|------|
+| Anvil | `crates/pumpkin-world/src/chunk/format/anvil.rs` | `.mca` | 原版兼容 |
+| Linear v2 | `crates/pumpkin-world/src/chunk/format/linear.rs` | `.linear` | 连续紧凑布局 |
+| Pump | `crates/pumpkin-world/src/chunk/format/pump.rs` | `.pump` | 自研 NBT 包裹 |
+
+### 9.3 结构对比
+
+| 维度 | Anvil | Linear v2 | Pump |
+|------|-------|-----------|------|
+| 头部/索引 | 固定 8 KiB(1024×u32 扇区偏移 + 1024×u32 时间戳) | 26B 超级块 + 128B 位图 + 变长特性字典(恒空) + N×13B 桶表 | 无索引,整文件为 NBT 复合标签 |
+| 数据布局 | 每 chunk 独立压缩,4 KiB 扇区对齐,散布 | 桶数据紧密连续,尾部 8B 签名 | chunk 以字节数组内嵌于 NBT 树 |
+| 压缩 | 每 chunk 可选 zlib / gzip / lz4 / 不压缩(异构) | 每桶独立 zstd 流,桶数由 grid_size 决定(默认 4,最大 1024) | 每 chunk 独立 zstd |
+| 校验 | 无 | xxhash64(每桶) | 无 |
+| 版本/时间戳 | 时间戳表 | 版本字节 + 每 chunk 时间戳 | 无 |
+| 随机访问 | O(1) 扇区偏移 | 桶偏移 = 桶表前缀和 | 必须先串行解析整个 NBT |
+
+### 9.4 评估维度(选型必须全部满足)
+
+| # | 维度 | 要求 |
+|---|------|------|
+| 1 | 可并行性 | 至少 1 个 GPU work-item 对应 1 个独立压缩流 |
+| 2 | 访存模式 | 整块连续上传 + 合并访问(coalesced);禁止 scatter/gather |
+| 3 | 索引可计算性 | 数据偏移可由定长头部 + 并行前缀和(scan)计算;禁止串行走树 |
+| 4 | 编解码器 GPU 亲和度 | 块化压缩格式(zstd);禁止以强串行熵解码(zlib/gzip)为主路径 |
+| 5 | 校验并行性 | 校验和可 SIMD/GPU 并行计算(xxhash64) |
+
+### 9.5 逐格式结论
+
+#### Anvil(`.mca`)—— 定级:兼容保留,不入选
+
+- ✅ 每 chunk 独立压缩,并行度天然 1024;8 KiB 头部支持 O(1) 随机访问;
+- ❌ 4 KiB 扇区对齐导致 chunk 散布,无法整块连续上传,只能 scatter-gather;
+- ❌ 压缩算法每 chunk 异构(zlib/gzip/lz4/不压缩),zlib/gzip 的 Huffman + LZ77 反向引用为强串行算法,GPU 效率极差;仅 LZ4 chunk 具备 GPU 解压价值;
+- ❌ 4 KiB 填充浪费 PCIe 传输带宽。
+- 处理:**保留只读兼容**,GPU 管线仅对 LZ4 chunk 生效。
+
+#### Linear v2(`.linear`)—— 定级:入选(GPU 管线目标格式)
+
+- ✅ 定长头部(26B + 128B + 13B×N) + 连续桶数据,整文件一次连续读入/上传,零填充浪费;
+- ✅ 桶偏移 = 桶表并行前缀和,GPU 原生数据并行模式;
+- ✅ 每桶独立 zstd 流 → 桶级并行;`grid_size` 上调至 32×32(1024 桶)即每 chunk 一桶,并行度与 Anvil 相同且保持数据连续;
+- ✅ zstd 块化结构适合 GPU 解码(如 nvCOMP 路线),现有 `ruzstd` 纯 Rust 实现替换接口干净;
+- ✅ xxhash64 校验可整块搬上 GPU 并行验证;
+- ✅ 现有 `write()`/`read()` 的 `spawn_blocking` 桶循环(`linear.rs` 写路径 L410、读路径 L523)即天然内核边界,替换成本最低;
+- ⚠️ 默认 `grid_size = 2`(4 桶)并行度不足,须按 §9.7 调整。
+
+#### Pump(`.pump`)—— 定级:弃用
+
+- ❌ 整文件 NBT 复合标签,须先串行走树解析(tag 类型字节 + 变长字符串键 + 递归结构),GPU 无法数据并行;
+- ❌ 无索引/固定头部,无 O(1) 偏移,无 prefix-scan 可做;chunk 键为十进制字符串(`"0"`..`"1023"`),需逐条 string→int;
+- ❌ 无校验和、无版本字节、无时间戳,GPU 管线无法完整性验证,格式演进困难;
+- ✅ 仅每 chunk 独立 zstd 可并行解压,但解析瓶颈已堵死 GPU 路径。
+- 处理:**弃用或仅用于小型存档**,不进入 GPU 管线。
+
+### 9.6 选型决策
+
+1. **GPU 管线目标格式 = Linear v2(`.linear`)**;
+2. Anvil 保留只读兼容(原版存档互通),GPU 路径仅覆盖 LZ4 chunk;
+3. Pump 格式退出 GPU 规划,保留现有 CPU 读写代码直至弃用;
+4. 内存侧前置条件(不属本规范,但 GPU 上传前必须满足):
+   - palette 索引在 CPU 侧展开为全局 `BlockStateId`;
+   - 光照定长数组沿用 SoA 布局上传(与 `light_accel` 现有路径一致)。
+
+### 9.7 落地要求与验收标准
+
+| # | 要求 | 验收 |
+|---|------|------|
+| 1 | `linear.rs` 默认 `grid_size` 提升至 32(每 chunk 一桶) | 新世界默认 1024 桶,写放大可接受 |
+| 2 | 新增 `pumpkin-gpu::chunk_io` 模块:zstd 解压 + xxhash64 校验内核 | `--features gpu` 构建通过,内核字符串嵌入二进制 |
+| 3 | 替换 `linear.rs` 写路径(L410)与读路径(L523)的 `spawn_blocking` 桶循环为 GPU 管线,CPU 回退路径保留 | CPU/GPU 双路径均通过现有 roundtrip 测试 |
+| 4 | 一致性:GPU 解压结果与 CPU(`ruzstd`)逐位一致;xxhash 校验结果一致 | 指纹/逐位断言套件通过 |
+| 5 | 回退策略:GPU 不可用、桶损坏、grid_size 非法时回退 CPU 路径 | 与 `noise_accel` / `light_accel` 回退语义一致 |
+| 6 | 基准报告新增「区块格式」章节,记录批量加载吞吐(CPU vs GPU 加速比) | 报告含 §2.4 格式的基准表 |
