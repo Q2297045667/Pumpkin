@@ -2,22 +2,25 @@
 //!
 //! 提供 CUDA (NVRTC) 和 OpenCL 两种后端的 kernel 编译、缓存和启动功能。
 
+#[cfg(any(feature = "cuda", feature = "opencl"))]
 use std::collections::HashMap;
+#[cfg(any(feature = "cuda", feature = "opencl"))]
 use std::sync::OnceLock;
 
 #[cfg(any(feature = "cuda", feature = "opencl"))]
 use crate::common::DeviceError;
 
-#[cfg(feature = "pumpkin-util")]
+#[cfg(all(feature = "pumpkin-util", any(feature = "cuda", feature = "opencl")))]
 use crate::noise::kernels;
-#[cfg(feature = "pumpkin-util")]
+#[cfg(all(feature = "pumpkin-util", any(feature = "cuda", feature = "opencl")))]
 use crate::noise::kernels_cell;
-#[cfg(feature = "pumpkin-util")]
+#[cfg(all(feature = "pumpkin-util", any(feature = "cuda", feature = "opencl")))]
 use crate::noise::kernels_extra;
-#[cfg(feature = "pumpkin-util")]
+#[cfg(all(feature = "pumpkin-util", any(feature = "cuda", feature = "opencl")))]
 use crate::noise::kernels_light;
 
 /// 全局 OpenCL kernel 源码注册表（用于延迟编译）。
+#[cfg(feature = "opencl")]
 static KERNEL_REGISTRY_CL: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
 /// 全局 CUDA kernel 源码注册表（用于延迟编译）。
 #[cfg(feature = "cuda")]
@@ -27,7 +30,9 @@ static KERNEL_REGISTRY_CU: OnceLock<HashMap<&'static str, &'static str>> = OnceL
 ///
 /// 幂等：使用 [`OnceLock::get_or_init`]，重复调用不会重复泄漏源码字符串。
 /// 两套注册表分开维护，避免 OpenCL 延迟编译时误取到 CUDA 源码。
+#[cfg(feature = "pumpkin-util")]
 pub(crate) fn init_kernel_registry() {
+    #[cfg(feature = "opencl")]
     KERNEL_REGISTRY_CL.get_or_init(|| {
         let mut map = HashMap::new();
         for k in all_kernel_sources() {
@@ -51,6 +56,7 @@ pub(crate) fn init_kernel_registry() {
 }
 
 /// 按名称查找 OpenCL kernel 源码（用于延迟编译）。
+#[cfg(feature = "opencl")]
 #[must_use]
 pub(crate) fn lookup_opencl_kernel_source(name: &str) -> Option<&'static str> {
     KERNEL_REGISTRY_CL.get().and_then(|m| m.get(name).copied())
@@ -64,12 +70,14 @@ pub(crate) fn lookup_cuda_kernel_source(name: &str) -> Option<&'static str> {
 }
 
 /// 编译好的 kernel 元数据。
+#[cfg(any(feature = "cuda", feature = "opencl"))]
 pub(crate) struct CompiledKernel {
     pub name: String,
     pub source: String,
 }
 
-/// 返回所有已知 kernel 的名称和源码。
+/// 返回所有已知 OpenCL kernel 的名称和源码（OpenCL C 格式）。
+#[cfg(feature = "opencl")]
 #[must_use]
 pub(crate) fn all_kernel_sources() -> Vec<CompiledKernel> {
     #[cfg(feature = "pumpkin-util")]
@@ -663,7 +671,7 @@ mod tests {
         "light_propagate_u8_persistent",
     ];
 
-    #[cfg(feature = "cuda")]
+    #[cfg(all(feature = "cuda", feature = "opencl"))]
     #[test]
     fn kernel_names_cuda_opencl_aligned() {
         let cl_kernels = all_kernel_sources();
@@ -694,6 +702,7 @@ mod tests {
         assert!(!cu.is_empty(), "CUDA kernel list is empty");
     }
 
+    #[cfg(feature = "opencl")]
     #[test]
     fn kernel_registry_is_idempotent_and_split() {
         init_kernel_registry();

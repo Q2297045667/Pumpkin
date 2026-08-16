@@ -159,6 +159,7 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         self.len == 0
     }
 
+    #[cfg(feature = "cuda")]
     #[must_use]
     pub(crate) fn cpu_data(&self) -> Option<&[T]> {
         match &self.raw {
@@ -170,6 +171,7 @@ impl<T: bytemuck::Pod> GpuBuffer<T> {
         }
     }
 
+    #[cfg(feature = "cuda")]
     pub(crate) fn cpu_data_mut(&mut self) -> Option<&mut Vec<T>> {
         match &mut self.raw {
             RawBuffer::Cpu(v) => Some(v),

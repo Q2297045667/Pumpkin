@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 static JIT_MAX_UNROLL: OnceLock<usize> = OnceLock::new();
 
 /// 设置 JIT 循环展开上限（从配置读取）。
+#[cfg(feature = "pumpkin-config")]
 pub(crate) fn set_jit_max_unroll(max: usize) {
     let _ = JIT_MAX_UNROLL.set(max);
 }

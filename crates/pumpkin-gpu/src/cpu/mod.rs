@@ -1,6 +1,7 @@
 //! CPU 回退后端。
 
 use crate::common::{DeviceError, GpuBuffer, KernelLauncher, buffer::RawBuffer};
+#[cfg(feature = "gpu")]
 use std::sync::OnceLock;
 
 /// 缓存 CPU 品牌名——`sysinfo::System::new_all()` 成本高（~100ms），

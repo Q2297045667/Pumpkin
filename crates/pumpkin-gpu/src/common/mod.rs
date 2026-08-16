@@ -150,6 +150,7 @@ impl BackendImpl {
     /// 注意：此方法不调用 `synchronize()` — 同步由调用方的
     /// `copy_from_device` 隐式保证（CUDA 默认流 / OpenCL 有序队列）。
     /// 若 kernel 尚未编译，尝试按需编译（延迟加载）。
+    #[cfg(feature = "pumpkin-util")]
     pub(crate) fn try_launch_kernel(
         &self,
         name: &str,
@@ -182,7 +183,10 @@ impl BackendImpl {
     ///
     /// 后端从各自注册表查找源码并补编译；失败只记录日志，
     /// `try_launch_kernel` 随后会因 kernel 不存在而回退到 CPU。
+    #[cfg(feature = "pumpkin-util")]
     fn try_compile_kernel_on_demand(&self, name: &str) {
+        #[cfg(not(any(feature = "cuda", feature = "opencl")))]
+        let _ = name;
         match self {
             #[cfg(feature = "cuda")]
             Self::Cuda(cuda) => cuda.compile_kernel_by_name(name),
@@ -200,6 +204,8 @@ impl BackendImpl {
         &self,
         jit_kernel: &crate::jit::JitSpecializedKernel,
     ) -> Result<(), DeviceError> {
+        #[cfg(not(any(feature = "cuda", feature = "opencl")))]
+        let _ = jit_kernel;
         match self {
             Self::Cpu(_) => Err(DeviceError::Unsupported(
                 "JIT compilation not supported on CPU backend".into(),

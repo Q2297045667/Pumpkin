@@ -494,6 +494,7 @@ impl GpuDevice {
     ///
     /// `local_mem_bytes` 为 kernel 尾部 local / shared 内存参数大小（字节），
     /// 常规 kernel 传空。
+    #[cfg(feature = "pumpkin-util")]
     pub(crate) fn try_launch_kernel(
         &self,
         name: &str,
@@ -647,7 +648,7 @@ mod tests {
 
     /// `GpuDevice::init()` 应与 `from_config()` 一样初始化全局 kernel 注册表，
     /// 否则依赖延迟编译（按需加载）的模块在 `init()` 路径下无法查找到 kernel 源码。
-    #[cfg(feature = "pumpkin-util")]
+    #[cfg(all(feature = "pumpkin-util", feature = "opencl"))]
     #[test]
     fn init_initializes_kernel_registry() {
         let _device = GpuDevice::init();
