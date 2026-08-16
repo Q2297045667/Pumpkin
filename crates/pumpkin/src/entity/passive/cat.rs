@@ -11,7 +11,7 @@ use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::tag::{self, Taggable};
 use pumpkin_data::tracked_data::TrackedData;
 use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_protocol::bedrock::client::actor_event::ActorEventType;
+use pumpkin_protocol::bedrock::server::actor_event::ActorEventType;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::Metadata;
 use rand::RngExt;
@@ -196,7 +196,7 @@ impl CatEntity {
         let entity = self.get_entity();
         entity.send_meta_data(
             &[Metadata::new(
-                TrackedData::COLLAR_COLOR,
+                TrackedData::CAT_COLLAR_COLOR,
                 MetaDataType::INT,
                 VarInt(color as i32),
             )],
@@ -443,7 +443,7 @@ impl Mob for CatEntity {
             );
             entity.send_meta_data(
                 &[Metadata::new(
-                    TrackedData::COLLAR_COLOR,
+                    TrackedData::CAT_COLLAR_COLOR,
                     MetaDataType::INT,
                     VarInt(self.collar_color.load(Ordering::Relaxed) as i32),
                 )],
