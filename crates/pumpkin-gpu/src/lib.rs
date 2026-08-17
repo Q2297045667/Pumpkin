@@ -235,7 +235,7 @@ impl GpuDevice {
                             };
                         }
                         Err(e) => {
-                            tracing::error!("强制指定的 CUDA 后端不可用 ({e}), 回退到 CPU");
+                            tracing::debug!("强制指定的 CUDA 后端不可用 ({e}), 回退到 CPU");
                             crate::logging::log_fallback(
                                 &crate::logging::FallbackReason::InitFailed(e.to_string()),
                                 "GpuDevice::init_internal::forced_cuda",
@@ -261,7 +261,7 @@ impl GpuDevice {
                                 };
                             }
                             Err(e) => {
-                                tracing::error!("强制指定的 OpenCL 后端不可用 ({e}), 回退到 CPU");
+                                tracing::debug!("强制指定的 OpenCL 后端不可用 ({e}), 回退到 CPU");
                                 crate::logging::log_fallback(
                                     &crate::logging::FallbackReason::InitFailed(e.to_string()),
                                     "GpuDevice::init_internal::forced_opencl",
@@ -269,7 +269,7 @@ impl GpuDevice {
                             }
                         }
                     } else {
-                        tracing::error!("强制指定 OpenCL 但驱动未安装，回退到 CPU");
+                        tracing::debug!("强制指定 OpenCL 但驱动未安装，回退到 CPU");
                         crate::logging::log_fallback(
                             &crate::logging::FallbackReason::DriverNotFound,
                             "GpuDevice::init_internal::forced_opencl",
@@ -279,7 +279,7 @@ impl GpuDevice {
                 // 如果编译时未包含对应后端，但运行时强制指定了，回退 CPU
                 #[cfg(not(feature = "cuda"))]
                 DeviceType::Cuda => {
-                    tracing::error!("CUDA 未编译，回退到 CPU");
+                    tracing::debug!("CUDA 未编译，回退到 CPU");
                     crate::logging::log_fallback(
                         &crate::logging::FallbackReason::InitFailed(
                             "CUDA backend not compiled".into(),
@@ -289,7 +289,7 @@ impl GpuDevice {
                 }
                 #[cfg(not(feature = "opencl"))]
                 DeviceType::OpenCl => {
-                    tracing::error!("OpenCL 未编译，回退到 CPU");
+                    tracing::debug!("OpenCL 未编译，回退到 CPU");
                     crate::logging::log_fallback(
                         &crate::logging::FallbackReason::InitFailed(
                             "OpenCL backend not compiled".into(),
@@ -333,11 +333,7 @@ impl GpuDevice {
                         };
                     }
                     Err(e) => {
-                        tracing::warn!("CUDA 后端初始化失败 ({e}), 尝试 OpenCL...");
-                        crate::logging::log_fallback(
-                            &crate::logging::FallbackReason::InitFailed(e.to_string()),
-                            "GpuDevice::init_internal::auto_cuda",
-                        );
+                        tracing::debug!("CUDA 后端初始化失败 ({e}), 尝试 OpenCL...");
                     }
                 }
             } else {
@@ -369,18 +365,10 @@ impl GpuDevice {
                     };
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
-                    crate::logging::log_fallback(
-                        &crate::logging::FallbackReason::InitFailed(e.to_string()),
-                        "GpuDevice::init_internal::auto_opencl",
-                    );
+                    tracing::debug!("OpenCL 后端初始化失败 ({e}), 回退到 CPU...");
                 }
                 Err(_) => {
-                    tracing::warn!("OpenCL 后端初始化时发生崩溃, 回退到 CPU...");
-                    crate::logging::log_fallback(
-                        &crate::logging::FallbackReason::DriverNotFound,
-                        "GpuDevice::init_internal::auto_opencl_crash",
-                    );
+                    tracing::debug!("OpenCL 后端初始化时发生崩溃, 回退到 CPU...");
                 }
             }
         }

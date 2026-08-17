@@ -47,7 +47,7 @@ impl OpenClKernelLauncher {
         );
         let mut compiler = OpenClKernelCompiler::new(&flags);
         if let Err(e) = compiler.compile_all(ctx, device.id()) {
-            tracing::warn!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
+            tracing::debug!("OpenCL kernel compilation failed: {e}. CPU fallback will be used.");
         }
         if queues.len() > 1 {
             tracing::debug!("OpenCL 流水线: {} 个命令队列（轮转模式）", queues.len());
@@ -85,7 +85,7 @@ impl OpenClKernelLauncher {
             return;
         };
         if let Err(e) = compiler.compile_by_name(ctx, device.id(), name, source) {
-            tracing::warn!("OpenCL lazy: compile '{name}' failed: {e}");
+            tracing::debug!("OpenCL lazy: compile '{name}' failed: {e}");
             crate::logging::log_fallback(
                 &crate::logging::FallbackReason::KernelCompileFailed(format!(
                     "OpenCL lazy '{name}': {e}"

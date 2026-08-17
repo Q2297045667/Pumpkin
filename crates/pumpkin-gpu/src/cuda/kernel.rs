@@ -38,7 +38,9 @@ impl CudaKernelLauncher {
         let flags = flags.unwrap_or(default_flags);
         let mut compiler = CudaKernelCompiler::new(compile_ptx, flags);
         if let Err(e) = compiler.compile_all(ctx) {
-            tracing::warn!("CUDA NVRTC kernel compilation failed: {e}. CPU fallback will be used.");
+            tracing::debug!(
+                "CUDA NVRTC kernel compilation failed: {e}. CPU fallback will be used."
+            );
         }
         *self.compiler.lock() = Some(compiler);
         self.stream = Some(stream);
@@ -87,7 +89,7 @@ impl CudaKernelLauncher {
             return;
         };
         if let Err(e) = compiler.compile_by_name(&ctx, name, source) {
-            tracing::warn!("CUDA lazy: compile '{name}' failed: {e}");
+            tracing::debug!("CUDA lazy: compile '{name}' failed: {e}");
             crate::logging::log_fallback(
                 &crate::logging::FallbackReason::KernelCompileFailed(format!(
                     "CUDA lazy '{name}': {e}"

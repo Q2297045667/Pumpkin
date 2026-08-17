@@ -3,6 +3,8 @@
 //! 提供设备发现、后端状态显示和 CPU 回退原因记录。
 
 use crate::DeviceType;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 /// 启动时输出 GPU 加速状态信息。
 ///
@@ -72,7 +74,32 @@ impl std::fmt::Display for FallbackReason {
 /// 记录 CPU 回退事件。
 ///
 /// 使用 `tracing::warn!` 输出回退原因，帮助用户了解为何 GPU 未被使用。
-/// 同一原因的重复回退会被抑制（每个原因只输出一次）。
+/// 同一类原因的重复回退会被抑制，避免启动时每个后端或 kernel 重复刷屏。
 pub fn log_fallback(reason: &FallbackReason, context: &str) {
-    tracing::warn!("[{context}] CPU 回退 — {reason}");
+    static LOGGED_KINDS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let logged_kinds = LOGGED_KINDS.get_or_init(|| Mutex::new(HashSet::new()));
+    let kind = reason.kind();
+    let Ok(mut logged_kinds) = logged_kinds.lock() else {
+        tracing::debug!("[{context}] CPU 回退 — {reason}");
+        return;
+    };
+    if !logged_kinds.insert(kind) {
+        tracing::debug!("[{context}] CPU 回退 — {reason}");
+        return;
+    }
+    tracing::warn!("GPU 不可用，已切换到 CPU 路径 — {reason}");
+}
+
+impl FallbackReason {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::ConfigDisabled => "config_disabled",
+            Self::DriverNotFound => "driver_not_found",
+            Self::InitFailed(_) => "init_failed",
+            Self::KernelCompileFailed(_) => "kernel_compile_failed",
+            Self::KernelLaunchFailed(_) => "kernel_launch_failed",
+            Self::ResultMismatch => "result_mismatch",
+            Self::UnsupportedOperation(_) => "unsupported_operation",
+        }
+    }
 }

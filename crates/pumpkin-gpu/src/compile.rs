@@ -365,7 +365,7 @@ pub mod cuda_compile {
                         tracing::info!("CUDA NVRTC: compiled '{}'", kernel.name);
                     }
                     Err(e) => {
-                        tracing::warn!("CUDA NVRTC: failed '{}': {e}", kernel.name);
+                        tracing::debug!("CUDA NVRTC: failed '{}': {e}", kernel.name);
                         crate::logging::log_fallback(
                             &crate::logging::FallbackReason::KernelCompileFailed(format!(
                                 "CUDA NVRTC '{}': {e}",
@@ -541,7 +541,7 @@ pub mod opencl_compile {
                         tracing::info!("OpenCL: compiled '{}'", kernel.name);
                     }
                     Err(e) => {
-                        tracing::warn!("OpenCL: failed '{}': {e}", kernel.name);
+                        tracing::debug!("OpenCL: failed '{}': {e}", kernel.name);
                         crate::logging::log_fallback(
                             &crate::logging::FallbackReason::KernelCompileFailed(format!(
                                 "OpenCL '{}': {e}",
@@ -625,7 +625,7 @@ pub mod opencl_compile {
                 // 尝试获取构建日志以提供更好的错误信息
                 let log = program.get_build_log(device_id).unwrap_or_default();
                 if !log.is_empty() {
-                    tracing::warn!(
+                    tracing::debug!(
                         "OpenCL build log for '{name}': {}",
                         &log[..log.len().min(500)]
                     );
