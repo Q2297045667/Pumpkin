@@ -164,15 +164,20 @@ impl BackendImpl {
                 self.try_compile_kernel_on_demand(name);
             }
             if l.has_kernel(name) {
-                l.launch(crate::common::kernel::KernelLaunch {
+                match l.launch(crate::common::kernel::KernelLaunch {
                     name,
                     global_work_size: [n, 1, 1],
                     local_work_size: Some([256, 1, 1]),
                     args,
                     gpu_buffers,
                     local_mem_bytes,
-                })
-                .is_ok()
+                }) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::debug!("GPU kernel '{name}' launch failed: {error}");
+                        false
+                    }
+                }
             } else {
                 false
             }

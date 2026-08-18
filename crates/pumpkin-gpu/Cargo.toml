@@ -34,13 +34,15 @@ sysinfo = { workspace = true, optional = true }
 [dev-dependencies]
 rand.workspace = true
 tempfile.workspace = true
+criterion.workspace = true
 pumpkin-util = { workspace = true }
+pumpkin-config = { workspace = true }
 
 [features]
 default = []
 # Individual backend features
-cuda = ["dep:cudarc"]
-opencl = ["dep:opencl3"]
+cuda = ["dep:cudarc", "pumpkin-util"]
+opencl = ["dep:opencl3", "pumpkin-util"]
 # Enables pumpkin-config integration
 pumpkin-config = ["dep:pumpkin-config", "pumpkin-config/gpu"]
 # Enables pumpkin-util integration (noise module)
@@ -72,6 +74,14 @@ harness = true
 [[test]]
 name = "edge_case_tests"
 harness = true
+
+[[test]]
+name = "cpu_fingerprint_tests"
+harness = true
+
+[[bench]]
+name = "gpu_consistency"
+harness = false
 
 [lints]
 workspace = true

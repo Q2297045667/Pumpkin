@@ -154,21 +154,20 @@ impl GpuAquiferBatchSampler {
         self.device.copy_to_device(&mut d_gpos, &grid_positions)?;
         self.device.copy_to_device(&mut d_gden, &grid_densities)?;
 
-        let kernel_name = if m <= get_aquifer_tile_threshold() {
+        let use_tiled = m <= get_aquifer_tile_threshold();
+        let kernel_name = if use_tiled {
             "aquifer_batch_tiled_f64"
         } else {
             "aquifer_batch_f64"
         };
         // tiled kernel 的尾部 __local / extern __shared__ 参数大小（字节）：
         // tile_positions [M*3] f64 + tile_densities [M] f64
-        let local_mem_bytes = if kernel_name == "aquifer_batch_tiled_f64" {
+        let local_mem_bytes = if use_tiled {
             vec![m * 3 * size_of::<f64>(), m * size_of::<f64>()]
         } else {
             Vec::new()
         };
-        let ok = self.try_launch(
-            kernel_name,
-            n,
+        let launch_args = || {
             vec![
                 KernelArg::BufferRef(0),
                 KernelArg::BufferRef(1),
@@ -180,7 +179,9 @@ impl GpuAquiferBatchSampler {
                 KernelArg::F64(barrier_scale),
                 KernelArg::I32(n as i32),
                 KernelArg::I32(m as i32),
-            ],
+            ]
+        };
+        let launch_buffers = || {
             vec![
                 GpuBufferRef::F64(&d_pos),
                 GpuBufferRef::F64(&d_gpos),
@@ -188,9 +189,27 @@ impl GpuAquiferBatchSampler {
                 GpuBufferRef::F64(&d_gden),
                 GpuBufferRef::I32(&d_bids),
                 GpuBufferRef::U8(&d_flags),
-            ],
+            ]
+        };
+        let mut ok = self.try_launch(
+            kernel_name,
+            n,
+            launch_args(),
+            launch_buffers(),
             local_mem_bytes,
         );
+        if !ok && use_tiled {
+            // Some devices reject the tiled launch because of local/shared-memory
+            // limits. Retry the equivalent global-memory kernel before giving up.
+            tracing::debug!("Aquifer tiled kernel launch failed; retrying standard kernel");
+            ok = self.try_launch(
+                "aquifer_batch_f64",
+                n,
+                launch_args(),
+                launch_buffers(),
+                Vec::new(),
+            );
+        }
 
         if ok {
             let mut block_ids = vec![0i32; n];

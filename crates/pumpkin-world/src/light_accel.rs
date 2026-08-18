@@ -60,8 +60,9 @@ impl LightAccelerator {
                 "light_accel::batch_sky_fill",
             );
         }
+        sl.fill(0);
         for col in 0..n {
-            let top = hm[col];
+            let top = hm[col].clamp(-1, h.saturating_sub(1) as i32);
             for y in (top + 1)..h as i32 {
                 sl[col * h + y as usize] = 15;
             }

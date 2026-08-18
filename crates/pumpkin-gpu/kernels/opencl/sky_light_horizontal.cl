@@ -12,8 +12,9 @@ __kernel void sky_light_horizontal_propagate_u8(
     int depth,                        // Z dimension (typically 18)
     int height                        // Y dimension
 ) {
-    int x = get_global_id(0);
-    int z = get_global_id(1);
+    int linear = get_global_id(0);
+    int x = linear % width;
+    int z = linear / width;
     if (x >= width || z >= depth) return;
 
     int base = z * (width * height) + x * height;

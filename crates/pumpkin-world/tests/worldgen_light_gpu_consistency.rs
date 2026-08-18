@@ -75,7 +75,7 @@ fn gpu_sky_fill_vs_cpu() {
 
     let mut cpu = vec![0u8; n * h];
     for col in 0..n {
-        let top = hm[col];
+        let top = hm[col].clamp(-1, h.saturating_sub(1) as i32);
         for y in (top + 1)..h as i32 {
             cpu[col * h + y as usize] = 15;
         }

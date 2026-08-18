@@ -1,5 +1,6 @@
 //! JIT 编译测试。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg(feature = "pumpkin-util")]
 
 use pumpkin_gpu::jit;
 use pumpkin_gpu::noise::cache::{SerializedOctave, SerializedOctaveConfig};

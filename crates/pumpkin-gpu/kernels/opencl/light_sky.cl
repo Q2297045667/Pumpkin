@@ -6,7 +6,7 @@ __kernel void sky_light_fill_u8(
 ) {
     int col = get_global_id(0);
     if (col >= N) return;
-    int top = heightmap[col];
+    int top = clamp(heightmap[col], -1, max_height - 1);
     for (int y = top + 1; y < max_height; y++) {
         sky_light[col * max_height + y] = 15;
     }

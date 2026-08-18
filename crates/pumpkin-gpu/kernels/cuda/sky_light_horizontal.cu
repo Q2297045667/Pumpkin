@@ -8,8 +8,9 @@ extern "C" __global__ void sky_light_horizontal_propagate_u8(
     int depth,                            // Z dimension
     int height                            // Y dimension
 ) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int z = blockIdx.y * blockDim.y + threadIdx.y;
+    int linear = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = linear % width;
+    int z = linear / width;
     if (x >= width || z >= depth) return;
 
     int base = z * (width * height) + x * height;

@@ -38,7 +38,7 @@ impl GpuLightSampler {
         n: usize,
         max_height: usize,
     ) -> Result<(), DeviceError> {
-        if n == 0 {
+        if n == 0 || max_height == 0 {
             return Ok(());
         }
 
@@ -47,9 +47,13 @@ impl GpuLightSampler {
                 // 从缓冲池分配（复用跨调用缓冲区）
                 let mut d_hm = self.buffer_pool.take_i32(&self.device, n)?;
                 let mut d_op = self.buffer_pool.take_u8(&self.device, n * max_height)?;
-                let d_sl = self.buffer_pool.take_u8(&self.device, n * max_height)?;
+                let mut d_sl = self.buffer_pool.take_u8(&self.device, n * max_height)?;
                 self.device.copy_to_device(&mut d_hm, heightmap)?;
                 self.device.copy_to_device(&mut d_op, opacity)?;
+                // The kernel only writes from the column height downward. Clear the
+                // output first so cells above the heightmap match the CPU path.
+                self.device
+                    .copy_to_device(&mut d_sl, &vec![0u8; n * max_height])?;
                 l.launch(crate::common::kernel::KernelLaunch {
                     name: "sky_light_fill_u8",
                     global_work_size: [n, 1, 1],
@@ -79,7 +83,7 @@ impl GpuLightSampler {
 
         // CPU fallback
         for col in 0..n {
-            let top = heightmap[col];
+            let top = heightmap[col].clamp(-1, max_height.saturating_sub(1) as i32);
             for y in (top + 1)..max_height as i32 {
                 sky_light[col * max_height + y as usize] = 15;
             }
@@ -367,8 +371,8 @@ impl GpuLightSampler {
                     self.device.copy_to_device(&mut d_changed, &[0i32])?;
                     l.launch(crate::common::kernel::KernelLaunch {
                         name: "sky_light_horizontal_propagate_u8",
-                        global_work_size: [width, depth, 1],
-                        local_work_size: Some([16, 16, 1]),
+                        global_work_size: [width * depth, 1, 1],
+                        local_work_size: Some([256, 1, 1]),
                         args: vec![
                             KernelArg::BufferRef(0), // sky_light
                             KernelArg::BufferRef(1), // opacity
@@ -402,8 +406,43 @@ impl GpuLightSampler {
             }
         }
 
-        Err(DeviceError::Unsupported(
-            "GPU sky light horizontal propagate unavailable".into(),
-        ))
+        // CPU fallback: preserve the same in-place relaxation semantics as the GPU kernel.
+        let mut iterations = 0;
+        while iterations < max_iters {
+            let mut changed = false;
+            for z in 0..depth {
+                for x in 0..width {
+                    let base = z * width * height + x * height;
+                    for y in (0..height).rev() {
+                        let idx = base + y;
+                        let cur = sky_light[idx];
+                        let mut best = cur;
+                        for (nx, nz) in [
+                            (x.checked_sub(1), Some(z)),
+                            (x.checked_add(1).filter(|&v| v < width), Some(z)),
+                            (Some(x), z.checked_sub(1)),
+                            (Some(x), z.checked_add(1).filter(|&v| v < depth)),
+                        ] {
+                            if let (Some(nx), Some(nz)) = (nx, nz) {
+                                let neighbor = sky_light[nz * width * height + nx * height + y];
+                                best = best.max(neighbor.saturating_sub(1));
+                            }
+                        }
+                        if y + 1 < height && sky_light[idx + 1] == 15 && opacity[idx] == 0 {
+                            best = best.max(15);
+                        }
+                        if best > cur {
+                            sky_light[idx] = best;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            iterations += 1;
+            if !changed {
+                break;
+            }
+        }
+        Ok(iterations)
     }
 }
