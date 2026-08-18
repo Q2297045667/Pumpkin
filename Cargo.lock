@@ -3580,6 +3580,7 @@ name = "pumpkin-gpu"
 version = "0.1.0-dev+26.2-26.40"
 dependencies = [
  "bytemuck",
+ "criterion",
  "cudarc",
  "opencl3",
  "parking_lot",
