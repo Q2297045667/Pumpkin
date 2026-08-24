@@ -67,8 +67,11 @@
 //! ```
 
 use crate::{
-    commands::COMMAND_HANDLERS, events::EVENT_HANDLERS, logging::WitSubscriber,
-    scheduler::TASK_HANDLERS, text::TextComponent,
+    commands::{COMMAND_HANDLERS, COMMAND_SUGGESTION_HANDLERS},
+    events::EVENT_HANDLERS,
+    logging::WitSubscriber,
+    scheduler::TASK_HANDLERS,
+    text::TextComponent,
 };
 
 /// Plugin command registration and handling utilities.
@@ -98,8 +101,8 @@ pub mod worldgen;
 /// Command WIT API re-exports.
 pub mod command {
     pub use crate::wit::pumpkin::plugin::command::{
-        Arg, ArgumentType, Command, CommandError, CommandNode, CommandSender, ConsumedArgs,
-        StringType,
+        Arg, ArgumentType, Command, CommandError, CommandNode, CommandSender, CommandSuggestion,
+        CommandSuggestions, ConsumedArgs, StringType, SuggestionRequest,
     };
 }
 
@@ -249,6 +252,27 @@ impl wit::Guest for Component {
         )
     }
 
+    /// WIT entry point — dispatches an incoming command suggestion request to the registered handler.
+    fn handle_command_suggestion(
+        handler_id: u32,
+        sender: command::CommandSender,
+        server: Server,
+        request: command::SuggestionRequest,
+    ) -> command::CommandSuggestions {
+        let handlers = COMMAND_SUGGESTION_HANDLERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(handler) = handlers.get(&handler_id) {
+            handler.suggest(sender, server, request)
+        } else {
+            command::CommandSuggestions {
+                start: request.start,
+                length: 0,
+                values: Vec::new(),
+            }
+        }
+    }
+
     /// WIT entry point — dispatches a scheduled task invocation to the registered handler for `handler_id`.
     fn handle_task(handler_id: u32, server: Server) {
         let mut handlers = TASK_HANDLERS.lock().unwrap_or_else(|e| e.into_inner());
@@ -396,9 +420,11 @@ pub fn register_plugin(build_plugin: fn() -> Box<dyn Plugin>) {
 /// If called before [`register_plugin`] has initialized `PLUGIN`.
 fn plugin() -> &'static mut dyn Plugin {
     #[expect(static_mut_refs)]
-    #[allow(clippy::unwrap_used)]
+    #[allow(clippy::expect_used)]
     unsafe {
-        PLUGIN.as_deref_mut().unwrap()
+        PLUGIN
+            .as_deref_mut()
+            .expect("PLUGIN must be initialized with register_plugin before use")
     }
 }
 

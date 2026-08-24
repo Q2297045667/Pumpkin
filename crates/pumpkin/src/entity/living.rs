@@ -22,7 +22,7 @@ use std::{collections::HashMap, sync::atomic::AtomicI32};
 use tracing::warn;
 
 use super::experience_orb::ExperienceOrbEntity;
-use super::{Entity, EntityBase, NBTStorage, NBTStorageInit};
+use super::{Entity, EntityBase, NBTStorageInit};
 use crate::block::OnLandedUponArgs;
 use crate::entity::attributes::AttributeInstance;
 use crate::entity::attributes::Modifier;
@@ -31,7 +31,7 @@ use crate::entity::combat::knockback_after_resistance;
 use crate::entity::mob::equipment::DEFAULT_EQUIPMENT_DROP_CHANCE;
 use crate::entity::mob::slime::SlimeEntity;
 use crate::entity::player::statistics::{CustomStatistic, StatisticCategory};
-use crate::entity::{EntityBaseFuture, NbtFuture};
+use crate::entity::{EntityBaseFuture, NBTStorage, NbtFuture};
 use crate::server::Server;
 use crate::world::loot::{LootContextParameters, LootTableExt};
 use crossbeam::atomic::AtomicCell;
@@ -130,7 +130,11 @@ struct EffectParticle {
 struct EffectParticles(Vec<EffectParticle>);
 
 impl MetadataSerializer for EffectParticles {
-    fn write_metadata(&self, writer: &mut impl std::io::Write) -> Result<(), WritingError> {
+    fn write_metadata(
+        &self,
+        writer: &mut impl std::io::Write,
+        _version: &pumpkin_util::version::JavaMinecraftVersion,
+    ) -> Result<(), WritingError> {
         let count = i32::try_from(self.0.len())
             .map_err(|_| WritingError::Message("Too many effect particles".into()))?;
         writer.write_var_int(&VarInt(count))?;
@@ -2217,10 +2221,9 @@ impl LivingEntity {
     }
 }
 
-impl NBTStorage for LivingEntity {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
+impl LivingEntity {
+    pub fn write_living_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async move {
-            self.entity.write_nbt(nbt).await;
             nbt.put("Health", NbtTag::Float(self.health.load()));
             // Avoid persisting a lethal fall distance when the entity is dead to prevent death loops
             let fall_distance = if self.dead.load(Relaxed) {
@@ -2231,6 +2234,9 @@ impl NBTStorage for LivingEntity {
             // Persist current absorption amount
             nbt.put("AbsorptionAmount", NbtTag::Float(self.absorption.load()));
             nbt.put("FallDistance", NbtTag::Float(fall_distance));
+            nbt.put_short("HurtTime", self.hurt_cooldown.load(Relaxed).max(0) as i16);
+            nbt.put_short("DeathTime", i16::from(self.death_time.load(Relaxed)));
+            nbt.put_bool("FallFlying", self.entity.is_fall_flying());
             {
                 let effects = self.active_effects.lock().await;
                 if !effects.is_empty() {
@@ -2249,10 +2255,9 @@ impl NBTStorage for LivingEntity {
         })
     }
 
-    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
+    pub fn read_living_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async {
-            self.entity.read_nbt_non_mut(nbt).await;
-            self.health.store(nbt.get_float("Health").unwrap_or(0.0));
+            self.health.store(nbt.get_float("Health").unwrap_or(20.0));
 
             // Clamp any persisted absorption to the entity's configured max
             let raw_abs = nbt.get_float("AbsorptionAmount").unwrap_or(0.0);
@@ -2271,6 +2276,15 @@ impl NBTStorage for LivingEntity {
             } else {
                 self.fall_distance.store(fd);
             }
+            if let Some(hurt_time) = nbt.get_short("HurtTime") {
+                self.hurt_cooldown.store(i32::from(hurt_time), Relaxed);
+            }
+            if let Some(death_time) = nbt.get_short("DeathTime") {
+                self.death_time.store(death_time as u8, Relaxed);
+            }
+            self.entity
+                .fall_flying
+                .store(nbt.get_bool("FallFlying").unwrap_or(false), Relaxed);
             {
                 let mut active_effects = self.active_effects.lock().await;
                 let nbt_effects = nbt.get_list("active_effects");
@@ -2635,6 +2649,7 @@ impl EntityBase for LivingEntity {
                         &hurt_event,
                     )
                     .await;
+                world.broadcast_packet_all(&CEntityStatus::new(entity_id, 2));
             }
 
             world.broadcast_packet_all(&CDamageEvent::new(
@@ -3042,10 +3057,6 @@ impl EntityBase for LivingEntity {
     }
 
     fn cast_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_nbt_storage(&self) -> &dyn NBTStorage {
         self
     }
 }

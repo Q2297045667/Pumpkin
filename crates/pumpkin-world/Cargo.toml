@@ -61,8 +61,6 @@ pumpkin-gpu = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
-# Deserialize NaN and Inf
-serde_json5.workspace = true
 
 [[bench]]
 name = "chunk"
