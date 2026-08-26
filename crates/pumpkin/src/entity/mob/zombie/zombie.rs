@@ -1,6 +1,8 @@
+use crate::entity::Entity;
+use crate::entity::mob::equipment::RegionalDifficulty;
 use crate::entity::mob::zombie::ZombieEntityBase;
 use crate::entity::mob::{Mob, MobEntity};
-use crate::entity::{Entity, NbtFuture};
+use crate::world::World;
 use pumpkin_nbt::compound::NbtCompound;
 use std::sync::Arc;
 
@@ -28,15 +30,25 @@ impl Mob for ZombieEntity {
         &self.entity.mob_entity
     }
 
-    fn mob_write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
-        Box::pin(async move {
-            self.entity.mob_write_nbt(nbt).await;
-        })
+    fn populate_default_equipment_slots(
+        &self,
+        world: &Arc<World>,
+        difficulty: &RegionalDifficulty,
+    ) {
+        self.entity
+            .populate_default_equipment_slots(world, difficulty);
     }
 
-    fn mob_read_nbt<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
-        Box::pin(async move {
-            self.entity.mob_read_nbt(nbt).await;
-        })
+    fn populate_default_equipment_enchantments(&self, difficulty: &RegionalDifficulty) {
+        self.entity
+            .populate_default_equipment_enchantments(difficulty);
+    }
+
+    fn mob_write_nbt(&self, nbt: &mut NbtCompound) {
+        self.entity.mob_write_nbt(nbt);
+    }
+
+    fn mob_read_nbt(&self, nbt: &NbtCompound) {
+        self.entity.mob_read_nbt(nbt);
     }
 }
