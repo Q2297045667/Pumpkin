@@ -345,6 +345,11 @@ pub trait EntityBase: Send + Sync + std::any::Any {
         false
     }
 
+    /// Returns whether this entity can be selected by an entity ray trace.
+    fn is_pickable(&self) -> bool {
+        self.can_hit()
+    }
+
     fn can_hit(&self) -> bool {
         false
     }

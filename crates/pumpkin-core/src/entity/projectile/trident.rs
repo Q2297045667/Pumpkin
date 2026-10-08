@@ -157,6 +157,10 @@ impl TridentEntity {
 }
 
 impl EntityBase for TridentEntity {
+    fn can_hit(&self) -> bool {
+        super::is_pickable(&self.entity) && !self.in_ground.load(Ordering::Relaxed)
+    }
+
     fn get_owner_id(&self) -> Option<i32> {
         self.owner_id
     }

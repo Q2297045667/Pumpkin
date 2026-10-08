@@ -272,7 +272,7 @@ impl ShulkerBulletEntity {
 
 impl EntityBase for ShulkerBulletEntity {
     fn can_hit(&self) -> bool {
-        !self.entity.is_removed()
+        true
     }
 
     fn get_owner_id(&self) -> Option<i32> {

@@ -59,6 +59,46 @@ impl<'a> CUpdateTagsPlay<'a> {
     }
 }
 
+pub use dynamic::CUpdateTagsPlayWithEntityTypes;
+
+mod dynamic {
+    use super::{
+        CUpdateTagsPlay, ClientPacket, JavaMinecraftVersion, MultiVersionJavaPacket, RegistryKey,
+        WritingError,
+    };
+    use std::io::Write;
+
+    /// Sends play-state tags with the current datapack entity type snapshot.
+    pub struct CUpdateTagsPlayWithEntityTypes<'a> {
+        pub tags: &'a [RegistryKey],
+        pub entity_types: &'a std::collections::BTreeMap<String, Vec<u16>>,
+    }
+
+    impl MultiVersionJavaPacket for CUpdateTagsPlayWithEntityTypes<'_> {
+        fn to_id(version: JavaMinecraftVersion) -> i32 {
+            CUpdateTagsPlay::to_id(version)
+        }
+    }
+
+    impl ClientPacket for CUpdateTagsPlayWithEntityTypes<'_> {
+        fn write_packet_data(
+            &self,
+            write: impl Write,
+            version: &JavaMinecraftVersion,
+        ) -> Result<(), WritingError> {
+            if *version < JavaMinecraftVersion::V_1_17 {
+                return CUpdateTagsPlay::new(self.tags).write_packet_data(write, version);
+            }
+            crate::java::client::config::write_tags(
+                self.tags,
+                Some(self.entity_types),
+                write,
+                *version,
+            )
+        }
+    }
+}
+
 impl ClientPacket for CUpdateTagsPlay<'_> {
     fn write_packet_data(
         &self,

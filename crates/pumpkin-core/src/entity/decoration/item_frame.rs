@@ -323,7 +323,7 @@ impl EntityBase for ItemFrameEntity {
     }
 
     fn can_hit(&self) -> bool {
-        !self.entity.is_removed()
+        true
     }
 
     fn init_data_tracker(&self) {

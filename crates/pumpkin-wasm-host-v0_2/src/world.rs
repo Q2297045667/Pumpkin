@@ -1654,7 +1654,7 @@ impl pumpkin::plugin::world::HostWorldBorder for PluginHostState {
             .worldborder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .new_diameter)
+            .get_size())
     }
 
     fn get_size(&mut self, border: Resource<WitWorldBorder>) -> wasmtime::Result<f64> {
@@ -1673,7 +1673,14 @@ impl pumpkin::plugin::world::HostWorldBorder for PluginHostState {
             .worldborder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .set_diameter(&world, diameter, speed.map(|s| s as i64));
+            .set_diameter(
+                &world,
+                diameter,
+                speed.map(|millis| {
+                    millis.div_ceil(pumpkin_core::world::border::Worldborder::MILLIS_PER_TICK)
+                        as i64
+                }),
+            );
         Ok(())
     }
 
@@ -1706,7 +1713,8 @@ impl pumpkin::plugin::world::HostWorldBorder for PluginHostState {
             .worldborder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .speed)
+            .speed
+            .saturating_mul(pumpkin_core::world::border::Worldborder::MILLIS_PER_TICK as i64))
     }
 
     fn get_warning_distance(&mut self, border: Resource<WitWorldBorder>) -> wasmtime::Result<i32> {

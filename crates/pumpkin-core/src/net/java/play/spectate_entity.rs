@@ -1,58 +1,33 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use pumpkin_data::attributes::Attributes;
 use pumpkin_protocol::java::server::play::SSpectateEntity;
-use pumpkin_util::GameMode;
 
 impl JavaClient {
     pub fn handle_spectate_entity(&self, player: &Arc<Player>, packet: &SSpectateEntity) {
-        if !player.has_client_loaded() {
+        if !player.has_client_loaded() || !player.is_spectator() {
             return;
         }
         player.update_last_action_time();
-
-        if player.gamemode.load() != GameMode::Spectator {
-            return;
-        }
-
         let Some(target_id) = packet.target_entity_id() else {
             return;
         };
-
         let world = player.world();
-        let Some(target) = world.get_entity_by_id(target_id) else {
+        let Some(target) = world.get_entity_or_part(target_id) else {
             return;
         };
-
         let entity = target.get_entity();
         let block_pos = entity.block_pos.load().0;
-        // Vanilla drops a camera target that is outside the world border.
         if !world
             .worldborder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(f64::from(block_pos.x), f64::from(block_pos.z))
-        {
-            return;
-        }
-
-        // Vanilla allows a 3 block buffer beyond the entity interaction range.
-        let max_range = player
-            .living_entity
-            .get_attribute_value(&Attributes::ENTITY_INTERACTION_RANGE)
-            + 3.0;
-        if entity
-            .bounding_box
-            .load()
-            .squared_magnitude(player.eye_position())
-            >= max_range * max_range
+            || !player.is_within_entity_interaction_range(&entity.bounding_box.load(), 3.0)
             || entity.is_removed()
-            || !target.can_hit()
+            || !target.is_pickable()
         {
             return;
         }
-
-        player.set_camera_entity_id(entity.entity_id);
-        player.request_teleport(entity.pos.load(), entity.yaw.load(), entity.pitch.load());
+        player.set_camera_now(Some(target));
     }
 }

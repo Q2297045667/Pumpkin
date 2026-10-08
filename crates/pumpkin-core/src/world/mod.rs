@@ -404,7 +404,7 @@ impl World {
             worldborder: std::sync::Mutex::new(Worldborder::new(
                 0.0,
                 0.0,
-                5.999_996_8E7,
+                Worldborder::MAX_SIZE,
                 0,
                 5,
                 300,
@@ -1527,6 +1527,10 @@ impl World {
         self.flush_block_updates();
         self.flush_synced_block_events();
         self.update_active_chunks();
+        self.worldborder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tick();
         self.tick_environment();
         let mut raids = {
             let mut guard = self
@@ -4347,6 +4351,24 @@ impl World {
             }
         }
         None
+    }
+
+    /// Gets an entity or an ender dragon hitbox part by its entity id.
+    pub fn get_entity_or_part(&self, id: i32) -> Option<Arc<dyn EntityBase>> {
+        if let Some(entity) = self.get_entity_by_id(id) {
+            return Some(entity);
+        }
+
+        self.entities.load().iter().find_map(|entity| {
+            let dragon = entity
+                .cast_any()
+                .downcast_ref::<crate::entity::boss::ender_dragon::EnderDragonEntity>()?;
+            dragon
+                .parts
+                .iter()
+                .find(|part| part.entity.entity_id == id)
+                .map(|part| part.clone() as Arc<dyn EntityBase>)
+        })
     }
 
     /// Gets a `Player` by a username

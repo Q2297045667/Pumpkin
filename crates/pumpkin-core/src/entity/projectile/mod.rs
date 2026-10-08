@@ -1,6 +1,7 @@
 use super::{Entity, EntityBase, living::LivingEntity};
 use pumpkin_data::BlockDirection;
 use pumpkin_data::entity::EntityType;
+use pumpkin_data::tag::{self, Taggable};
 use pumpkin_protocol::java::client::play::CEntityVelocity;
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
@@ -27,6 +28,20 @@ pub mod wind_charge;
 pub mod wither_skull;
 
 use pumpkin_data::item_stack::ItemStack;
+
+// Vanilla Projectile::isPickable checks the tag without checking removal state.
+fn is_pickable(entity: &Entity) -> bool {
+    if let Some(server) = entity.world.load().server.upgrade()
+        && let Some(tagged) = server
+            .datapack_manager
+            .is_entity_type_tagged(entity.entity_type, "minecraft:redirectable_projectile")
+    {
+        return tagged;
+    }
+    entity
+        .entity_type
+        .has_tag(&tag::EntityType::MINECRAFT_REDIRECTABLE_PROJECTILE)
+}
 
 #[must_use]
 pub fn is_projectile(entity_type: &EntityType) -> bool {

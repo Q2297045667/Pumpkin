@@ -8,25 +8,19 @@ impl JavaClient {
         packet: &STeleportToEntity,
         server: &Server,
     ) {
-        if !player.has_client_loaded() {
+        if !player.is_spectator() {
             return;
         }
-        player.update_last_action_time();
-
-        if player.gamemode.load() != GameMode::Spectator {
-            return;
-        }
-
-        if let Some(target_player) = server.get_player_by_uuid(packet.target) {
-            let target_pos = target_player.living_entity.entity.pos.load();
-            let target_yaw = target_player.living_entity.entity.yaw.load();
-            let target_pitch = target_player.living_entity.entity.pitch.load();
-
-            let target_id = target_player.living_entity.entity.entity_id;
-            player.camera_target_id.store(Some(target_id));
-            player.try_send_client_packet(&CSetCamera::new(target_id.into()));
-
-            player.request_teleport(target_pos, target_yaw, target_pitch);
+        for world in server.worlds.load().iter() {
+            let target = world.get_entity_by_uuid(packet.target).or_else(|| {
+                world
+                    .get_player_by_uuid(packet.target)
+                    .map(|player| player as Arc<dyn EntityBase>)
+            });
+            if let Some(target) = target {
+                player.teleport_spectator_to(target.as_ref());
+                return;
+            }
         }
     }
 }

@@ -49,6 +49,7 @@ mod dye_color;
 mod effect;
 mod enchantment_provider;
 mod enchantments;
+mod ender_dragon_parts;
 mod entity_pose;
 mod entity_status;
 mod entity_type;
@@ -156,6 +157,7 @@ pub fn main() {
         (scoreboard_slot::build, "scoreboard_slot.rs"),
         (world_event::build, "world_event.rs"),
         (entity_type::build, "entity_type.rs"),
+        (ender_dragon_parts::build, "ender_dragon_parts.rs"),
         (statistic::build, "statistic.rs"),
         (noise_parameter::build, "noise_parameter.rs"),
         (biome::build, "biome.rs"),

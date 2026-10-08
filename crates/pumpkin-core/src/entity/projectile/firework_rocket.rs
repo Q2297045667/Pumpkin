@@ -92,6 +92,10 @@ impl FireworkRocketEntity {
 }
 
 impl EntityBase for FireworkRocketEntity {
+    fn can_hit(&self) -> bool {
+        super::is_pickable(self.get_entity())
+    }
+
     fn get_owner_id(&self) -> Option<i32> {
         self.entity.owner_id
     }

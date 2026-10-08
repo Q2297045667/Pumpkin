@@ -222,6 +222,11 @@ fn is_allowed_by_team_rules(
 }
 
 impl LivingEntity {
+    #[must_use]
+    pub fn is_pickable(&self) -> bool {
+        !self.entity.is_removed()
+    }
+
     const USING_ITEM_FLAG: u8 = 1;
     const OFF_HAND_ACTIVE_FLAG: u8 = 2;
     const RANDOM_TELEPORT_ATTEMPTS: usize = 16;
@@ -3324,6 +3329,10 @@ impl LivingEntity {
 }
 
 impl EntityBase for LivingEntity {
+    fn can_hit(&self) -> bool {
+        self.is_pickable()
+    }
+
     fn damage_with_context(
         &self,
         caller: &dyn EntityBase,

@@ -1,6 +1,7 @@
 pub mod context_provider_loader;
 pub mod damage_type_loader;
 pub mod dynamic_registry_loader;
+mod entity_type_tag_loader;
 pub mod function_loader;
 pub mod loot_table_loader;
 pub mod recipe_loader;
@@ -75,6 +76,7 @@ pub struct DatapackManager {
     loaded_packs: RwLock<Vec<LoadedDatapack>>,
     functions: RwLock<HashMap<String, Arc<[String]>>>,
     function_tags: RwLock<HashMap<String, Vec<String>>>,
+    entity_type_tags: RwLock<Option<entity_type_tag_loader::EntityTypeTagRegistry>>,
     test_instances: RwLock<TestInstanceRegistry>,
     context_int_providers: RwLock<ContextProviderRegistry>,
     context_float_providers: RwLock<ContextProviderRegistry>,
@@ -106,6 +108,7 @@ impl DatapackManager {
             loaded_packs: RwLock::new(Vec::new()),
             functions: RwLock::new(HashMap::new()),
             function_tags: RwLock::new(HashMap::new()),
+            entity_type_tags: RwLock::new(None),
             test_instances: RwLock::new(HashMap::new()),
             context_int_providers: RwLock::new(HashMap::new()),
             context_float_providers: RwLock::new(HashMap::new()),
@@ -174,6 +177,16 @@ impl DatapackManager {
             &mut loaded_packs_vec,
         );
 
+        match entity_type_tag_loader::load(&loaded_packs_vec, enabled_packs) {
+            Ok(tags) => {
+                *self
+                    .entity_type_tags
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tags);
+            }
+            Err(error) => warn!("Failed to load entity type tags: {error}"),
+        }
+
         let damage_type_registry = build_damage_type_registry(all_damage_type_defs);
 
         recipe_manager.set_recipes(all_recipes);
@@ -225,6 +238,44 @@ impl DatapackManager {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Looks up a fully qualified entity type tag in the current datapack snapshot.
+    /// Returns `None` only before the first successful tag load, not for an empty or missing tag.
+    #[must_use]
+    pub fn is_entity_type_tagged(
+        &self,
+        entity_type: &pumpkin_data::entity::EntityType,
+        tag: &str,
+    ) -> Option<bool> {
+        let tags = self
+            .entity_type_tags
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(
+            tags.as_ref()?
+                .get(tag)
+                .is_some_and(|values| values.contains(&entity_type.id)),
+        )
+    }
+
+    /// Returns the resolved entity type tags for network synchronization.
+    #[must_use]
+    pub fn entity_type_tag_snapshot(&self) -> Option<std::collections::BTreeMap<String, Vec<u16>>> {
+        let tags = self
+            .entity_type_tags
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(
+            tags.as_ref()?
+                .iter()
+                .map(|(name, values)| {
+                    let mut values: Vec<_> = values.iter().copied().collect();
+                    values.sort_unstable();
+                    (name.clone(), values)
+                })
+                .collect(),
+        )
     }
 
     pub fn get_functions(&self) -> HashMap<String, Vec<String>> {

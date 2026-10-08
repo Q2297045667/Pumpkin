@@ -276,7 +276,7 @@ impl EntityBase for PaintingEntity {
     }
 
     fn can_hit(&self) -> bool {
-        self.entity.is_alive()
+        true
     }
 
     fn cast_any(&self) -> &dyn std::any::Any {

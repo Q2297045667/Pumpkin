@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use pumpkin_data::translation;
-use pumpkin_protocol::java::client::play::CSetCamera;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
 use pumpkin_util::text::TextComponent;
 use pumpkin_util::{GameMode, PermissionLvl};
@@ -12,7 +11,7 @@ use crate::command::context::command_context::CommandContext;
 use crate::command::errors::error_types::CommandErrorType;
 use crate::command::node::dispatcher::CommandDispatcher;
 use crate::command::node::{CommandExecutor, CommandExecutorResult};
-use crate::entity::EntityBase;
+use crate::entity::{EntityBase, player::Player};
 
 const DESCRIPTION: &str = "Allows a player in spectator mode to spectate a given target entity.";
 const PERMISSION: &str = "minecraft:command.spectate";
@@ -21,24 +20,55 @@ const ERROR_NOT_PLAYER: CommandErrorType<0> = CommandErrorType::new(
     translation::java::PERMISSIONS_REQUIRES_PLAYER,
     translation::java::PERMISSIONS_REQUIRES_PLAYER,
 );
-
 const ERROR_NOT_SPECTATOR: CommandErrorType<1> = CommandErrorType::new(
     translation::java::COMMANDS_SPECTATE_NOT_SPECTATOR,
     translation::java::COMMANDS_SPECTATE_NOT_SPECTATOR,
 );
-
 const ERROR_SELF: CommandErrorType<0> = CommandErrorType::new(
     translation::java::COMMANDS_SPECTATE_SELF,
     translation::java::COMMANDS_SPECTATE_SELF,
 );
-
 const ERROR_CANNOT_SPECTATE: CommandErrorType<1> = CommandErrorType::new(
     translation::java::COMMANDS_SPECTATE_CANNOT_SPECTATE,
     translation::java::COMMANDS_SPECTATE_CANNOT_SPECTATE,
 );
 
-struct StopSpectateExecutor;
+fn queue_camera(
+    context: &CommandContext,
+    player: &Arc<Player>,
+    target: Option<Arc<dyn EntityBase>>,
+) {
+    let message = target.as_ref().map_or_else(
+        || {
+            TextComponent::translate_cross(
+                translation::java::COMMANDS_SPECTATE_SUCCESS_STOPPED,
+                translation::java::COMMANDS_SPECTATE_SUCCESS_STOPPED,
+                [],
+            )
+        },
+        |target| {
+            TextComponent::translate_cross(
+                translation::java::COMMANDS_SPECTATE_SUCCESS_STARTED,
+                translation::java::COMMANDS_SPECTATE_SUCCESS_STARTED,
+                [target.get_display_name()],
+            )
+        },
+    );
+    let result = player.request_spectate(target);
+    let source = context.source.clone();
+    let client = player.client.clone();
+    player.spawn_task(async move {
+        let accepted = tokio::select! {
+            result = result => result,
+            () = client.await_close_interrupt() => return,
+        };
+        if matches!(accepted, Ok(true)) {
+            source.send_feedback(message, false);
+        }
+    });
+}
 
+struct StopSpectateExecutor;
 impl CommandExecutor for StopSpectateExecutor {
     fn execute(&self, context: &CommandContext) -> CommandExecutorResult {
         let player = context
@@ -46,24 +76,10 @@ impl CommandExecutor for StopSpectateExecutor {
             .output
             .as_player()
             .ok_or_else(|| ERROR_NOT_PLAYER.create_without_context())?;
-
         if player.gamemode.load() != GameMode::Spectator {
-            let display_name = player.get_display_name();
-            return Err(ERROR_NOT_SPECTATOR.create_without_context(display_name));
+            return Err(ERROR_NOT_SPECTATOR.create_without_context(player.get_display_name()));
         }
-
-        player.camera_target_id.store(None);
-        player.try_send_client_packet(&CSetCamera::new(player.entity_id().into()));
-
-        context.source.send_feedback(
-            TextComponent::translate_cross(
-                translation::java::COMMANDS_SPECTATE_SUCCESS_STOPPED,
-                translation::java::COMMANDS_SPECTATE_SUCCESS_STOPPED,
-                [],
-            ),
-            false,
-        );
-
+        queue_camera(context, &player, None);
         Ok(1)
     }
 }
@@ -71,13 +87,9 @@ impl CommandExecutor for StopSpectateExecutor {
 struct SpectateTargetExecutor {
     is_self: bool,
 }
-
 impl CommandExecutor for SpectateTargetExecutor {
     fn execute(&self, context: &CommandContext) -> CommandExecutorResult {
         let target = EntityArgumentType::get_entity(context, "target")?;
-        let target_entity = target.get_entity();
-        let target_world = target_entity.world.load_full();
-
         let player = if self.is_self {
             context
                 .source
@@ -87,40 +99,16 @@ impl CommandExecutor for SpectateTargetExecutor {
         } else {
             EntityArgumentType::get_player(context, "player")?
         };
-
-        if player.gamemode.load() != GameMode::Spectator {
-            let display_name = player.get_display_name();
-            return Err(ERROR_NOT_SPECTATOR.create_without_context(display_name));
-        }
-
-        if target_entity.entity_id == player.entity_id() {
+        if std::ptr::eq(target.get_entity(), player.get_entity()) {
             return Err(ERROR_SELF.create_without_context());
         }
-
-        let player_world = player.world();
-        if !Arc::ptr_eq(&target_world, &player_world) {
-            let target_name = target.get_display_name();
-            return Err(ERROR_CANNOT_SPECTATE.create_without_context(target_name));
+        if player.gamemode.load() != GameMode::Spectator {
+            return Err(ERROR_NOT_SPECTATOR.create_without_context(player.get_display_name()));
         }
-
-        let target_id = target_entity.entity_id;
-        player.camera_target_id.store(Some(target_id));
-        let pos = target_entity.pos.load();
-        let yaw = target_entity.yaw.load();
-        let pitch = target_entity.pitch.load();
-        player.try_send_client_packet(&CSetCamera::new(target_id.into()));
-        player.teleport(pos, Some(yaw), Some(pitch), player_world);
-
-        let target_name = target.get_display_name();
-        context.source.send_feedback(
-            TextComponent::translate_cross(
-                translation::java::COMMANDS_SPECTATE_SUCCESS_STARTED,
-                translation::java::COMMANDS_SPECTATE_SUCCESS_STARTED,
-                [target_name],
-            ),
-            false,
-        );
-
+        if target.get_entity().entity_type.client_tracking_range == 0 {
+            return Err(ERROR_CANNOT_SPECTATE.create_without_context(target.get_display_name()));
+        }
+        queue_camera(context, &player, Some(target));
         Ok(1)
     }
 }
@@ -131,7 +119,6 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
         DESCRIPTION,
         PermissionDefault::Op(PermissionLvl::Two),
     ));
-
     dispatcher.register(
         command("spectate", DESCRIPTION)
             .requires(PERMISSION)

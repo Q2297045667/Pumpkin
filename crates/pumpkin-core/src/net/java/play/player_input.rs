@@ -22,15 +22,11 @@ impl JavaClient {
 
         player.last_input.store(input.input, Ordering::Relaxed);
 
-        let sneak = input.input & SPlayerInput::SNEAK != 0;
-        if sneak
-            && player.gamemode.load() == GameMode::Spectator
-            && player.camera_target_id.load().is_some()
-        {
-            player.camera_target_id.store(None);
-            player.try_send_client_packet(&CSetCamera::new(player.entity_id().into()));
+        if !player.has_client_loaded() {
+            return;
         }
-
+        player.update_last_action_time();
+        let sneak = input.input & SPlayerInput::SNEAK != 0;
         if player.get_entity().is_sneaking() != sneak {
             send_cancellable_blocking! {{
                 server;

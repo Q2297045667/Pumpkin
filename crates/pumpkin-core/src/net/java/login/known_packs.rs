@@ -28,7 +28,17 @@ impl PendingConnection {
                 tags.push(key);
             }
         }
-        self.send_packet_now(&CUpdateTags::new(&tags)).await;
+        if let Some(entity_types) = server.datapack_manager.entity_type_tag_snapshot() {
+            self.send_packet_now(
+                &pumpkin_protocol::java::client::config::CUpdateTagsWithEntityTypes {
+                    tags: &tags,
+                    entity_types: &entity_types,
+                },
+            )
+            .await;
+        } else {
+            self.send_packet_now(&CUpdateTags::new(&tags)).await;
+        }
         self.send_packet_now(&CFinishConfig).await;
     }
 }

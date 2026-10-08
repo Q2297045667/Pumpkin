@@ -1,8 +1,10 @@
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::entity::{ENDER_DRAGON_PART_DIMENSIONS, EntityType};
 use pumpkin_data::{Block, BlockStateId};
+use pumpkin_util::math::boundingbox::{BoundingBox, EntityDimensions};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::math::{cos, sin, wrap_degrees};
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -147,7 +149,12 @@ pub struct EnderDragonPart {
 }
 
 impl EnderDragonPart {
-    pub const fn new(entity: Entity, dragon_uuid: uuid::Uuid) -> Self {
+    pub fn new(entity: Entity, dragon_uuid: uuid::Uuid, dimensions: EntityDimensions) -> Self {
+        let pos = entity.pos.load();
+        entity.entity_dimension.store(dimensions);
+        entity
+            .bounding_box
+            .store(BoundingBox::new_from_pos(pos.x, pos.y, pos.z, &dimensions));
         Self {
             entity,
             dragon_uuid,
@@ -180,6 +187,11 @@ impl EntityBase for EnderDragonPart {
     fn get_living_entity(&self) -> Option<&LivingEntity> {
         None
     }
+
+    fn is_pickable(&self) -> bool {
+        true
+    }
+
     fn can_hit(&self) -> bool {
         true
     }
@@ -221,26 +233,28 @@ pub struct EnderDragonEntity {
 }
 
 impl EnderDragonEntity {
-    pub fn new(entity: Entity) -> Arc<Self> {
+    pub fn new(mut entity: Entity) -> Arc<Self> {
         entity.no_physics.store(true, Ordering::Relaxed);
-        let base_id = entity.entity_id;
+        // Clients derive part ids from the dragon id, so reserve the whole range atomically.
+        let base_id = Entity::reserve_ids(ENDER_DRAGON_PART_DIMENSIONS.len() as i32 + 1);
+        entity.entity_id = base_id;
         let dragon_uuid = entity.entity_uuid;
         let world = entity.world.load();
 
-        let _ = Entity::reserve_ids(8);
-
-        let mut parts = Vec::new();
-        for i in 1..=8 {
+        let mut parts = Vec::with_capacity(ENDER_DRAGON_PART_DIMENSIONS.len());
+        for (i, dimensions) in ENDER_DRAGON_PART_DIMENSIONS.iter().enumerate() {
             let part_entity = Entity::from_uuid_with_id(
-                base_id + i,
+                base_id + i as i32 + 1,
                 uuid::Uuid::new_v4(),
                 world.clone(),
-                entity.pos.load(),
+                Vector3::default(),
                 &EntityType::ENDER_DRAGON,
             );
-            let part = Arc::new(EnderDragonPart::new(part_entity, dragon_uuid));
-            // TODO: world.add_entity_silent(part.clone() as Arc<dyn EntityBase>);
-            parts.push(part);
+            parts.push(Arc::new(EnderDragonPart::new(
+                part_entity,
+                dragon_uuid,
+                *dimensions,
+            )));
         }
 
         Arc::new(Self {
@@ -680,37 +694,81 @@ impl EnderDragonEntity {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let p5 = history.get(5);
         let p10 = history.get(10);
-        let p0 = history.get(0);
 
         let tilt = (p5.y - p10.y) as f32 * 10.0 * (std::f32::consts::PI / 180.0);
-        let cc_tilt = tilt.cos() as f64;
-        let ss_tilt = tilt.sin() as f64;
+        let cc_tilt = cos(tilt);
+        let ss_tilt = sin(tilt);
 
         let yaw = self.mob_entity.living_entity.entity.yaw.load();
         let rot1 = yaw * (std::f32::consts::PI / 180.0);
-        let ss1 = rot1.sin() as f64;
-        let cc1 = rot1.cos() as f64;
+        let ss1 = sin(rot1);
+        let cc1 = cos(rot1);
 
+        self.tick_part(
+            &self.parts[2],
+            f64::from(ss1 * 0.5),
+            0.0,
+            f64::from(-cc1 * 0.5),
+        );
+        self.tick_part(
+            &self.parts[6],
+            f64::from(cc1 * 4.5),
+            2.0,
+            f64::from(ss1 * 4.5),
+        );
+        self.tick_part(
+            &self.parts[7],
+            f64::from(cc1 * -4.5),
+            2.0,
+            f64::from(ss1 * -4.5),
+        );
+
+        let head_y_offset = self.get_head_y_offset(&history);
+        let yaw_accel = *self
+            .yaw_rot_accel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let rot2 = yaw * (std::f32::consts::PI / 180.0) - yaw_accel * 0.01;
+        let ss2 = sin(rot2);
+        let cc2 = cos(rot2);
+
+        self.tick_part(
+            &self.parts[0],
+            f64::from(ss2 * 6.5 * cc_tilt),
+            f64::from(head_y_offset + ss_tilt * 6.5),
+            f64::from(-cc2 * 6.5 * cc_tilt),
+        );
+        self.tick_part(
+            &self.parts[1],
+            f64::from(ss2 * 5.5 * cc_tilt),
+            f64::from(head_y_offset + ss_tilt * 5.5),
+            f64::from(-cc2 * 5.5 * cc_tilt),
+        );
+
+        for i in 0..3 {
+            let pi = history.get(12 + i * 2);
+            let rot = rot1 + wrap_degrees(pi.y_rot - p5.y_rot) * (std::f32::consts::PI / 180.0);
+            let ss = sin(rot);
+            let cc = cos(rot);
+            let dd = (i + 1) as f32 * 2.0;
+
+            self.tick_part(
+                &self.parts[3 + i as usize],
+                f64::from(-(ss1 * 1.5 + ss * dd) * cc_tilt),
+                pi.y - p5.y - f64::from((dd + 1.5) * ss_tilt) + 1.5,
+                f64::from((cc1 * 1.5 + cc * dd) * cc_tilt),
+            );
+        }
+    }
+
+    fn tick_part(&self, part: &EnderDragonPart, x: f64, y: f64, z: f64) {
         let pos = self.mob_entity.living_entity.entity.pos.load();
+        part.entity.last_pos.store(part.entity.pos.load());
+        part.entity.set_pos(pos + Vector3::new(x, y, z));
+    }
 
-        // Body
-        self.parts[2]
-            .entity
-            .set_pos(Vector3::new(pos.x + ss1 * 0.5, pos.y, pos.z - cc1 * 0.5));
-
-        // Wings
-        self.parts[6].entity.set_pos(Vector3::new(
-            pos.x + cc1 * 4.5,
-            pos.y + 2.0,
-            pos.z + ss1 * 4.5,
-        ));
-        self.parts[7].entity.set_pos(Vector3::new(
-            pos.x - cc1 * 4.5,
-            pos.y + 2.0,
-            pos.z - ss1 * 4.5,
-        ));
-
-        let head_y_offset = if self
+    fn get_head_y_offset(&self, history: &DragonFlightHistory) -> f32 {
+        if self
             .phase
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -718,43 +776,7 @@ impl EnderDragonEntity {
         {
             -1.0
         } else {
-            p5.y - p0.y
-        };
-
-        let yaw_accel = *self
-            .yaw_rot_accel
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let rot2 = (yaw - yaw_accel * 0.01) * (std::f32::consts::PI / 180.0);
-        let ss2 = rot2.sin() as f64;
-        let cc2 = rot2.cos() as f64;
-
-        // Head & Neck
-        self.parts[0].entity.set_pos(Vector3::new(
-            pos.x + ss2 * 6.5 * cc_tilt,
-            pos.y + head_y_offset + ss_tilt * 6.5,
-            pos.z - cc2 * 6.5 * cc_tilt,
-        ));
-        self.parts[1].entity.set_pos(Vector3::new(
-            pos.x + ss2 * 5.5 * cc_tilt,
-            pos.y + head_y_offset + ss_tilt * 5.5,
-            pos.z - cc2 * 5.5 * cc_tilt,
-        ));
-
-        // Tails
-        for i in 0..3 {
-            let pi = history.get(12 + i * 2);
-            let rot = yaw * (std::f32::consts::PI / 180.0)
-                + (pi.y_rot - p5.y_rot).rem_euclid(360.0).to_radians();
-            let ss = rot.sin() as f64;
-            let cc = rot.cos() as f64;
-            let dd = (i + 1) as f64 * 2.0;
-
-            self.parts[3 + i as usize].entity.set_pos(Vector3::new(
-                pos.x - (ss1 * 1.5 + ss * dd) * cc_tilt,
-                pos.y + (pi.y - p5.y) - (dd + 1.5) * ss_tilt + 1.5,
-                pos.z + (cc1 * 1.5 + cc * dd) * cc_tilt,
-            ));
+            (history.get(5).y - history.get(0).y) as f32
         }
     }
 
@@ -827,8 +849,6 @@ impl EnderDragonEntity {
                 self.steer_toward(pos, target, phase.get_fly_speed(), phase.get_turn_speed());
             }
         }
-
-        self.tick_parts();
     }
 
     pub fn hurt(&self, damage: f32) {
@@ -850,8 +870,19 @@ impl Mob for EnderDragonEntity {
         &self.mob_entity
     }
 
+    fn mob_is_pickable(&self) -> bool {
+        false
+    }
+
     fn mob_tick(&self, _caller: &dyn EntityBase) {
         self.ai_step();
+    }
+
+    fn post_tick(&self) {
+        // LivingEntity.tick applies movement after mob_tick in Pumpkin.
+        if !self.mob_entity.living_entity.entity.is_removed() {
+            self.tick_parts();
+        }
     }
 
     fn on_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) {

@@ -136,7 +136,7 @@ impl EntityBase for CushionEntity {
     fn tick(&self, _caller: &dyn EntityBase, _server: &Server) {}
 
     fn can_hit(&self) -> bool {
-        self.entity.is_alive()
+        true
     }
 
     fn is_collidable(&self, _entity: Option<Box<dyn EntityBase>>) -> bool {

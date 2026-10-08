@@ -169,6 +169,11 @@ pub mod entity_status;
 #[path = "generated/entity_type.rs"]
 mod entity_type;
 
+#[cfg(feature = "entity_type")]
+#[rustfmt::skip]
+#[path = "generated/ender_dragon_parts.rs"]
+mod ender_dragon_parts;
+
 #[cfg(feature = "spawn_egg")]
 #[rustfmt::skip]
 #[path = "generated/spawn_egg.rs"]
@@ -197,6 +202,8 @@ pub use enchantment::*;
 
 #[cfg(feature = "entity")]
 pub mod entity {
+    #[cfg(feature = "entity_type")]
+    pub use super::ender_dragon_parts::*;
     #[cfg(feature = "entity_pose")]
     pub use super::entity_pose::*;
     #[cfg(feature = "entity_status")]

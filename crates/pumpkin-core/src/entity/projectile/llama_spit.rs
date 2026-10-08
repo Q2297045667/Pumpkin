@@ -56,6 +56,10 @@ impl LlamaSpitEntity {
 }
 
 impl EntityBase for LlamaSpitEntity {
+    fn can_hit(&self) -> bool {
+        super::is_pickable(self.get_entity())
+    }
+
     fn get_owner_id(&self) -> Option<i32> {
         self.thrown.owner_id
     }

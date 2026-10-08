@@ -94,7 +94,7 @@ impl EntityBase for LeashKnotEntity {
     }
 
     fn can_hit(&self) -> bool {
-        !self.entity.is_removed()
+        true
     }
 
     fn tick(&self, _caller: &dyn EntityBase, _server: &Server) {

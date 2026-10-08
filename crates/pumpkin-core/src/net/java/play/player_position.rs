@@ -2,11 +2,11 @@
 use super::*;
 
 impl JavaClient {
-    const fn clamp_horizontal(pos: f64) -> f64 {
+    pub(super) const fn clamp_horizontal(pos: f64) -> f64 {
         pos.clamp(-3.0E7, 3.0E7)
     }
 
-    const fn clamp_vertical(pos: f64) -> f64 {
+    pub(super) const fn clamp_vertical(pos: f64) -> f64 {
         pos.clamp(-2.0E7, 2.0E7)
     }
 
@@ -181,42 +181,16 @@ impl JavaClient {
         }}
     }
 
-    #[expect(clippy::too_many_lines)]
     pub fn handle_position_rotation(
         &self,
         player: &Arc<Player>,
         server: &Arc<Server>,
         packet: &SPlayerPositionRotation,
     ) {
-        if !player.has_client_loaded() {
-            return;
-        }
-        // A movement packet was received this tick — tracked for SClientTickEnd zeroing.
-        self.received_movement_this_tick
-            .store(true, Ordering::Relaxed);
-        if player.get_entity().has_vehicle() {
-            return;
-        }
-        // Ignore movement packets while awaiting a teleport confirmation (vanilla behavior)
-        if player
-            .awaiting_teleport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
-        {
-            return;
-        }
-        if player.is_movement_locked.load(Ordering::Relaxed) {
-            let entity = player.get_entity();
-            entity.set_rotation(packet.yaw, packet.pitch);
-            self.force_tp(player, entity.pos.load());
-            return;
-        }
-        // y = feet Y
         let position = packet.position;
-        if !position.x.is_finite()
-            || !position.y.is_finite()
-            || !position.z.is_finite()
+        if position.x.is_nan()
+            || position.y.is_nan()
+            || position.z.is_nan()
             || !packet.yaw.is_finite()
             || !packet.pitch.is_finite()
         {
@@ -228,12 +202,48 @@ impl JavaClient {
             return;
         }
 
-        let position = Vector3::new(
-            Self::clamp_horizontal(position.x),
-            Self::clamp_vertical(position.y),
-            Self::clamp_horizontal(position.z),
-        );
+        if !player.has_client_loaded() {
+            return;
+        }
+        self.received_movement_this_tick
+            .store(true, Ordering::Relaxed);
+        if player
+            .awaiting_teleport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            player
+                .get_entity()
+                .set_rotation(wrap_degrees(packet.yaw), wrap_degrees(packet.pitch));
+            return;
+        }
+        self.handle_position_rotation_now(player, server, packet);
+    }
 
+    #[expect(clippy::too_many_lines)]
+    pub(super) fn handle_position_rotation_now(
+        &self,
+        player: &Arc<Player>,
+        server: &Arc<Server>,
+        packet: &SPlayerPositionRotation,
+    ) {
+        let entity = player.get_entity();
+        if entity.has_vehicle() {
+            entity.set_rotation(wrap_degrees(packet.yaw), wrap_degrees(packet.pitch));
+            chunker::update_position(player);
+            return;
+        }
+        if player.is_movement_locked.load(Ordering::Relaxed) {
+            entity.set_rotation(packet.yaw, packet.pitch);
+            self.force_tp(player, entity.pos.load());
+            return;
+        }
+        let position = Vector3::new(
+            Self::clamp_horizontal(packet.position.x),
+            Self::clamp_vertical(packet.position.y),
+            Self::clamp_horizontal(packet.position.z),
+        );
         send_cancellable_blocking! {{
             server;
             PlayerMoveEvent::new(
@@ -335,13 +345,13 @@ impl JavaClient {
             }
 
             'cancelled: {
-                self.force_tp(player, position);
+                self.force_tp(player, player.get_entity().pos.load());
             }
         }}
     }
 
     pub fn force_tp(&self, player: &Arc<Player>, position: Vector3<f64>) {
-        let teleport_id = player.teleport_id_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let teleport_id = player.next_teleport_id();
         *player
             .awaiting_teleport
             .lock()
@@ -349,7 +359,7 @@ impl JavaClient {
             Some((teleport_id.into(), position));
         player.try_send_client_packet(&CPlayerPosition::new(
             teleport_id.into(),
-            player.get_entity().pos.load(),
+            position,
             Vector3::new(0.0, 0.0, 0.0),
             player.get_entity().yaw.load(),
             player.get_entity().pitch.load(),

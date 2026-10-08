@@ -744,6 +744,7 @@ impl JavaClient {
             id if id == SConfirmTeleport::to_id(version) => {
                 self.handle_confirm_teleport(
                     player,
+                    server,
                     &SConfirmTeleport::read(&mut payload, &version)?,
                 );
             }

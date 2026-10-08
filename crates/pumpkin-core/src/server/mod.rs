@@ -549,8 +549,28 @@ impl Server {
             .execute_function(server, &source, "#minecraft:load");
 
         let dynamic_recipes = self.recipe_manager.get_dynamic_recipes_internal();
+        let entity_types = self.datapack_manager.entity_type_tag_snapshot();
+        let tag_keys: Vec<_> = pumpkin_data::tag::RegistryKey::NETWORK_KEYS
+            .iter()
+            .copied()
+            .filter(|&key| {
+                pumpkin_data::tag::get_registry_key_tags(
+                    pumpkin_data::packet::CURRENT_MC_VERSION,
+                    key,
+                )
+                .is_some_and(|tags| !tags.is_empty())
+            })
+            .collect();
         for player in self.get_all_players() {
             if let crate::net::ClientPlatform::Java(java_client) = player.client.as_ref() {
+                if let Some(entity_types) = entity_types.as_ref() {
+                    player.try_send_client_packet(
+                        &pumpkin_protocol::java::client::play::CUpdateTagsPlayWithEntityTypes {
+                            tags: &tag_keys,
+                            entity_types,
+                        },
+                    );
+                }
                 let add_packet = pumpkin_protocol::java::client::play::CRecipeBookAdd::new(
                     true,
                     &dynamic_recipes,

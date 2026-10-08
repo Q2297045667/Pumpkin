@@ -169,7 +169,7 @@ impl FireballEntity {
 
 impl EntityBase for FireballEntity {
     fn can_hit(&self) -> bool {
-        !self.get_entity().is_removed()
+        super::is_pickable(self.get_entity())
     }
 
     fn get_owner_id(&self) -> Option<i32> {

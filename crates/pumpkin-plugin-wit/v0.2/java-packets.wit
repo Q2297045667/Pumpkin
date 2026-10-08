@@ -1402,15 +1402,14 @@ interface java-packets {
     old-diameter: f64,
     /// The diameter the border is moving toward.
     new-diameter: f64,
-    /// The time (in milliseconds) it will take to reach `new_diameter`.
+    /// The remaining transition duration in game ticks for Minecraft 26.3.
     speed: s64,
     /// The maximum distance a player can be teleported by a portal
     /// before the border prevents the teleport.
     portal-teleport-boundary: s32,
     /// Distance in blocks from the border where the screen starts to tint red.
     warning-blocks: s32,
-    /// Time in seconds that a player must be on a collision course with
-    /// the border before the warning tint appears.
+    /// The warning time in game ticks for Minecraft 26.3.
     warning-time: s32,
   }
   record c-item-cooldown {

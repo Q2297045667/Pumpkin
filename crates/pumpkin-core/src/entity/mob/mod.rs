@@ -853,6 +853,10 @@ pub trait Mob: EntityBase + Send + Sync {
 
     fn get_mob_entity(&self) -> &MobEntity;
 
+    fn mob_is_pickable(&self) -> bool {
+        self.get_mob_entity().living_entity.is_pickable()
+    }
+
     fn mob_bedrock_identifier(&self) -> Option<&'static str> {
         None
     }
@@ -1429,8 +1433,12 @@ impl<T: Mob + Send + 'static> EntityBase for T {
         true
     }
 
+    fn is_pickable(&self) -> bool {
+        self.mob_is_pickable()
+    }
+
     fn can_hit(&self) -> bool {
-        true
+        self.mob_is_pickable()
     }
 
     fn damage_with_context(

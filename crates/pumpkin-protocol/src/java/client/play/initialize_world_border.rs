@@ -21,15 +21,14 @@ pub struct CInitializeWorldBorder {
     pub old_diameter: f64,
     /// The diameter the border is moving toward.
     pub new_diameter: f64,
-    /// The time (in milliseconds) it will take to reach `new_diameter`.
+    /// The remaining transition duration in game ticks for Minecraft 26.3.
     pub speed: VarLong,
     /// The maximum distance a player can be teleported by a portal
     /// before the border prevents the teleport.
     pub portal_teleport_boundary: VarInt,
     /// Distance in blocks from the border where the screen starts to tint red.
     pub warning_blocks: VarInt,
-    /// Time in seconds that a player must be on a collision course with
-    /// the border before the warning tint appears.
+    /// The warning time in game ticks for Minecraft 26.3.
     pub warning_time: VarInt,
 }
 
