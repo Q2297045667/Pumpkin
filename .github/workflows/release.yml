@@ -56,7 +56,7 @@ jobs:
 
       - name: Build Release
         shell: bash
-        run: cargo build --verbose --release
+        run: cargo build --release -p pumpkin --features plugin-v0_2
 
       - name: Prepare artifacts
         shell: bash
@@ -148,7 +148,7 @@ jobs:
       - name: Build Release with cargo ndk
         env:
           CARGO_NDK_PLATFORM: 24
-        run: cargo ndk -t arm64-v8a build --release --locked
+        run: cargo ndk -t arm64-v8a build --release --locked -p pumpkin --features plugin-v0_2
       - name: Prepare artifacts
         shell: bash
         run: |

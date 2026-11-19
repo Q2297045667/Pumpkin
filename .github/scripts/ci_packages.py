@@ -252,7 +252,7 @@ def plan(args: argparse.Namespace) -> None:
         run_full = True
         should_check_wit = True
         reason = {
-            "push": "Pushed to master",
+            "push": "Branch push",
             "workflow_dispatch": "Started manually",
         }.get(args.event, f"Triggered by {args.event.replace('_', ' ')}")
 

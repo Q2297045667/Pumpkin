@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - build/plugin-v0_2
   pull_request:
   workflow_dispatch:
     inputs:
@@ -352,7 +353,7 @@ jobs:
       - run: rustup update ${{ env.CI_RUST_TOOLCHAIN_VER }} && rustup default ${{ env.CI_RUST_TOOLCHAIN_VER }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release
-        run: cargo build --verbose --release
+        run: cargo build --release -p pumpkin --features plugin-v0_2
       - name: Prepare artifact
         shell: bash
         run: |
@@ -388,7 +389,7 @@ jobs:
       - name: Build release with cargo ndk
         env:
           CARGO_NDK_PLATFORM: 24
-        run: cargo ndk -t arm64-v8a build --release --locked
+        run: cargo ndk -t arm64-v8a build --release --locked -p pumpkin --features plugin-v0_2
       - name: Prepare artifact
         run: |
           mkdir -p dist
